@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- DRAFT, NOT INSTALLED. Nothing installs this. On a machine that already runs
+     a mouth-sounds agent (under any label), switching over to this one is its owner's
+     separate go, with steps, checks and a rollback written down first. Do not copy it
+     into ~/Library/LaunchAgents and do not bootstrap it without that go.
+
+     mouth-sounds as a launch agent: the little cues for the mouth's flow (drop, front,
+     canned, bud, scoop). It runs the ears repo's copy (keeper/mouth-sounds.py) on the
+     ears .venv, the way dev.sessionkit.voice.ears-sounds does, so a fix in keeper/ reaches the
+     running service. An older mouth-sounds agent ran as dev.voicemode.mouth-sounds: the
+     switch-over is a bootout of that one and a bootstrap of this one.
+
+     Repo defaults throughout (keeper/mouth-sounds.py): the fired marker and the canned
+     utterances under EARS_RUN, the settings at
+     ~/.sessionkit/voice/settings/mouth-sounds.json, the sound log
+     (~/Library/Logs/ears/mouth-sounds.jsonl), the STOP file (keeper/STOP-mouth-sounds),
+     the cursors and heard logs, the queue and the maildir.
+     A machine whose producers write elsewhere may add, under EnvironmentVariables:
+       MOUTH_SOUNDS_FIRED     the file its mid-turn waiter touches
+       MOUTH_SOUNDS_CANNED    the file its auto-opener appends to
+       MOUTH_SOUNDS_SETTINGS  its tuned settings (reread live)
+     KeepAlive: it exits 3 after MOUTH_SOUNDS_MAX_FAILS (20) failed sounds in a row, to be
+     restarted fresh. ThrottleInterval 30.
+     A TEMPLATE: render it (on the go only), then install by hand:
+       mkdir -p ~/Library/Logs/ears
+       bin/render-plist launchd/dev.sessionkit.voice.mouth-sounds.plist.in > ~/Library/LaunchAgents/dev.sessionkit.voice.mouth-sounds.plist
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.sessionkit.voice.mouth-sounds.plist
+     bin/render-plist fills @HOME@, @EARS_REPO@ and @PYTHON@ from this machine (see its
+     help for the defaults and the overrides).
+     Remove:  launchctl bootout gui/$(id -u)/dev.sessionkit.voice.mouth-sounds
+     Was dev.sessionvoice.mouth-sounds before the rename (dev.voicemode.mouth-sounds before that): one
+     still loaded under an old label is booted out first (launchctl bootout
+     gui/$(id -u)/OLD, then rm ~/Library/LaunchAgents/OLD.plist), or two would run.
+     `ears services status` names one it finds; install never touches it. -->
+<dict>
+  <key>Label</key><string>dev.sessionkit.voice.mouth-sounds</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@PYTHON@</string>
+    <string>@EARS_REPO@/keeper/mouth-sounds.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>@EARS_REPO@/keeper</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>@HOME@</string>
+    <key>PATH</key><string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PYTHONUNBUFFERED</key><string>1</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>@HOME@/Library/Logs/ears/mouth-sounds.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/ears/mouth-sounds.log</string>
+</dict>
+</plist>

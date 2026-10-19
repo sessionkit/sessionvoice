@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Talk">
+<link rel="manifest" href="manifest.json">
+<title>Talk</title>
+<style>
+  /* Settings' tokens, so Talk sits in the same family as Home and Settings */
+  :root { --bg:#f2f2f7; --card:#fff; --fg:#1c1c1e; --muted:#8e8e93; --line:#e5e5ea; --on:#34c759;
+          --tint:#007aff; --me:#007aff; --them:#e9e9eb; --themfg:#1c1c1e; --glass:rgba(242,242,247,.8); }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#000; --card:#1c1c1e; --fg:#f2f2f7; --muted:#8e8e93; --line:#38383a; --on:#30d158;
+            --tint:#0a84ff; --me:#0a84ff; --them:#26252a; --themfg:#f2f2f7; --glass:rgba(0,0,0,.72); } }
+  * { box-sizing:border-box }
+  html,body { margin:0; background:var(--bg); color:var(--fg);
+    font:16px/1.38 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif }
+  header { position:sticky; top:0; z-index:5; background:var(--glass); -webkit-backdrop-filter:blur(20px); backdrop-filter:blur(20px);
+           border-bottom:1px solid var(--line); padding:calc(8px + env(safe-area-inset-top)) 16px 8px }
+  .hd { max-width:760px; margin:0 auto; display:flex; align-items:center; gap:10px }
+  .hd h1 { font-size:1.15rem; margin:0; flex:1 }
+  .hd .st { color:var(--muted); font-size:.8rem; display:flex; align-items:center; gap:6px }
+  .hd .set { color:var(--tint); font-size:.8rem; text-decoration:none } /* Settings is its own app, linked from Talk */
+  .hd .call { color:var(--tint); font-size:1.05rem; line-height:1; text-decoration:none } /* the phone button: joins the sessionphone web call */
+  .live { width:9px; height:9px; border-radius:50%; background:var(--muted) }
+  .live.on { background:var(--on); box-shadow:0 0 0 0 rgba(52,199,89,.6); animation:beat 2s infinite }
+  @keyframes beat { 0% { box-shadow:0 0 0 0 rgba(52,199,89,.55) } 70% { box-shadow:0 0 0 8px rgba(52,199,89,0) } 100% { box-shadow:0 0 0 0 rgba(52,199,89,0) } }
+  .chips { max-width:760px; margin:6px auto 0; display:flex; gap:6px; overflow-x:auto; scrollbar-width:none }
+  .chip { border:0; background:var(--card); color:var(--fg); border-radius:14px; padding:4px 11px; font:inherit; font-size:.8rem; cursor:pointer; white-space:nowrap }
+  .chip.on { background:var(--tint); color:#fff }
+  .presence { max-width:760px; margin:6px auto 0; display:flex; gap:12px; font-size:.78rem; color:var(--muted) }
+  .pres { display:flex; align-items:center; gap:6px }
+  .pres .pa { width:20px; height:20px; border-radius:10px; display:grid; place-items:center; color:#fff; font-weight:700; font-size:.66rem; position:relative }
+  .pres .pa::after { content:""; position:absolute; right:-2px; bottom:-2px; width:8px; height:8px; border-radius:50%; border:2px solid var(--bg); background:var(--muted) }
+  .pres.listening .pa::after { background:var(--on) } .pres.thinking .pa::after { background:#ff9f0a } .pres.speaking .pa::after { background:#0a84ff }
+  .pres.thinking b::after { content:"\2026"; animation:blink 1s steps(2) infinite }
+  .chip.dbg { margin-left:auto } .chip.dbg.on { background:#ff9f0a }
+  .dbgrow { font:11.5px/1.4 ui-monospace, Menlo, monospace; color:var(--muted); margin:2px 6px 2px 40px; display:flex; gap:8px; flex-wrap:wrap }
+  .dbgrow .x { color:var(--fg); opacity:.75 }
+  .dbgrow.smart { color:#bf5af2 } .dbgrow.smart.done { color:var(--on) }
+  .rk span { border-radius:6px; padding:0 5px; margin-left:4px; background:var(--card) }
+  .rk .ride { color:#0a84ff } .rk .wait { color:var(--on) }
+  .rc { font-size:.66rem; color:var(--muted); margin:1px 10px 0; min-height:0 }
+  .rc span { margin-left:6px } .rc span::before { content:"\2713 "; color:var(--on); font-weight:700 }
+  main { max-width:760px; margin:0 auto; padding:12px 12px calc(90px + env(safe-area-inset-bottom)) }
+
+  .sep { text-align:center; color:var(--muted); font-size:.72rem; margin:16px 0 8px; font-weight:600 }
+  .ev { text-align:center; color:var(--muted); font-size:.74rem; margin:6px 0 }
+  .msg { display:flex; gap:8px; margin:3px 0; align-items:flex-end }
+  .msg.me { justify-content:flex-end }
+  .av { width:28px; height:28px; border-radius:14px; flex:none; display:grid; place-items:center; color:#fff; font-weight:700; font-size:.8rem }
+  .msg.cont .av { visibility:hidden }
+  .av, .pa { position:relative; overflow:hidden }
+  .av img, .pa img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover }
+  .col { max-width:78%; display:flex; flex-direction:column }
+  .me .col { align-items:flex-end }
+  .who { font-size:.7rem; color:var(--muted); margin:6px 12px 2px }
+  .msg.cont .who { display:none }
+  .b { padding:8px 13px; border-radius:18px; white-space:pre-wrap; word-wrap:break-word }
+  .me .b { background:var(--me); color:#fff; border-bottom-right-radius:6px }
+  .them .b { background:var(--them); color:var(--themfg); border-bottom-left-radius:6px }
+  .t { font-size:.66rem; color:var(--muted); margin:2px 10px 0 }
+  .b .unsaid { opacity:.4 }
+  .tag { display:inline-block; font-size:.66rem; font-weight:600; border-radius:8px; padding:1px 7px; margin-left:6px; vertical-align:1px }
+  .tag.cut { background:rgba(255,59,48,.16); color:#ff3b30 }
+  .tag.speaking { background:rgba(52,199,89,.18); color:var(--on) }
+  .msg.partial .b { opacity:.55 }
+  .msg.echo .b { background:none; border:1px dashed var(--line); color:var(--muted) }
+  .dots::after { content:"\2026"; animation:blink 1s steps(2) infinite }
+  @keyframes blink { 50% { opacity:.2 } }
+  .wave { display:inline-flex; gap:2px; margin-left:6px; vertical-align:-1px }
+  .wave i { width:3px; height:10px; background:currentColor; border-radius:2px; animation:w .9s ease-in-out infinite }
+  .wave i:nth-child(2) { animation-delay:.15s } .wave i:nth-child(3) { animation-delay:.3s }
+  @keyframes w { 0%,100% { transform:scaleY(.35) } 50% { transform:scaleY(1) } }
+
+  .jump { position:fixed; left:50%; transform:translateX(-50%); bottom:calc(76px + env(safe-area-inset-bottom)); z-index:6; display:none;
+          border:0; background:var(--tint); color:#fff; border-radius:16px; padding:7px 14px; font:inherit; font-size:.85rem; cursor:pointer;
+          box-shadow:0 4px 14px rgba(0,0,0,.25) }
+  .jump.on { display:block }
+  footer { position:fixed; left:0; right:0; bottom:0; z-index:5; background:var(--glass); -webkit-backdrop-filter:blur(20px); backdrop-filter:blur(20px);
+           border-top:1px solid var(--line); padding:8px 12px calc(8px + env(safe-area-inset-bottom)) }
+  .ft { max-width:760px; margin:0 auto; display:flex; gap:8px; align-items:center }
+  .ft input { flex:1; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:18px; padding:8px 14px; font:inherit; min-width:0 }
+  .ft .note { color:var(--muted); font-size:.72rem; flex:none }
+  @media (min-width:1000px) { main, .hd, .chips, .ft { max-width:860px } .col { max-width:70% } }
+  /* the pairing panel: shown when this browser is not paired */
+  .pairing { max-width:520px; margin:24px auto; padding:16px 18px; background:var(--card); border-radius:14px; border:1px solid var(--line) }
+  .pairing h2 { font-size:1rem; margin:0 0 6px }
+  .pairing p { margin:0 0 10px; color:var(--muted); font-size:.88rem }
+  .pairing code { font:12.5px ui-monospace, Menlo, monospace; color:var(--fg) }
+  .pairing form { display:flex; gap:8px }
+  .pairing input { flex:1; min-width:0; border:1px solid var(--line); background:var(--bg); color:var(--fg); border-radius:10px; padding:8px 10px; font:inherit }
+  .pairing button { border:0; background:var(--tint); color:#fff; border-radius:10px; padding:8px 14px; font:inherit; cursor:pointer }
+  .pairing .why { color:#ff3b30 }
+/* WhatsApp's ticks: one grey tick = its waker
+   scanned the line (delivered), two coloured ticks = the seat was shown it (read) */
+.rc span.scan::before { content:"\2713 "; color:var(--muted); font-weight:700 }
+.rc span.shown::before { content:"\2713\2713 "; color:var(--on); font-weight:700; letter-spacing:-3px; padding-right:3px }
+</style>
+</head>
+<body>
+<header>
+  <div class="hd"><h1>Talk</h1><span class="st"><span class="live" id="live"></span><span id="status">connecting</span></span><a class="call" id="call" target="_blank" rel="noopener noreferrer" hidden title="Join the call" aria-label="Join the call">&#x1F4DE;</a><a class="set" id="set" hidden title="Settings">Settings</a></div>
+  <div class="presence" id="presence"></div>
+  <div class="chips" id="chips"><button class="chip on" data-a="all">Everyone</button><button class="chip dbg" id="dbg" title="every partial, who it reached, and the turn detector's score at each pause">Debug</button></div>
+</header>
+<section class="pairing" id="pairing" hidden>
+  <h2>Pair this browser</h2>
+  <p>This browser is not paired with Talk. On the host, run <code>talk pair</code> and open the link it prints here, or paste the link (or its token) below.</p>
+  <p class="why" id="pair-why" hidden></p>
+  <form id="pair-form"><input id="pair-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Pairing link or token" aria-label="Pairing link or token"><button type="submit">Pair</button></form>
+</section>
+<main id="log"></main>
+<button class="jump" id="jump">Jump to now &darr;</button>
+<footer><div class="ft"><input disabled placeholder="What the ears heard and the mouth said"><span class="note">read-only</span></div></footer>
+
+<script>
+// /talk without its slash: every relative URL ("events?n=150", "avatar/...") resolved against the
+// ROOT, which 404s, so the page sat on "reconnecting". Add it.
+// The script runs on while that navigation starts, so nothing below may use the token or connect
+// until the slash is there: a relative "pair" from /talk would be the ROOT's /pair.
+const redirecting = !location.pathname.endsWith("/");
+if (redirecting) location.replace(location.pathname + "/" + location.search + location.hash);
+// No fixed roster: every seat comes from the data (a row's agent, the state event's seats),
+// its colour derived from its name, so the same name keeps the same colour.
+const ME = "_me";                // the filter key of the person's side (never a seat name)
+let cfg = {};                    // the server's settings: {person, settings_url, call_url}
+const hue = a => { let h = 0; for (const ch of a) h = (h * 31 + ch.codePointAt(0)) >>> 0; return h % 360; };
+const person = row => cfg.person || (row && row.speaker) || "you";
+// an agent's face from ~/.session/agents/<name>/avatar.jpg; no file = the coloured initial stays.
+// A face that 404s is not asked for again this page load: it used to be re-fetched for every line.
+const noFace = new Set();
+const face = a => { const k = encodeURIComponent(a); return noFace.has(k) ? "" :
+  `<img src="avatar/${k}" alt="" data-k="${k}" onerror="noFace.add(this.dataset.k);this.remove()">`; };
+const agent = a => a ? {n:a.replace(/^./, c => c.toUpperCase()), c:`hsl(${hue(a)} 62% 48%)`} : {n:"", c:"#8e8e93"};
+const log = document.getElementById("log");
+let lastSide = null, lastTs = 0, partialEl = null, partialText = [], filter = "all";
+const utts = {};                 // utt -> {el, row}
+const recentSaid = [];           // [{text, t0, t1}] to spot my own voice heard back
+const seen = new Set();          // dedupe turns (two ears can write the same one)
+let mic = "";
+
+const esc = s => (s || "").replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const hhmm = ts => (ts || "").slice(11, 16);
+const secs = ts => Date.parse(ts) / 1000;
+const words = s => new Set((s || "").toLowerCase().match(/[a-z']+/g) || []);
+function overlap(a, b) { const A = words(a), B = words(b); if (!A.size || !B.size) return 0;
+  let n = 0; A.forEach(w => B.has(w) && n++); return n / Math.min(A.size, B.size); }
+function isEcho(row) {   // the user's mic heard my line out of the speaker
+  const t = secs(row.ts);
+  return recentSaid.some(s => t >= s.t0 - 1 && t <= s.t1 + 12 && overlap(row.text, s.text) > 0.6);
+}
+function atBottom() { return innerHeight + scrollY >= document.body.scrollHeight - 80; }
+function stick(was) { if (was) scrollTo(0, document.body.scrollHeight); else document.getElementById("jump").classList.add("on"); }
+
+function sep(ts) {
+  const t = secs(ts);
+  if (t - lastTs > 300) { const d = document.createElement("div"); d.className = "sep";
+    d.textContent = new Date(t * 1000).toLocaleString("en-AU", {weekday:"short", hour:"numeric", minute:"2-digit"}); log.appendChild(d); lastSide = null; }
+  lastTs = t;
+}
+function bubble(side, who, html, ts, extra = "") {
+  sep(ts);
+  const cont = lastSide === side + who;
+  const m = document.createElement("div");
+  m.className = `msg ${side === "me" ? "me" : "them"} ${cont ? "cont" : ""} ${extra}`;
+  m.dataset.a = side === "me" ? ME : who;
+  const a = agent(who);
+  // the person's side: `who` is their label; a row with no agent stays unattributed (no name, no face)
+  m.innerHTML = side === "me"
+    ? `<div class="col"><div class="who">${esc(who)}</div><div class="b">${html}</div><div class="t">${hhmm(ts)}</div></div>`
+    : `<span class="av" style="background:${a.c}">${esc(a.n[0] || "")}${who ? face(who) : ""}</span><div class="col"><div class="who">${esc(a.n)}</div><div class="b">${html}</div><div class="t">${hhmm(ts)}</div></div>`;
+  if (filter !== "all" && m.dataset.a !== filter && m.dataset.a !== ME) m.style.display = "none";
+  log.appendChild(m); lastSide = side + who;
+  if (who && side !== "me" && !document.querySelector(`.chip[data-a="${who}"]`)) {
+    const c = document.createElement("button"); c.className = "chip"; c.dataset.a = who; c.textContent = a.n;
+    document.getElementById("chips").appendChild(c);
+  }
+  return m;
+}
+function event(row) {
+  const e = row.event, dev = row.device || "";
+  const txt = e === "listen-started" ? `Listening on ${dev}` : e === "listen-stopped" ? `Stopped listening on ${dev}` :
+    e === "call-started" ? "Call started" : e === "call-ended" ? "Call ended" : e === "battery-low" ? `Battery low: ${row.text || dev}` : e;
+  if (e === "listen-started") { mic = dev; status(); }
+  sep(row.ts); const d = document.createElement("div"); d.className = "ev"; d.textContent = `${hhmm(row.ts)} · ${txt}`; log.appendChild(d); lastSide = null;
+}
+function add(row) {
+  const k = row.kind;
+  if (k === "event") return event(row);
+  if (k === "smart") {
+    const d = document.createElement("div"); d.className = "dbgrow smart" + (row.complete ? " done" : "");
+    d.innerHTML = `<span>${(row.ts || "").slice(11, 19)}</span><span>pause \u00B7 ${Math.round((row.p || 0) * 100)}% finished${row.complete ? " \u2713 would end the turn" : ""}</span>`;
+    log.appendChild(d); lastSide = null; return;
+  }
+  if (k === "partial" && debug) {
+    const d = document.createElement("div"); d.className = "dbgrow"; d.dataset.seq = row.seq || 0; d.dataset.off = row.off || 0;
+    d.innerHTML = `<span>${(row.ts || "").slice(11, 19)}</span><span class="x">${esc(row.text)}</span><span class="rk"></span>`;
+    log.appendChild(d); lastSide = null; rk(d); return;
+  }
+  if (k === "partial") {
+    partialText.push(row.text || "");
+    const html = esc(partialText.join(" ")) + `<span class="dots"></span>`;
+    if (!partialEl) { partialEl = bubble("me", person(row), html, row.ts, "partial"); partialEl.dataset.t0 = secs(row.ts); }
+    else partialEl.querySelector(".b").innerHTML = html;
+    partialEl.dataset.words = partialText.join(" ").split(/\s+/).filter(Boolean).length;
+    partialEl.dataset.last = secs(row.ts); liveClock();
+    if (isEcho(row)) partialEl.classList.add("echo");
+    return;
+  }
+  if (k === "turn") {
+    const key = (row.text || "").trim() + "|" + Math.round(secs(row.ts) / 5);
+    if (partialEl) { partialEl.remove(); partialEl = null; lastSide = null; } partialText = [];
+    if (seen.has(key)) return; seen.add(key);
+    const echo = isEcho(row);
+    const m = bubble("me", person(row), esc(row.text) + (echo ? `<span class="tag">my own voice, heard back</span>` : ""), row.ts, echo ? "echo" : "");
+    m.dataset.off = row.off || 0; m.dataset.seq = row.seq || 0;
+    const rc = document.createElement("div"); rc.className = "rc"; m.querySelector(".col").appendChild(rc);
+    tick(m);
+    return m;
+  }
+  if (k === "saying") {
+    const m = bubble("them", row.agent || "", esc(row.text) + `<span class="tag speaking">speaking<span class="wave"><i></i><i></i><i></i></span></span>`, row.ts);
+    utts[row.utt] = {el:m, row}; if (row.agent) { speaking.add(row.agent); drawPresence(); }
+    recentSaid.push({text:row.text, t0:secs(row.ts), t1:secs(row.ts) + 60}); if (recentSaid.length > 20) recentSaid.shift();
+    return;
+  }
+  if (k === "said") {
+    if (row.agent) { speaking.delete(row.agent); drawPresence(); }
+    const u = utts[row.utt]; const text = (u && u.row.text) || row.text_played_est || "";
+    const s = recentSaid.find(x => x.text === text); if (s) s.t1 = secs(row.ts);
+    let html = esc(text);
+    if (row.cut) {
+      const played = row.text_played_est || "";
+      html = played && text.startsWith(played) ? esc(played) + `<span class="unsaid">${esc(text.slice(played.length))}</span>` : esc(text);
+      html += `<span class="tag cut">cut</span>`;
+    }
+    if (u) u.el.querySelector(".b").innerHTML = html;
+    else bubble("them", row.agent || "", html, row.ts);
+    return;
+  }
+}
+let receipts = {}, presence = {}, ride = {}; const speaking = new Set();
+let debug = localStorage.getItem("talk-debug") === "1", es = null;
+function rk(d) {   // debug: which agents this partial reached, and how
+  const seq = +d.dataset.seq, off = +d.dataset.off, out = [];
+  // one line per kind, listing the agents ("waiters scanned it: " and that list)
+  const rode = Object.keys(ride).filter(a => ride[a] >= seq).map(a => agent(a).n);
+  const scanned = Object.keys(receipts).filter(a => receipts[a] >= off).map(a => agent(a).n);
+  if (rode.length) out.push(`<span class="ride">rode to: ${rode.join(", ")}</span>`);
+  if (scanned.length) out.push(`<span class="wait">waiters scanned it: ${scanned.join(", ")}</span>`);
+  const el = d.querySelector(".rk"); if (el) el.innerHTML = out.join("");
+}
+function tick(m) {
+  // "shown to", not "heard by" (a count of "heard by" overstates what was
+  // really heard). A waiter reading past the line
+  // only SCANNED it for a name; the seat was shown it when the ride-along
+  // carried it to them. Scans stay in the debug view.
+  if (m.classList.contains("echo")) return;
+  // Both, on the user's next word: who scanned it for a name, and who was
+  // shown it.
+  const seq = +m.dataset.seq, off = +m.dataset.off, rc = m.querySelector(".rc"); if (!rc) return;
+  const shown = seq ? Object.keys(ride).filter(a => ride[a] >= seq) : [];
+  const scanned = off ? Object.keys(receipts).filter(a => receipts[a] >= off) : [];
+  // Dense: one chip per seat,
+  // faint = its waker scanned the line for a name, solid = it was shown the line.
+  const seats = [...new Set([...scanned, ...shown])];
+  rc.innerHTML = seats.map(a => shown.includes(a)
+    ? `<span class="shown" title="shown to ${agent(a).n}">${agent(a).n}</span>`
+    : `<span class="scan" title="scanned by ${agent(a).n}'s waker, not shown">${agent(a).n}</span>`).join("");
+}
+function drawPresence() {
+  const names = [...new Set([...Object.keys(presence), ...speaking])];
+  document.getElementById("presence").innerHTML = names.map(a => {
+    const st = speaking.has(a) ? "speaking" : presence[a] || "away", g = agent(a);
+    return `<span class="pres ${st}"><span class="pa" style="background:${g.c}">${g.n[0]}${face(a)}</span>${g.n} <b style="font-weight:500">${st}</b></span>`; }).join("");
+}
+function liveClock() {   // a long turn shows it is still arriving: "speaking 0:42 · 96 words"
+  if (!partialEl) return;
+  const now = Date.now() / 1000, t0 = +partialEl.dataset.t0, el = partialEl.querySelector(".t");
+  const d = Math.max(0, Math.round(now - t0)), quiet = Math.round(now - +partialEl.dataset.last);
+  if (el) el.textContent = `speaking ${Math.floor(d / 60)}:${String(d % 60).padStart(2, "0")} \u00B7 ${partialEl.dataset.words} words` + (quiet > 4 ? ` \u00B7 quiet ${quiet}s` : "");
+}
+setInterval(liveClock, 1000);
+function status(txt) {
+  document.getElementById("status").textContent = txt || (mic ? `live · listening on ${mic}` : "live");
+}
+
+// chips: show everyone, or one agent's lines (your side always shows)
+document.getElementById("chips").addEventListener("click", e => {
+  const c = e.target.closest(".chip"); if (!c) return;
+  if (c.id === "dbg") { debug = !debug; localStorage.setItem("talk-debug", debug ? "1" : "0"); connect(); return; }
+  filter = c.dataset.a; document.querySelectorAll(".chip").forEach(x => x.classList.toggle("on", x === c));
+  document.querySelectorAll(".msg").forEach(m => m.style.display = filter === "all" || m.dataset.a === filter || m.dataset.a === ME ? "" : "none");
+});
+const jump = document.getElementById("jump");
+jump.onclick = () => { scrollTo(0, document.body.scrollHeight); jump.classList.remove("on"); };
+addEventListener("scroll", () => { if (atBottom()) jump.classList.remove("on"); });
+
+function connect() {
+  if (es) es.close();
+  es = new EventSource(debug ? "events?n=400&debug=1" : "events?n=150");
+  document.getElementById("dbg").classList.toggle("on", debug);
+  es.addEventListener("config", e => {   // settings from `talk serve`: the person's label, a Settings link, the phone button
+    cfg = JSON.parse(e.data) || {}; const set = document.getElementById("set");
+    if (cfg.settings_url) { set.href = cfg.settings_url; set.hidden = false; } else { set.removeAttribute("href"); set.hidden = true; }
+    // The phone button: a top-level link, never framed. The href is
+    // call_url verbatim, checked by `talk serve` at start; Talk appends nothing to it and never fetches it.
+    const call = document.getElementById("call");
+    if (cfg.call_url) { call.href = cfg.call_url; call.hidden = false; } else { call.removeAttribute("href"); call.hidden = true; }
+  });
+  es.addEventListener("backfill", e => {
+    log.innerHTML = ""; lastSide = null; lastTs = 0; partialEl = null; partialText = [];
+    JSON.parse(e.data).forEach(add); scrollTo(0, document.body.scrollHeight);
+    document.getElementById("live").classList.add("on"); status();
+  });
+  es.addEventListener("state", e => { const s = JSON.parse(e.data); receipts = s.receipts || {}; presence = s.presence || {}; ride = s.ride || {};
+    drawPresence(); document.querySelectorAll(".msg.me[data-off]").forEach(tick); document.querySelectorAll(".dbgrow[data-seq]").forEach(rk); });
+  es.onmessage = e => { const was = atBottom(); add(JSON.parse(e.data)); stick(was); };
+  es.onerror = () => {
+    document.getElementById("live").classList.remove("on"); status("reconnecting");
+    // A non-200 (the proxy's 502 while the server is restarting at a handover, or talk's 403
+    // to a browser that is not paired) CLOSES an EventSource for good; the browser only retries
+    // on a dropped 200. So ask "am I paired?" first: a 403 shows the pairing panel and STOPS
+    // (retrying would only be refused again); anything else retries in 3 s, as before.
+    if (es.readyState === EventSource.CLOSED && !retry && !probing) probe();
+  };
+}
+let retry = null, probing = false;
+function probe() {
+  probing = true;
+  fetch(PAIR, {cache: "no-store", credentials: "same-origin"}).then(r => r.status, () => 0).then(st => {
+    probing = false;
+    if (st === 403) return unpaired();
+    retry = setTimeout(() => { retry = null; connect(); }, 3000);
+  });
+}
+
+// -- pairing ----------------------------------------------------------------------------
+// talk pair prints <url>#pair=<token>. A fragment never reaches a server, and the page drops
+// it from the address bar before it sends anything. The token is used once, in the
+// X-Talk-Token header of a POST to "pair" (no body), whose answer sets the HttpOnly cookie
+// that every later request carries. It is never kept: not in localStorage, sessionStorage,
+// a cookie the page writes, or any URL.
+const PAIR = "pair";             // relative, like "events": /talk/pair behind tailscale serve
+const pairing = document.getElementById("pairing"), pairWhy = document.getElementById("pair-why");
+const pairInput = document.getElementById("pair-input");
+const tokenIn = s => { const m = /(?:^|#pair=)([A-Za-z0-9_-]{43,})$/.exec((s || "").trim()); return m ? m[1] : ""; };
+const pairWith = tok => fetch(PAIR, {method: "POST", headers: {"X-Talk-Token": tok}, credentials: "same-origin", cache: "no-store"})
+  .then(r => r.status, () => 0);
+function unpaired(why) {         // show the panel; no retry is scheduled, and the stream stays closed
+  if (es) es.close();
+  document.getElementById("live").classList.remove("on"); status("not paired");
+  pairWhy.textContent = why || ""; pairWhy.hidden = !why; pairing.hidden = false;
+}
+function paired() { pairing.hidden = true; pairWhy.hidden = true; connect(); }
+function tryPair(tok) {          // 204: paired, connect. 403: refused, say so. No answer: connect and let probe() decide
+  return pairWith(tok).then(st => st === 204 ? paired()
+    : st === 403 ? unpaired(location.hostname === "localhost"
+        ? `Talk does not pair at localhost: open http://127.0.0.1:${location.port || 80}${location.pathname} and pair there.`
+        : "That link or token did not pair: it may be old (after talk token --rotate) or mistyped.")
+    : connect());
+}
+document.getElementById("pair-form").addEventListener("submit", e => {
+  e.preventDefault();
+  const tok = tokenIn(pairInput.value); pairInput.value = "";   // the input never keeps it
+  if (tok) tryPair(tok); else unpaired("Paste the whole link that talk pair printed, or its token.");
+});
+// -- end pairing ------------------------------------------------------------------------
+
+if (!redirecting) {
+  const fromLink = tokenIn(location.hash.startsWith("#pair=") ? location.hash : "");
+  if (location.hash.startsWith("#pair=")) history.replaceState(null, "", location.pathname + location.search);
+  if (fromLink) tryPair(fromLink); else connect();
+}
+</script>
+</body>
+</html>

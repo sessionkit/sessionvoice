@@ -1,0 +1,5 @@
+{
+  "_about": "the ears' own state (not their sounds - those are ears-sounds.json). listen: capture on or off. input: 'default' follows macOS's default input, or one input's exact name pins the ears to it. Read every loop by ears-keeper.sh (started with 'default'); set from the Notifications webxdc app. A separate menu configures the ears themselves.",
+  "listen": true,
+  "input": "default"
+}

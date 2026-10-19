@@ -1,0 +1,1 @@
+../../../speakers/make-refs.py

@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The keeper's turn mail (the keeper half of the pager
+     genie): keeper/ears-mail.py follows the heard log and mails EVERY
+     finished turn of the user's, To and From heard+<device>@<host> (the box name is the sender option), with the Ears-* headers
+     sessionmail's pager reads. A session hears a device by
+     subscribing to that address; the pager decides wake or ride.
+     It reads the heard log only (no microphone, so no TCC grant) and runs on the system
+     python: stdlib only, like the rest of keeper/.
+     A TEMPLATE: render it, then install (no machine paths live here):
+       mkdir -p ~/.cache/ears ~/Library/Logs/ears
+       PYTHON=/usr/bin/python3 \
+           bin/render-plist launchd/dev.sessionkit.voice.ears-mail.plist.in > ~/Library/LaunchAgents/dev.sessionkit.voice.ears-mail.plist
+     bin/render-plist fills @HOME@, @EARS_REPO@ (the checkout it runs from) and @RULES@
+     (@HOME@/.sessionkit/voice/settings/wake.json) itself; RULES=... in its environment overrides.
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.sessionkit.voice.ears-mail.plist
+     @RULES@ is the wake rules (seats, names, openers): the USER file,
+     $HOME/.sessionkit/voice/settings/wake.json (ears-mail's default), written by
+     `ears wake add SEAT` (`ears wake list` shows who it wakes). Never the repo's keeper/defaults/wake.json: it
+     ships NO seats, so no turn would be a call; wake.example.json beside it is a
+     filled-in file to copy. A missing user file runs too: every turn mailed, nobody called.
+     First start: no state file, so it begins at the END of today's log (no replay of the
+     day). After that the state file keeps its place across restarts: no gaps, no replays.
+     The fire log: one JSON line per mail sent. Its stderr says each skip (a call, a
+     BlackHole input, a film holding a reply).
+     Remove:  launchctl bootout gui/$(id -u)/dev.sessionkit.voice.ears-mail
+     The SAME label `ears services install` (only mail) loads its own job under, at the
+     same path. Install tells the two apart by CONTENT: the plist it writes carries
+     SESSIONKIT_INSTALLED_BY in EnvironmentVariables, and a render of this template does
+     not. So install leaves a render here alone and skips its own (`ears services
+     status` names it). The reverse is yours: rendering this over the plist install
+     wrote REPLACES install's job (bin/render-plist writes only to stdout or -o; the
+     redirect is what overwrites).
+     Was dev.sessionvoice.ears-mail before the rename: install treats a render under that
+     name as hand-made too (it runs, ours is skipped); boot it out and re-render it here.
+     Older still, dev.voicemode.ears-mail: a render under that label is stale
+     (its PATH predates this one): boot it out first and move its plist aside
+     (launchctl bootout gui/$(id -u)/dev.voicemode.ears-mail, then
+     mv ~/Library/LaunchAgents/dev.voicemode.ears-mail.plist{,.replaced}), or two would run.
+     `ears services install` (only mail, or a bare install) does exactly that, then loads
+     its own mailer in place of this one.
+     Live code: @EARS_REPO@ is a DETACHED checkout at the live sha; develop in worktrees.
+     Deploy = check out SHA there, detached, then launchctl kickstart -k.
+     Optional: KODI_RPC=http://HOST:8080/jsonrpc holds a reply while a film plays there.
+     Say again: an again verdict runs the mouth CLI given as the mouth option, here
+     the checkout's venv's -m mouth (`make sync` makes it), not PYTHON: the system python has
+     no mouth. The option is split as a shell would, so a checkout path with a space needs
+     quoting there. If the mouth fails or is missing, the turn wakes the seat instead.
+     The box is heard (ears+<device> would fall into the ears project's
+     own box). Load it ONLY once sessionmail's KEEPER says heard on origin:
+     its reader trusts only the keeper's From, so a turn from any other name grades untrusted.
+     Each turn goes by sessionmail's `message send`, never postfix's binary, so its PATH
+     holds @HOME@/.local/bin (where uv links `message`), then Homebrew's two prefixes, as the
+     keeper's and talk's do; ears-mail also looks in uv's tool dir under HOME when PATH
+     misses (a launchd PATH holds neither). EARS_MAIL_MESSAGE names another, looked up on
+     PATH alone.
+     Under SESSIONMAIL_SENDMAIL=drop (a Mac with no postfix) the From is not qualified yet, so
+     the reader takes a heard turn as plain mail until sessionmail qualifies From. launchd
+     carries none of a shell's environment, and the carrier is not copied here: with no
+     postfix this delivers nothing until sessionmail reads the carrier from its settings.
+     NEVER load this beside a seats-mode ears-mail for the same seats: each call twice. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.sessionkit.voice.ears-mail</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@PYTHON@</string>
+    <string>@EARS_REPO@/keeper/ears-mail.py</string>
+    <string>--to</string><string>device</string>
+    <string>--sender</string><string>heard</string>
+    <string>--rules</string><string>@RULES@</string>
+    <string>--state</string><string>@HOME@/.cache/ears/ears-mail.state.json</string>
+    <string>--fire-log</string><string>@HOME@/Library/Logs/ears/ears-mail.fire.jsonl</string>
+    <string>--mouth</string><string>@EARS_REPO@/.venv/bin/python -m mouth</string>
+  </array>
+  <key>WorkingDirectory</key><string>@HOME@</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>@HOME@</string>
+    <key>PATH</key><string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>@HOME@/Library/Logs/ears/ears-mail.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/ears/ears-mail.log</string>
+</dict>
+</plist>

@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ears-sounds.schema.json",
+  "title": "Sounds",
+  "description": "Which ears events make a sound, and where they play: ~/.sessionkit/voice/settings/ears-sounds.json. Reread live by ears-sounds (ears keeper/ears-sounds.py); no restart. Drawn by Settings; `ears services install` writes this copy as .ears-sounds.schema.json (a dot schema beside each file).",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "This schema's name, when the file names it.",
+      "type": "string"
+    },
+    "allow": {
+      "title": "Allow",
+      "description": "Sounds from the ears. Off: none play, whatever each one below says.",
+      "type": "boolean",
+      "default": true
+    },
+    "sounds": {
+      "title": "Sounds",
+      "description": "One per thing the ears do.",
+      "type": "object",
+      "properties": {
+        "turn": {
+          "title": "Turn ends",
+          "description": "A tick when you finish speaking.",
+          "type": "object",
+          "properties": {
+            "on": {
+              "title": "On",
+              "type": "boolean"
+            },
+            "freq": {
+              "title": "Pitch (Hz)",
+              "type": "integer",
+              "minimum": 20,
+              "maximum": 20000
+            },
+            "ms": {
+              "title": "Length (ms)",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000
+            },
+            "volume": {
+              "title": "Volume",
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "on"
+          ],
+          "additionalProperties": false
+        },
+        "partial": {
+          "title": "While you talk",
+          "description": "A soft blip about every 2 s.",
+          "type": "object",
+          "properties": {
+            "on": {
+              "title": "On",
+              "type": "boolean"
+            },
+            "freq": {
+              "title": "Pitch (Hz)",
+              "type": "integer",
+              "minimum": 20,
+              "maximum": 20000
+            },
+            "ms": {
+              "title": "Length (ms)",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000
+            },
+            "volume": {
+              "title": "Volume",
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "on"
+          ],
+          "additionalProperties": false
+        },
+        "event:device-change": {
+          "title": "Mic changed",
+          "description": "When the ears move to another mic.",
+          "type": "object",
+          "properties": {
+            "on": {
+              "title": "On",
+              "type": "boolean"
+            },
+            "freq": {
+              "title": "Pitch (Hz)",
+              "type": "integer",
+              "minimum": 20,
+              "maximum": 20000
+            },
+            "ms": {
+              "title": "Length (ms)",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000
+            },
+            "volume": {
+              "title": "Volume",
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "on"
+          ],
+          "additionalProperties": false
+        },
+        "event:turn-discarded": {
+          "title": "Heard, no words",
+          "description": "A turn the transcriber found empty.",
+          "type": "object",
+          "properties": {
+            "on": {
+              "title": "On",
+              "type": "boolean"
+            },
+            "freq": {
+              "title": "Pitch (Hz)",
+              "type": "integer",
+              "minimum": 20,
+              "maximum": 20000
+            },
+            "ms": {
+              "title": "Length (ms)",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000
+            },
+            "volume": {
+              "title": "Volume",
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "on"
+          ],
+          "additionalProperties": false
+        },
+        "event:listen-stopped": {
+          "title": "Ears stopped",
+          "description": "When the capture stops.",
+          "type": "object",
+          "properties": {
+            "on": {
+              "title": "On",
+              "type": "boolean"
+            },
+            "freq": {
+              "title": "Pitch (Hz)",
+              "type": "integer",
+              "minimum": 20,
+              "maximum": 20000
+            },
+            "ms": {
+              "title": "Length (ms)",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2000
+            },
+            "volume": {
+              "title": "Volume",
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "on"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": {
+        "title": "Other",
+        "description": "A sound for an event not listed above.",
+        "type": "object",
+        "properties": {
+          "on": {
+            "title": "On",
+            "type": "boolean"
+          },
+          "freq": {
+            "title": "Pitch (Hz)",
+            "type": "integer",
+            "minimum": 20,
+            "maximum": 20000
+          },
+          "ms": {
+            "title": "Length (ms)",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000
+          },
+          "volume": {
+            "title": "Volume",
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": [
+          "on"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "to": {
+      "title": "Play on",
+      "description": "Outputs in order of preference; the first one present wins. Empty: the Mac's default output.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": [],
+      "x-widget": "audio-output"
+    },
+    "pair": {
+      "title": "Follow the mic",
+      "description": "The speaker that goes with the mic in use.",
+      "type": "boolean",
+      "default": false
+    }
+  },
+  "patternProperties": {
+    "^_": {
+      "description": "A note for people (why a value is what it is, who set it); never read by the tool."
+    }
+  },
+  "additionalProperties": false
+}

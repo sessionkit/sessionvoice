@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# speak "TEXT" - the agent says TEXT through the mouth, on the output mouth.json
+# names ('default' = macOS's default output right now), in its voice, after
+# 3 s of quiet on the mic. Replaces the boot letter's long quiet-for && mouth
+# say line, so the phone's Mouth menu decides the device.
+#
+set -euo pipefail
+D="$(cd "$(dirname "$0")" && pwd)"
+[ $# -ge 1 ] || { echo "usage: speak TEXT" >&2; exit 1; }
+# tab-separated: device names have spaces ("MacBook Pro Speakers" read as
+# "MacBook" + voice "Pro Speakers" the first time one was picked)
+IFS=$'\t' read -r OUT VOICE < <(python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));print(d.get("output","default") or "default", d.get("voice") or "af_sky", sep="\t")' "$D/mouth.json")
+if [ "$OUT" = default ]; then OUT="$(SwitchAudioSource -c -t output)"; fi
+# the pinned name must still exist, else fall back to the default and say so
+if ! SwitchAudioSource -a -t output | grep -qxF -- "$OUT"; then
+  echo "speak: output '$OUT' not present; using the default" >&2
+  OUT="$(SwitchAudioSource -c -t output)"
+fi
+"$D/quiet-for" 3
+exec "$D/mouth" say --device "$OUT" --voice "$VOICE" "$*"

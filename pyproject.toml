@@ -1,0 +1,95 @@
+[project]
+name = "sessionvoice"
+version = "0.2.0"
+description = "One listening engine for coding agents and the Delta bot: Apple / Nemotron / whisper -> one event stream -> VAD -> turns"
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+# Capped at what installs: mlx 0.32.2 and onnxruntime 1.30.0 ship no cp315
+# wheel and no sdist. Raise the cap when they do; tests/test_lock_wheels.py checks every
+# Python the range admits, and fails an uncapped range that cannot install on 3.15.
+requires-python = ">=3.10,<3.15"
+authors = [{ name = "Mike Bailey", email = "mike@sessionkit.ai" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+]
+# pyyaml: a voice.md's front matter (transcript, a cast's default), src/mouth/resolver.py
+# httpx: the mouth's TTS backends POST to /audio/speech, src/mouth/backends.py OpenAISpeech.stream;
+# base, so a bare wheel can speak
+# sounddevice: the mouth's player opens the output device, src/mouth/output.py _sd; base, so a
+# bare wheel can PLAY what it speaks. Its macOS wheel bundles PortAudio.
+# Everything an extra brings is imported through ears.extras.need, which names the extra.
+dependencies = ["numpy", "pyyaml", "httpx", "sounddevice"]
+
+[project.urls]
+Homepage = "https://github.com/sessionkit/sessionvoice"
+Repository = "https://github.com/sessionkit/sessionvoice"
+
+[project.optional-dependencies]
+# the capture: mic or call leg -> VAD -> STT (any OpenAI-compatible URL) -> the heard log.
+# httpx and sounddevice are base now; they stay listed here and in `all` so the extras read
+# whole, as before.
+capture = ["httpx", "scipy", "sounddevice", "onnxruntime", "webrtcvad-wheels"]
+silero = ["onnxruntime"]
+nemotron = ["mlx-audio>=0.5.6"]
+# the Smart Turn gate's ONNX backend, src/ears/smartturn.py (the mlx one rides on nemotron)
+smart-turn = ["onnxruntime", "transformers"]
+test = ["pytest", "httpx"]
+all = ["httpx", "scipy", "sounddevice", "onnxruntime", "webrtcvad-wheels", "mlx-audio>=0.5.6", "transformers"]
+
+[project.scripts]
+ears = "ears.cli:main"
+ears-serve = "ears.serve:main"
+mouth = "mouth.__main__:main"
+talk = "talk.cli:main"
+
+[dependency-groups]
+# what `make test` runs on: `uv sync` installs this group by default. The capture
+# extra's libraries the tests import. sounddevice is a base dependency, so it
+# is installed too; tests/audio_fence.py refuses the real module in every test. httpx is
+# driven through httpx.MockTransport: no network. setuptools: tests/test_wheel_build.py builds
+# the wheel with the build backend installed here, no build isolation, so offline;
+# the same floor as [build-system].
+dev = ["pytest", "httpx", "scipy", "webrtcvad-wheels", "setuptools>=77"]
+
+[build-system]
+requires = ["setuptools>=77"]  # 77: PEP 639 SPDX `license` string
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+# What the keeper agent runs, shipped so `ears services install` from a wheel points it at a
+# real script: the keeper, its call ears (a child) and the input watcher it
+# builds, and the turn mailer the mail agent runs (stdlib only, nothing beside it).
+# src/ears/_keeper/ holds symlinks into keeper/; the build copies the files.
+# The speaker side-car: run.sh, the side-car, the enrol's cluster-room.py and
+# make-refs.py, and the service venv's requirements.lock; src/ears/_speakers/ links into
+# speakers/ the same way. tests/test_keeper_in_wheel.py pins what the glob matches.
+# The speech server's venv lock: src/ears/_speech/ links into speech/ the same way.
+# The settings schemas install copies beside each settings file: src/ears/_settings/
+# links into settings/ the same way. swift/ does NOT ship: `ears install --apple` builds the
+# Apple helper from a source checkout only, and refuses without one.
+ears = ["_keeper/ears-keeper.sh", "_keeper/call-ears", "_keeper/input-watch.swift", "_keeper/ears-mail.py",
+        "_speakers/*", "_speech/*", "_settings/*.schema.json"]
+# talk serves its page and manifest from beside server.py
+talk = ["index.html", "manifest.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# the repo root on sys.path, so `from tests.listen_helpers import ...` resolves
+pythonpath = ["."]
+
+[tool.uv]
+# The lock must hold a wheel for macOS arm64 (the one platform this package
+# declares, `Operating System :: MacOS`) on every Python in requires-python.
+# onnxruntime 1.24.1-1.24.3 declare Requires-Python >=3.10 but ship no cp310 wheel (and no
+# sdist), so uv's universal resolve took 1.24.3 for py<3.11 and `uv sync` on 3.10 could not
+# install the capture, silero or all extras. With this line uv skips any version that has
+# nothing installable here (1.23.2 for 3.10), or fails the lock loudly. The extras' pins are
+# left alone: pip already filters by wheel, only uv's lock was wrong.
+# tests/test_lock_wheels.py checks the lock the same way, without network.
+required-environments = ["sys_platform == 'darwin' and platform_machine == 'arm64'"]

@@ -1,0 +1,470 @@
+#!/usr/bin/env python3
+"""heard-first - block until the user STARTS a turn; print that first partial; exit.
+
+The trigger for stacked openers (the
+"fast voice"): heard_wait wakes an agent after a turn has ENDED (+8 s quiet),
+which is too late to have an opener ready. This wakes it on the first mic
+partial with words, newer than the moment it was started, so the agent can
+queue `mouth say --hold turn-end ...` while the user is still talking.
+
+Run with Bash run_in_background; re-arm every time it returns. Prints one JSON
+line (the partial record, plus "waited_s"). Exit 0 on a partial, 124 on
+--timeout. Re-lists the heard log on every poll, so midnight's new file is
+read (the trap that deafened a name-wake at midnight): a path picked once
+goes deaf when the day's file changes.
+"""
+import argparse, glob, json, os, re, sys, time
+from datetime import datetime
+
+ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+ap.add_argument("--timeout", type=float, default=0, help="give up after S seconds (0 = never)")
+ap.add_argument("--linger", type=float, default=0, metavar="S",
+                help="give up after S seconds in which the user said nothing (0 = off): the clock restarts "
+                     "on every line of the user's that passes the echo and speaker gates, so a turn longer "
+                     "than S still finishes and fires (a turn can run for more than a "
+                     "minute)")
+ap.add_argument("--poll", type=float, default=0.1)
+ap.add_argument("--source", default="mic", help="whose words: mic, call, or a list (mic,call); a Delta call's words are source call")
+ap.add_argument("--kind", default="partial", choices=["partial", "turn"],
+                help="partial: the user has started (default); turn: the user's turn has ended")
+ap.add_argument("--echo", action="store_true",
+                help="also wake on records that echo the mouth (default: skip them)")
+ap.add_argument("--rule", action="append", default=[], metavar="RULE",
+                help="repeatable; wake on the FIRST line any rule matches: "
+                     "turn | partial | first (the user's first partial since their last turn) | "
+                     "cut:AGENT (a mouth line of AGENT's was cut) | reply:AGENT (AGENT spoke "
+                     "last; wake on the user's reply by that line's --interest: high = their partials "
+                     "reach HIGH_WORDS, normal/low = their turn, zero = never); add :REGEX to "
+                     "turn/partial/first to match the text (e.g. 'partial:\\bpip\\b')")
+ap.add_argument("--state", help="a file that keeps this waiter's place: a re-arm first "
+                                "catches up on what landed while it was down (no gaps)")
+ap.add_argument("--match", help="only a record whose text matches this regex (case-insensitive), "
+                                 "e.g. '\\bada\\b' to wake only when the user names you")
+ap.add_argument("--speakers", metavar="NAMES",
+                help="only lines spoken by one of these people count (alice,bob): each mic line "
+                     "waits for its name from the speaker side-car (speakers_DAY.jsonl, by seq). "
+                     "Another machine's mouth, your own voice, 'other' and 'silent' never wake you. "
+                     "'!NAME' excludes instead: '!ada,!sam' = anyone but those two ('other' counts)")
+ap.add_argument("--speaker-wait", type=float, default=1.5, metavar="S",
+                help="with --speakers: how long a line waits for its name; none in time = the line "
+                     "counts, marked speaker_gate no-name (a side-car that is down never deafens you)")
+ap.add_argument("--reply-window", type=float, default=120, metavar="S",
+                help="reply:AGENT counts the user's words as a reply only when they begin within S "
+                     "seconds of that line; an older line is let go (0 = no limit). A seat once "
+                     "woke on 'I'm back', 21 minutes after its own line")
+a = ap.parse_args()
+sources = set(x.strip() for x in a.source.split(",") if x.strip())
+pat = re.compile(a.match, re.I) if a.match else None
+rules = []  # (name, kind, regex|None, agent|None)
+for r in a.rule:
+    kind, _, rest = r.partition(":")
+    if kind == "cut":
+        rules.append((r, "cut", None, rest or None))
+    elif kind == "reply":
+        rules.append((r, "reply", None, rest or None))
+    elif kind in ("turn", "partial", "first"):
+        rules.append((r, kind, re.compile(rest, re.I) if rest else None, None))
+    else:
+        ap.error(f"unknown rule {r!r}")
+if not rules:  # the old flags are one rule
+    rules.append((a.kind + (":" + a.match if a.match else ""), a.kind, pat, None))
+state = {}
+if a.state and os.path.exists(a.state):
+    try:
+        state = json.load(open(a.state))
+    except ValueError:
+        state = {}
+in_turn = state.get("in_turn", False)  # a partial seen since the user's last turn
+HIGH_WORDS = 8  # this many words of the user's partials wake a "high" interest agent
+last_line = state.get("last_line")     # the newest mouth line: who spoke last, how keen
+words_since = state.get("words_since", 0)
+
+
+def save():
+    if a.state:
+        tmp = a.state + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"offsets": offsets, "in_turn": in_turn, "last_line": last_line,
+                       "words_since": words_since}, f)
+        os.replace(tmp, a.state)
+
+
+def sessionvoice_home():
+    """sessionvoice's home: a copy of ears.home.sessionvoice_home (tests/test_home.py holds
+    it). $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it
+    holds the heard log, else ~/.sessionvoice."""
+    import glob, os
+    for name in ("SESSIONVOICE_HOME", "VOICEMODE_BASE_DIR"):
+        if os.environ.get(name):
+            return os.path.expanduser(os.path.expandvars(os.environ[name]))
+    for d in ("~/.sessionvoice", "~/.voicemode"):
+        c = os.path.expanduser(d + "/logs/conversations")
+        if os.path.exists(c + "/heard.lock") or glob.glob(glob.escape(c) + "/heard_*.jsonl"):
+            return os.path.expanduser(d)
+    return os.path.expanduser("~/.sessionvoice")
+
+
+def fire(rec, rule):
+    global in_turn
+    rec["rule"] = rule
+    rec["waited_s"] = round(time.time() - start, 2)
+    save()
+    print(json.dumps(rec), flush=True)
+    sys.exit(0)
+base = sessionvoice_home()
+logdir = os.path.join(base, "logs", "conversations")
+start = time.time()
+heard_at = 0.0  # when the user's last line passed the gates (--linger)
+offsets = {}  # path -> bytes already read
+
+
+def files():
+    return sorted(glob.glob(os.path.join(logdir, "heard_????-??-??.jsonl")))[-2:]
+
+
+# -- the mouth heard through the mic is not the user (AirPods out, laptop
+# speakers, and the ears write a mouth line down as the user's partials + turn) --
+# A mouth line is known from its saying/said records; a record is echo when it
+# lands while the line plays (or up to TAIL_S after, for the late turn record)
+# and >= 70% of it is ONE run of the line's words. Same rule as the mouth's own
+# barge guard (src/mouth/hold.py is_echo) - copied, because
+# this runs on the system python; change both or neither.
+TAIL_S, ECHO_RUN = 3.0, 0.7
+lines_ = {}  # utt -> [start_t, end_t or None, text]
+
+
+def _words(text):
+    return [w for w in "".join(c.lower() if c.isalnum() else " " for c in text).split() if w]
+
+
+#: The bag rule: whisper retypes a
+#: few words of a long line coming back, which breaks the run (62% for one
+#: 56-word line) though 96% of its words were the line's. So a record is
+#: ALSO echo when ECHO_BAG of its CONTENT words (not STOP_WORDS) are the line's,
+#: one edit allowed per word - only with BAG_MIN content words, so a short reply
+#: is judged by the run alone. Same function as hold.py is_echo @ ebffb429.
+ECHO_BAG, BAG_MIN = 0.85, 4
+STOP_WORDS = frozenset("""
+a about above after again all am an and any are as at be been being below both
+but by can could did do does doing down during each few for from further had
+has have having he her here hers him his how i if in into is it its itself just
+let me more most my myself no nor not now of off on once only or other our out
+over own same she should so some such than that the their them then there these
+they this those through to too under until up very was we were what when where
+which while who whom why will with would you your yours yourself d ll m re s t ve
+yeah yes yep yup ok okay mm mmm mhm hmm uh um ah oh huh right sure cool nice great
+fantastic brilliant awesome lovely good wow thanks thank really totally exactly
+indeed got see well like
+""".split())
+
+
+def _echo_words(text):
+    return _words(str(text).replace("-", ""))
+
+
+def _edit1(a, b):
+    if len(a) > len(b):
+        a, b = b, a
+    if len(b) - len(a) > 1:
+        return False
+    i = 0
+    while i < len(a) and a[i] == b[i]:
+        i += 1
+    return a[i + 1:] == b[i + 1:] if len(a) == len(b) else a[i:] == b[i + 1:]
+
+
+def _in_line(w, vocab):
+    if w in vocab:
+        return True
+    return len(w) >= 4 and any(abs(len(v) - len(w)) <= 1 and _edit1(w, v) for v in vocab)
+
+
+def is_echo(heard, line):
+    p, l = _echo_words(heard), _echo_words(line)
+    if not p or not l:
+        return False
+    best = 0
+    for i in range(len(l)):
+        for j in range(len(p)):
+            k = 0
+            while i + k < len(l) and j + k < len(p) and l[i + k] == p[j + k]:
+                k += 1
+            best = max(best, k)
+    if len(p) == 1:
+        return best == 1
+    if best >= 2 and best / len(p) >= ECHO_RUN:
+        return True
+    content = [w for w in p if w not in STOP_WORDS]
+    if len(content) < BAG_MIN:
+        return False
+    vocab = set(l)
+    return sum(1 for w in content if _in_line(w, vocab)) / len(content) >= ECHO_BAG
+
+
+def _t(rec):
+    try:
+        return datetime.fromisoformat(rec["ts"]).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+# -- who spoke it: the speaker side-car's name for each heard line. A seat
+# can wake on "hey <seat>" from another machine's speakers: its echo guard
+# knows only ITS mouth's lines, so another machine's mouth reads as a person. A name
+# lands ~0.5 s after its line; a "mixed" line counts by its leading voice. --
+allowed = set(x.strip() for x in (a.speakers or "").split(",") if x.strip())
+# '!NAME' entries exclude (once a seat's own mouth quoted "hey <seat>" and woke it;
+# the echo guard missed it because whisper mangled the words). Only exclusions =
+# anyone but them; a mix = the named people, minus the excluded.
+excluded = {x[1:] for x in allowed if x.startswith("!")}
+allowed -= {"!" + x for x in excluded}
+
+
+def counts(name):
+    if not name or name == "silent" or name in excluded:
+        return False
+    return name in allowed if allowed else True
+spk, spk_off = {}, {}  # (day, seq) -> the side-car's record; path -> bytes read
+
+
+def spk_poll(day):
+    p = os.path.join(logdir, f"speakers_{day}.jsonl")
+    try:
+        size = os.path.getsize(p)
+        if p not in spk_off:
+            spk_off[p] = max(0, size - 65536)  # only recent names matter
+        with open(p, "rb") as f:
+            f.seek(spk_off[p])
+            chunk = f.read()
+    except OSError:
+        return
+    whole = chunk[: chunk.rfind(b"\n") + 1]
+    spk_off[p] += len(whole)
+    for raw in whole.split(b"\n")[:-1]:
+        try:
+            r = json.loads(raw)
+        except ValueError:
+            continue  # includes a line torn by the first seek
+        if r.get("seq") is not None:
+            spk[(day, r["seq"])] = r
+    if len(spk) > 4000:
+        for k in sorted(spk, key=lambda k: k[1])[:2000]:
+            del spk[k]
+
+
+def speaker_ok(rec):
+    """(counts, name) for a mic line under --speakers."""
+    day, seq = str(rec.get("ts", ""))[:10], rec.get("seq")
+    deadline = time.time() + a.speaker_wait
+    while (day, seq) not in spk:
+        spk_poll(day)
+        if (day, seq) in spk:
+            break
+        if time.time() >= deadline:
+            rec["speaker_gate"] = "no-name"
+            return True, None
+        time.sleep(0.05)
+    r = spk[(day, seq)]
+    who = r.get("speaker")
+    if who == "mixed":
+        fr = r.get("fracs") or {}
+        lead = max(fr, key=fr.get) if fr else None
+        return counts(lead), (lead + "?") if lead else "mixed"
+    return counts(who), who
+
+
+def _start(rec):
+    """When the user's words began: a turn's (or partial's) ts is when it ENDED; t0..t1
+    is its span on the keeper's clock. A turn already in flight when a line is
+    queued is not a reply to it (else the user's answer to one agent wakes another,
+    because it ended 2.6 s after the other's line was queued)."""
+    t = _t(rec)
+    try:
+        span = float(rec["t1"]) - float(rec["t0"])
+    except (KeyError, TypeError, ValueError):
+        return t
+    return t - span if t is not None and span > 0 else t
+
+
+# who the user might open a line to: every agent heard speaking, and every seat with ears
+agents_ = {os.path.basename(os.path.dirname(p)).lower() for p in
+           glob.glob(os.path.expanduser("~/.session/agent/home/*/heard.state"))}
+OPENER = r"\b(?:hey|hay|hi|hello)[,.]? +"
+
+
+def addressed(text):
+    """The agents the user opens this line to ("Hey Ada, ..."), lowercased: a line opened to
+    someone else is not a reply to whoever spoke last."""
+    return {n for n in agents_ if re.search(OPENER + re.escape(n) + r"\b", text, re.I)}
+
+
+def note_mouth(rec):
+    global last_line, words_since
+    k = rec.get("kind")
+    if k in ("saying", "said") and rec.get("agent"):
+        agents_.add(str(rec["agent"]).lower())
+    if k == "saying" and rec.get("utt"):
+        lines_[rec["utt"]] = [_t(rec), None, str(rec.get("text") or "")]
+        last_line = {"agent": rec.get("agent"), "interest": rec.get("interest") or "normal",
+                     "t": _t(rec), "utt": rec["utt"]}
+        words_since = 0
+    elif k == "said" and rec.get("utt") in lines_:
+        lines_[rec["utt"]][1] = _t(rec)
+
+
+def _near_mouth(rec):
+    """The mouth lines this record could echo: it ends after the line began, and it BEGAN
+    before the line's tail ran out. By its start, not its ts: a turn row lands seconds after
+    its words (silence detection, redecode) - one line ended at +5.4 s, its echo's
+    turn row was stamped +9.6 s but began at -0.1 s, and a ts check let it through."""
+    t = _t(rec)
+    if t is None:
+        return []
+    s = _start(rec) or t
+    return [(utt, line) for utt, (start, end, line) in lines_.items()
+            if start is not None and t >= start - 0.5 and (end is None or s <= end + TAIL_S)]
+
+
+def echoes(rec):
+    text = str(rec.get("text") or "")
+    return any(is_echo(text, line) for _, line in _near_mouth(rec))
+
+
+def sidecar_echo(rec):
+    """The speaker side-car matched this line to one of this machine's mouth lines (its row's
+    mouth_utt: a voice not the user's, over the line, with the line's words). Asked only for a line
+    near a mouth line that the text rule let through - "30%" for "thirty percent", "freshman"
+    for "fresh me", whisper's stray "Thank you." (one line, 77% of its words, under
+    the 85% the rule needs). Waits up to --speaker-wait for the row; none = not echo."""
+    near = {utt for utt, _ in _near_mouth(rec)}
+    if not near:
+        return False
+    day, seq = str(rec.get("ts", ""))[:10], rec.get("seq")
+    if seq is None:
+        return False
+    deadline = time.time() + a.speaker_wait
+    while (day, seq) not in spk:
+        spk_poll(day)
+        if (day, seq) in spk:
+            break
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.05)
+    return spk[(day, seq)].get("mouth_utt") in near
+
+
+saved = state.get("offsets", {})
+for p in files():  # start at the end: only what is heard from now on counts,
+    try:           # but learn the mouth lines already playing (the last 64 KB)
+        size = os.path.getsize(p)
+        with open(p, "rb") as f:
+            f.seek(max(0, size - 65536))
+            chunk = f.read().split(b"\n")
+            # the first piece is a torn line only when we seeked into the file
+            for raw in chunk[(1 if size > 65536 else 0):-1]:
+                try:
+                    note_mouth(json.loads(raw))
+                except ValueError:
+                    pass
+        offsets[p] = saved[p] if (p in saved and saved[p] <= size) else size
+    except OSError:
+        pass
+if "last_line" in state:  # the tail scan re-learns the newest line; whether it was already
+    last_line = state["last_line"]    # answered is the state's to say (else a re-arm
+    words_since = state.get("words_since", 0)  # replied twice to one line)
+
+while True:
+    for p in files():
+        try:
+            with open(p, "rb") as f:
+                f.seek(offsets.get(p, 0))
+                chunk = f.read()
+        except OSError:
+            continue
+        whole = chunk[: chunk.rfind(b"\n") + 1]  # a line in flight is left for next time
+        base = offsets.get(p, 0)
+        for raw in whole.split(b"\n")[:-1]:
+            base += len(raw) + 1
+            offsets[p] = base  # line by line: a fire keeps the place right after its line
+            try:
+                rec = json.loads(raw)
+            except ValueError:
+                continue
+            note_mouth(rec)
+            text = str(rec.get("text") or "")
+            kind = rec.get("kind")
+            mic = rec.get("source", "mic") in sources
+            if kind in ("partial", "turn") and mic and not a.echo and echoes(rec):
+                continue
+            if kind in ("partial", "turn") and mic and not a.echo and text.strip() and sidecar_echo(rec):
+                continue  # the side-car heard this machine's mouth in it
+            if (allowed or excluded) and kind in ("partial", "turn") and mic and text.strip():
+                ok, rec["speaker"] = speaker_ok(rec)
+                if not ok:
+                    continue  # not a person this waiter listens to: not the user's turn, not a wake
+            if kind in ("partial", "turn") and mic and text.strip():
+                heard_at = time.time()  # the user is speaking: --linger starts over
+            if kind == "said" and rec.get("cut"):
+                for name, rk, _, agent in rules:
+                    if rk == "cut" and (agent is None or rec.get("agent") == agent):
+                        fire(rec, name)
+                continue
+            if not mic or kind not in ("partial", "turn") or not text.strip():
+                continue
+            first = kind == "partial" and not in_turn
+            if kind == "partial":
+                in_turn = True
+                words_since += len(_words(text))
+            if last_line and a.reply_window > 0 and last_line.get("t") is not None:
+                # from when the line ENDED (its said record), so a 40 s read-out keeps
+                # its whole window; with no said record
+                # (still playing, or never seen) it counts from its start, so a lost
+                # said record can't bring back the no-limit wake
+                known = lines_.get(last_line.get("utt"))
+                ended = (known[1] if known else None) or last_line["t"]
+                if (_start(rec) or 0) - ended > a.reply_window:
+                    last_line = None  # too long ago to be answered (--reply-window)
+            if last_line and (_start(rec) or 0) > (last_line.get("t") or 0):
+                to = addressed(text)
+                if to and str(last_line.get("agent") or "").lower() not in to:
+                    last_line = None  # the user turned to someone else: no reply to this line
+            if last_line and (_start(rec) or 0) > (last_line.get("t") or 0):
+                for name, rk, _, agent in rules:
+                    if rk != "reply" or (agent and last_line.get("agent") != agent):
+                        continue
+                    level = last_line.get("interest") or "normal"
+                    if level == "zero":
+                        continue
+                    if (kind == "turn") or (level == "high" and words_since >= HIGH_WORDS):
+                        if kind == "turn":
+                            in_turn = False
+                        rec["replying_to"] = last_line
+                        # one wake per line spoken - but a turn begun while the line still
+                        # played wakes WITHOUT spending it, so the user's answer after it still lands
+                        # (once a turn opened to the seat by name began 2 s into its
+                        # question, and the answer 66 s later woke nothing)
+                        known = lines_.get(last_line.get("utt"))
+                        over = (kind == "turn" and known is not None
+                                and (known[1] is None or (_start(rec) or 0) < known[1]))
+                        if not over:
+                            last_line = None
+                        fire(rec, name)
+            for name, rk, rx, _ in rules:
+                if rx is not None and not rx.search(text):
+                    continue
+                if rk == kind or (rk == "first" and first):
+                    if kind == "turn":
+                        in_turn = False
+                    fire(rec, name)
+            if kind == "turn":
+                in_turn = False
+        save()
+    if a.timeout and time.time() - start > a.timeout:
+        print(json.dumps({"timeout": True, "waited_s": round(time.time() - start, 2)}))
+        sys.exit(124)
+    if a.linger and time.time() - max(start, heard_at) > a.linger:
+        save()
+        print(json.dumps({"timeout": True, "linger": True, "waited_s": round(time.time() - start, 2),
+                          "quiet_s": round(time.time() - max(start, heard_at), 2)}))
+        sys.exit(124)
+    time.sleep(a.poll)

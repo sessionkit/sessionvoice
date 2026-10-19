@@ -1,0 +1,38 @@
+{
+  "_about": "ears-sounds settings: which ears events make a sound, and how. Reread live on every change; no restart. Per-service notification settings. 'to' is a preference list of outputs (first present wins), else the default output.",
+  "allow": true,
+  "to": [],
+  "pair": false,
+  "sounds": {
+    "turn": {
+      "on": true,
+      "freq": 1320,
+      "ms": 45,
+      "volume": 0.15
+    },
+    "partial": {
+      "on": true,
+      "freq": 2400,
+      "ms": 12,
+      "volume": 0.06
+    },
+    "event:device-change": {
+      "on": false,
+      "freq": 880,
+      "ms": 90,
+      "volume": 0.15
+    },
+    "event:turn-discarded": {
+      "on": false,
+      "freq": 440,
+      "ms": 60,
+      "volume": 0.09
+    },
+    "event:listen-stopped": {
+      "on": false,
+      "freq": 330,
+      "ms": 200,
+      "volume": 0.15
+    }
+  }
+}

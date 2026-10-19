@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# ears-count - how many heard-first waiters are up for a seat. Run before arming.
+#   ears-count <seat>     prints the count; lists pids and rules on stderr
+set -euo pipefail
+seat="${1:?usage: ears-count <seat>}"
+# The same home ears-arm uses: EARS_HOME, a session-fleet seat home, ~/.<seat>, ~/.ears.
+if [ -n "${EARS_HOME:-}" ]; then home="$EARS_HOME"; else
+  home="$HOME/.session/agents/home/$seat"
+  [ -d "$home" ] || home="$HOME/.$seat"
+  [ -d "$home" ] || home="$HOME/.ears"
+fi
+state="$home/heard.state"
+# Count by SEAT, not by state path: a waiter armed by hand (a boot letter's own
+# heard-first line, its own --state file) is still this seat's waiter. Every
+# arm carries the rule cut:<seat>, so that is the key (measured: a waiter
+# armed by hand on its own state file once counted 0 here).
+pat="bin/heard-first .*cut:${seat}( |$)"
+ps -axo pid,etime,command | grep -E -- "$pat" | grep -v grep | cut -c1-160 >&2 || true
+# No match is a count of 0, not a failure: under pipefail a bare grep exits 1.
+{ ps -axo pid,command | grep -E -- "$pat" | grep -v grep || true; } | wc -l | tr -d ' '

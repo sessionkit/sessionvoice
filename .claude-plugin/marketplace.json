@@ -1,0 +1,23 @@
+{
+  "name": "sessionvoice",
+  "metadata": {
+    "description": "Self-hosting marketplace for the sessionvoice plugin - add with `claude plugin marketplace add <path or url>`.",
+    "version": "0.2.0"
+  },
+  "owner": {
+    "name": "Mike Bailey",
+    "email": "mike@sessionkit.ai"
+  },
+  "plugins": [
+    {
+      "name": "sessionvoice",
+      "description": "Ears and a mouth for a Claude Code agent: always-on listening (the room, or a phone call), a waiter that wakes the agent on the user's finished turn, and a mouth that speaks without blocking.",
+      "author": {
+        "name": "Mike Bailey",
+        "email": "mike@sessionkit.ai"
+      },
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}

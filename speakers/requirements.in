@@ -1,0 +1,11 @@
+# The speaker side-car's service venv: what `ears services install --only speakers`
+# builds under the speakers home. Compiled into requirements.lock, which is what install uses:
+#   MACOSX_DEPLOYMENT_TARGET=14.0 uv pip compile requirements.in --python-version 3.12 \
+#     --python-platform aarch64-apple-darwin --no-header --generate-hashes -o requirements.lock
+# over the existing lock, so its pins hold (`--upgrade-package X` moves one; a fresh output
+# file re-resolves and can drift them), then put the lock's header back. Install runs
+# `uv pip install --require-hashes`, so the lock must carry a --hash for every pin.
+# mlx-audio 0.5.6+ ships nemotron_diarization (0.5.5 has none); a bump is one line here, gated by speakers/test-labels-unchanged.sh on recorded lines.
+mlx-audio==0.5.8
+numpy
+sounddevice

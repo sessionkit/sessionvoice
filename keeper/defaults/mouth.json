@@ -1,0 +1,5 @@
+{
+  "_about": "the mouth's own state. output: 'default' plays on macOS's default output, or one output's exact name. voice: the voice the speak wrapper uses. Read on every call by ./speak; set from the Notifications webxdc app. Mouth: pick the output device.",
+  "output": "default",
+  "voice": "af_sky"
+}

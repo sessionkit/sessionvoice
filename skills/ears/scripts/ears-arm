@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# ears-arm - arm the ONE heard-first waiter for a seat, in a mode.
+#
+#   ears-arm <seat> [talk|alone|room] [names-regex] [--dry-run]
+#   ears-arm -h|--help   this text; any other '-' arg is refused, never a seat
+#
+# talk  : turn, your name, '?', cut, reply   (the user is talking with you)
+# alone : turn, your name, cut               (the user thinks aloud, or answers at length)
+# room  : "hey <name>" only, cut            (other people, a shop, a call)
+#         EARS_OPENERS='hey|hay|a|and' adds your own openers (default hey|hay|a)
+#         EARS_NAME_FIRST=1 adds your name opening the user's turn ("Ada, ...")
+#         "hey everyone" wakes every seat by default, like @here in Slack;
+#         EARS_EVERYONE='all of you|everyone' replaces the words, '' turns it off
+#         the user's reply to YOUR last line wakes you too (EARS_REPLY=0 turns it off)
+#         EARS_LINGER=300: linger, every turn the user finishes wakes you until they
+#         have said nothing for 300 s, then exit 124 (re-arm without it);
+#         EARS_LIGHT is the old name and still works
+# any mode: EARS_SPEAKERS='alice,bob' passes --speakers to heard-first, so only
+#         a line the speaker side-car names as one of those wakes you (a
+#         heard-first with the speaker gate; for when another machine's mouth
+#         says "hey <seat>" and would wake it)
+#
+# Execs heard-first, so run it with run_in_background: true. When it fires,
+# read its output, then run it again. Count first: `ears-count <seat>`.
+# The state file lives in the seat's home (see SKILL.md), so a re-arm catches
+# up on what landed while it was down.
+set -euo pipefail
+
+# Flags first, before any home, mkdir or state work. --help was once taken as a
+# seat named "--help": it armed a real waiter on ~/.ears and moved
+# ~/.ears/heard.state to EOF for every seat reading it.
+# So -h/--help prints this header and exits 0, and any other arg that
+# starts with '-' is refused: a seat name never starts with '-'.
+dry=0; pos=()
+for a in "$@"; do
+  case "$a" in
+    -h|--help) awk 'NR > 1 { if (/^#/) print; else exit }' "$0"; exit 0 ;;
+    --dry-run) dry=1 ;;
+    -*) echo "ears-arm: unknown option '$a' (try --help)" >&2; exit 1 ;;
+    *) pos+=("$a") ;;
+  esac
+done
+set -- ${pos[@]+"${pos[@]}"}
+
+seat="${1:?usage: ears-arm <seat> [talk|alone|room] [names-regex] [--dry-run]}"
+mode="${2:-talk}"
+names="${3:-}"
+[ -n "$names" ] || names="\\b(${seat})\\b"
+
+# The seat's home: EARS_HOME if set, else a session-fleet seat home if one
+# exists, else ~/.<seat>, else ~/.ears. A dry run changes nothing (it once made an
+# empty ~/.ears).
+if [ -n "${EARS_HOME:-}" ]; then
+  home="$EARS_HOME"; [ "$dry" = 1 ] || mkdir -p "$home"
+else
+  home="$HOME/.session/agents/home/$seat"
+  [ -d "$home" ] || home="$HOME/.$seat"
+  [ -d "$home" ] || { home="$HOME/.ears"; [ "$dry" = 1 ] || mkdir -p "$home"; }
+fi
+state="$home/heard.state"
+
+case "$mode" in
+  talk)  rules=(--rule turn --rule "partial:$names" --rule 'partial:\?' --rule "cut:$seat" --rule "reply:$seat") ;;
+  alone) rules=(--rule turn --rule "partial:$names" --rule "cut:$seat") ;;
+  # room: "hey <name>", not the bare name, so a mention to someone else in the
+  # room doesn't wake you (with a "hey" before it, it is not the user talking to
+  # somebody else and mentioning you). Whisper
+  # hears "hey" as hey, hay, or a.
+  # EARS_OPENERS (a regex alternation) lets a seat add its own openers, e.g.
+  # 'hey|hay|a|and' so a call opened "and <name>, ..." wakes it too (measured:
+  # "hey" alone missed one of a seat's two real calls; openers are
+  # customisable per agent).
+  # EARS_NAME_FIRST=1 also wakes on your name opening the user's turn ("Ada, ..."):
+  # heard-first's `first` kind is the user's first partial since their last turn, so a
+  # vocative wakes you and a mention mid-sentence doesn't.
+  # "hey everyone" (easy for the user: "hey" and your name, or "hey
+  # everyone", like @here or
+  # @everyone in Slack): the words are a standard every seat gets by default;
+  # a seat's own names and openers stay its extras.
+  room)  who="${names#\\b}"; all="${EARS_EVERYONE-everyone|everybody}"
+         [ -n "$all" ] && who="(?:${who}|(?:${all})\\b)"
+         hey="\\b(${EARS_OPENERS:-hey|hay|a})[,]? +${who}"; rules=(--rule "partial:$hey" --rule "turn:$hey" --rule "cut:$seat")
+         # reply: when YOUR line was the last one spoken, the user's next turn is their
+         # answer to you, with no name in it. Before this rule, a seat that asked the
+         # user a question never woke for the answer, which named no seat:
+         # the user had responded, and it had not heard. heard-first's
+         # reply kind only fires when this seat spoke last. EARS_REPLY=0: off.
+         # EARS_LIGHT=S: the stairwell light (a timer: if the user speaks again within
+         # a set time of the last turn, you still
+         # continue).
+         # For S seconds every turn the user FINISHES wakes you, as in talk mode, then
+         # heard-first exits 124 and you re-arm without it: the light is off.
+         # Arm it after each exchange; each wake inside it pushes the switch
+         # again. It waits for the turn's end, so the reply rule's per-partial
+         # wakes are off while it's lit.
+         # LINGER: heard-first --linger S gives up after S seconds in which the user
+         # said nothing (a turn can run for more than a minute), and restarts
+         # its clock
+         # on every line of the user's, so a long turn is never cut off mid-flight, as
+         # --timeout did. EARS_LIGHT is the old name.
+         linger="${EARS_LINGER:-${EARS_LIGHT:-}}"
+         if [ -n "$linger" ]; then
+           rules+=(--rule turn); light=(--linger "$linger")
+         elif [ "${EARS_REPLY:-1}" = 1 ]; then
+           rules+=(--rule "reply:$seat")
+         fi
+         [ "${EARS_NAME_FIRST:-0}" = 1 ] && rules+=(--rule "first:^\\W*${who}") ;;
+  *) echo "ears-arm: unknown mode '$mode' (talk|alone|room)" >&2; exit 1 ;;
+esac
+
+cmd=(heard-first --source mic,call --state "$state" "${rules[@]}" ${light[@]+"${light[@]}"})
+[ -n "${EARS_SPEAKERS:-}" ] && cmd+=(--speakers "$EARS_SPEAKERS")
+if [ "$dry" = 1 ]; then printf '%q ' "${cmd[@]}"; echo; exit 0; fi
+n=$("$(dirname "$0")/ears-count" "$seat" 2>/dev/null) || n=0
+[ "$n" -gt 0 ] && echo "ears-arm: $n waiter(s) already up for $seat (any state file; ears-count $seat lists them); not arming another" >&2 && exit 2
+exec "${cmd[@]}"

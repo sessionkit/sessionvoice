@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""call-ears - the ears grow an ear for every Delta call, and drop it at hang-up.
+
+These are the normal ears, turned on and off with each call, not a second
+kind of ears: a live call is a
+mic the ears can open (a Delta bot's ear leg, call-ears.sock). This watches every bot's ear
+leg; when a NEW call comes up it starts the normal capture on it -
+`ears.listen capture --source call:N`, Silero, redecode, into the live heard
+log (source "call", device "call:N") - and the capture ends itself when the call does.
+
+A call already live when this starts keeps the ear it has (one restarted with the keeper
+leaves its captures running), and one with no ear gets one. Once, every already-live
+call was left alone, so a restart mid-call left that call deaf to the end.
+Stop: touch $CALL_EARS_DIR/STOP. Log: stdout (the keeper's $EARS_LOG_DIR/ears-keeper-calls.log);
+each ear's in $CALL_EARS_DIR/capture-N.log. CALL_EARS_DIR defaults to
+${XDG_STATE_HOME:-~/.local/state}/ears/call-ears (it was ~/.<agent>/call-ears).
+
+The room and the calls were once two launch agents; now they are one, so
+this is not a launch
+agent of its own: the ears keeper (keeper/ears-keeper.sh, dev.sessionkit.voice.ears-keeper) runs it
+as a child and restarts it, so the room and the calls are one job.
+"""
+import json, os, re, socket, subprocess, sys, time
+from pathlib import Path
+
+HOME = Path.home()
+# The keeper passes its own; the default is the keeper's (keeper/ears-keeper.sh), change both.
+DIR = Path(os.environ.get("CALL_EARS_DIR")
+           or Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state") / "ears/call-ears")
+STOP = DIR / "STOP"
+# The calls the probe finds live, "call:N,call:M", rewritten every loop (so its age says this
+# is alive): the keeper's room-off rule reads it. A capture is no proof of a live call - one
+# call sent no audio, its ear died every 10 s, and in each gap the
+# keeper saw no call capture and put the room mic back on.
+LIVE = DIR / "live"
+# The capture is ears' own (ears.listen) since 2030-06-09: the package's venv beside this
+# script by default. CALL_EARS_CODE, the old way (a VoiceMode checkout, voice_mode.listen), is
+# gone: set, it is ignored, and the log says so once. A call ear that a
+# voice_mode.listen capture already runs is still left be (captured() matches any capture).
+# Shipped in a wheel (ears/_keeper/) there is no .venv beside it: the python
+# running this (the keeper starts it with its own, which can `import ears`) runs the captures.
+ROOT = Path(__file__).resolve().parent.parent
+_VENV_PY = ROOT / ".venv/bin/python"
+PY = os.environ.get("CALL_EARS_PY") or (str(_VENV_PY) if _VENV_PY.exists() else sys.executable)
+MOD = "ears.listen"
+RETRIES = int(os.environ.get("CALL_EARS_RETRIES", "12"))     # 12 x (10 s + 2 s): about 2 min of ringing
+RETRY_WAIT = float(os.environ.get("CALL_EARS_RETRY_WAIT", "2"))
+SILERO = os.environ.get("CALL_EARS_SILERO", str(HOME / ".cache/ears/silero_vad.onnx"))   # where `ears install` puts it
+
+
+def say(m):
+    print(f"{time.strftime('%H:%M:%S')} {m}", flush=True)
+
+
+def socks():
+    # $EARS_CALL_SOCKS if it is set at all, else its old name; the table is
+    # src/ears/envnames.py, which this script (any python3) does not import.
+    env = os.environ.get("EARS_CALL_SOCKS", os.environ.get("VOICEMODE_CALL_EARS_SOCKS"))
+    if env:
+        return [p for p in env.split(":") if p]
+    sp = Path(os.environ.get("SESSIONPHONE_ROOT") or HOME / ".sessionphone").expanduser()
+    return sorted({str(p) for p in HOME.glob(".*/delta-chat/call-ears.sock")}
+                  | {str(p) for p in HOME.glob(".*/delta-chat/*/call-ears.sock")}
+                  | {str(p) for p in sp.glob("call-ears.sock")}
+                  | {str(p) for p in sp.glob("*/call-ears.sock")})
+
+
+def live_calls():
+    out = set()
+    for path in socks():
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(1.0)
+            s.connect(path)
+            s.sendall(b'{"probe": true}\n')
+            buf = b""
+            while b"\n" not in buf:
+                c = s.recv(4096)
+                if not c:
+                    break
+                buf += c
+            s.close()
+            for n in json.loads(buf.split(b"\n")[0] or b"{}").get("calls") or []:
+                out.add(int(n))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def publish(calls):
+    """Write the live calls to LIVE, whole (a temp file, then a rename)."""
+    tmp = LIVE.with_name(LIVE.name + ".tmp")
+    try:
+        tmp.write_text(",".join(f"call:{n}" for n in sorted(calls)) + "\n")
+        os.replace(tmp, LIVE)
+    except OSError as e:
+        say(f"publish {LIVE} failed: {e}")
+
+
+def captured():
+    """The calls that already have an ear: a running `... capture --source call:N`."""
+    try:
+        out = subprocess.run(["ps", "-axww", "-o", "args="], capture_output=True, text=True).stdout
+    except OSError:
+        return set()
+    return {int(m.group(1)) for line in out.splitlines() if " capture " in line
+            for m in [re.search(r"--source call:(\d+)", line)] if m}
+
+
+def start(call):
+    log = open(DIR / f"capture-{call}.log", "a")
+    cmd = [PY, "-m", MOD, "capture", "--source", f"call:{call}",
+           "--heartbeat", "15", "--agent", "ears", "--session", f"call-ears-{call}",
+           "--turn-text", "redecode", "--detector", "silero", "--silero-model", SILERO]
+    p = subprocess.Popen(cmd, cwd=str(HOME), env=dict(os.environ), stdout=log, stderr=log, stdin=subprocess.DEVNULL)
+    say(f"call {call}: ear up, pid {p.pid}")
+    return p
+
+
+def main():
+    DIR.mkdir(parents=True, exist_ok=True)
+    STOP.unlink(missing_ok=True)
+    if os.environ.get("CALL_EARS_CODE"):
+        say(f"CALL_EARS_CODE is set but ignored: the call ears are {MOD}, run by {PY}")
+    live = live_calls()
+    skip = live & captured()            # their ear is running: leave it be
+    say(f"watching {socks()}; live calls that keep their ear: {sorted(skip)}; "
+        f"live with none, ear now: {sorted(live - skip)}")
+    ears, tries, retry_at = {}, {}, {}
+    while not STOP.exists():
+        now = live_calls()
+        publish(now)
+        for call, p in list(ears.items()):
+            if p.poll() is not None:
+                del ears[call]
+                # An ear that ends while its call is still live died early: on
+                # a call WE place it starts while the user's phone rings, hears no
+                # audio for 10 s and gives up (seen on a placed call).
+                # Start it again, a few times, a moment apart.
+                n = tries.get(call, 0)
+                if call in now and n < RETRIES:
+                    tries[call] = n + 1
+                    retry_at[call] = time.time() + RETRY_WAIT
+                    say(f"call {call}: ear down (exit {p.returncode}) while the call is live - retry {n + 1}/{RETRIES}")
+                else:
+                    say(f"call {call}: ear down (exit {p.returncode})")
+                    skip.add(call)      # the call is over, or retries are spent
+        for call in sorted(now - skip - set(ears)):
+            if time.time() >= retry_at.get(call, 0):
+                ears[call] = start(call)
+        for gone in set(tries) - now - set(ears):
+            tries.pop(gone, None)
+            retry_at.pop(gone, None)
+        skip &= now | set(ears)         # forget calls that are gone
+        time.sleep(1.0)
+    for call, p in ears.items():
+        p.terminate()
+    LIVE.unlink(missing_ok=True)
+    say("stop file seen - exiting")
+
+
+if __name__ == "__main__":
+    main()

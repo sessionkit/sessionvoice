@@ -1,0 +1,32 @@
+{
+  "_about": "voice browser prefs (Settings > Mouth > Voice), an example: the hearts are Kokoro voices every install has, never a clone voice only one host has. Where these live is still provisional.",
+  "hearts": [
+    "af_sky",
+    "af_alloy",
+    "af_bella",
+    "af_heart",
+    "af_nicole",
+    "af_sarah",
+    "am_michael",
+    "bf_emma",
+    "bm_george",
+    "bm_lewis"
+  ],
+  "phrase": "Oh please do behave. We are ladies after all.",
+  "phrases": [
+    "Hello! This is how I sound.",
+    "I have a cunning plan.",
+    "Right, who's putting the kettle on?",
+    "The magpie is back, and he wants meat.",
+    "Testing, testing, one two three.",
+    "The maggies are calling"
+  ],
+  "stars": {},
+  "voice_lines": {},
+  "current": {},
+  "refhearts": {},
+  "out_hearts": [
+    "airpods"
+  ],
+  "locked": {}
+}

@@ -1,0 +1,194 @@
+# Talk
+
+Talk shows the live voice conversation in a browser: the person's partials and
+turns, every line the mouth speaks, and which seats have heard what. It is
+read-only, it binds 127.0.0.1 by default, and each browser pairs once before
+it can see anything. Run it with `talk serve` and pair with `talk pair`.
+
+- **Run:** `talk serve`, then `talk pair` in a terminal on the same host;
+  open the link it prints.
+- **Pairing:** one link per browser; the token never goes in a flag, an
+  environment variable or a URL query.
+- **On a tailnet:** optional. Keep talk on 127.0.0.1 and put Tailscale in
+  front; socket mode is the safer way to do it.
+- **What it reads:** the heard log, each seat's waiter offsets, presence
+  and faces. It writes nothing.
+- **Settings:** all off by default; each one is a `talk serve` flag or an
+  environment variable.
+
+## Run
+
+Talk ships in the sessionvoice wheel as the `talk` command (`src/talk/`).
+
+    talk serve                      # http://127.0.0.1:8780/
+    talk serve --port 8781          # another port
+    talk serve --host 127.0.0.1     # the default: this machine only
+
+- It binds 127.0.0.1 unless you pass `--host`. Stop it with Ctrl-C.
+- **It answers only a Host it knows,** so a web page that rebinds its own
+  DNS name to 127.0.0.1 cannot read the conversation. By default those are
+  `127.0.0.1:<port>` and `localhost:<port>` on the port it is bound to, and
+  the `--host` address when you name one. Any other Host, or an `Origin`
+  that is not one of those names, gets a plain-text 403 that names the
+  remedy. Add a name with `--allow-host NAME` (see [Settings][settings]).
+  `X-Forwarded-*` headers are ignored.
+- **It answers only a paired browser.** Every route but the page and the
+  manifest needs the pairing cookie ([Pairing][pairing]); without it a
+  request gets a plain-text 403 that names `talk pair`. The page and the
+  manifest stay open: they are the package's own files and say nothing
+  about the room. An open event stream checks its cookie again at each
+  keep-alive (every 15 s), so after a rotation it ends within about 15 s.
+- **As a service:** `launchd/dev.sessionkit.voice.talk.plist.in` is a launchd
+  template for `talk serve` on 127.0.0.1:8780. Its header carries the line
+  that fills it in and the lines that load and remove it.
+
+## Pairing
+
+Each browser pairs once. On the host, as the user who runs talk:
+
+    talk pair                       # http://127.0.0.1:8780/#pair=<token>
+    talk pair --url http://127.0.0.1:8781/
+    talk pair --url https://machine.example.ts.net/talk    # behind tailscale serve
+    talk token --rotate             # a new token: every browser pairs again
+
+- **Open the link it prints** in the browser you want to pair. The token
+  rides in the `#pair=` fragment, which never reaches a server, and the page
+  drops it from the address bar before it sends anything. It then pairs and
+  shows the room.
+- **Or paste it.** A browser that is not paired shows a pairing panel: paste
+  the link, or just its token, and the box is cleared at once. On a
+  home-screen app, pair in Safari first, then add it to the Home Screen; if
+  the app comes up unpaired, paste the link into its panel.
+- **The page keeps the token nowhere:** not in `localStorage`,
+  `sessionStorage` or any URL. Pairing sets an `HttpOnly`, `SameSite=Strict`
+  cookie (plus `Secure` over https), with no `Path` and no `Domain`, so
+  behind `tailscale serve` it stays under `/talk`.
+- **Open talk at `http://127.0.0.1:<port>/`, never at `localhost`.**
+  `talk pair` refuses a `localhost` or `*.localhost` URL (exit 2, naming
+  `127.0.0.1`), and `talk serve` refuses to pair at `localhost`: a cookie
+  set there would go to whatever answers `localhost`, which can be another
+  user's listener on `[::1]`. `talk pair` refuses an IPv6 address such as
+  `[::1]` too: talk binds IPv4 only.
+- **It prints only to a terminal.** Piped, redirected, or run in an agent's
+  tool shell, `talk pair` exits 2 and prints no token, so the link never
+  lands in a file, a log or a transcript. Run it yourself.
+- **`--url`** is talk's address as the browser opens it: `http` or `https`,
+  with a host, and no query, fragment or user info. A trailing slash is
+  added. It is only printed, never fetched. The default is
+  `http://127.0.0.1:8780/`.
+- **Rotate when in doubt:** after a link went somewhere it should not, or
+  when a device is lost. `talk token --rotate` writes a fresh token in one
+  step and prints the file's path, never the token. A running talk uses it
+  at once, with no restart; open streams end within about 15 s, and every
+  browser pairs again with a new `talk pair` link.
+
+### What the token does not stop
+
+It proves the browser to talk, never talk to the browser, and a browser
+hands its cookie to whatever answers the address it dials.
+
+- Another user on the same machine who *listens* can collect the cookie:
+  on talk's port while talk is down (a restart, a deploy, a boot before you
+  log in), or on any other 127.0.0.1 port whose page your browser opens,
+  because cookies ignore the port. Socket mode ([On a
+  tailnet][tailnet]) closes the first of these.
+- Your own user's processes, root and an admin can read the token file in
+  any case.
+
+### The token file
+
+- **Where:** `<home>/talk/token`, under sessionvoice's home ([where that
+  is][home]). The file is 0600 and its `talk/` directory 0700, both owned by
+  the user who runs talk.
+- **What:** 43 characters of `A-Z a-z 0-9 _ -` (256 bits) and a newline.
+- **Made once, whole,** by the first `talk serve`, before it binds. The
+  file appears complete or not at all; two starts racing end up with the
+  same token. `talk pair` reads it and never makes it.
+- **Refused, never repaired.** Talk will not use a token file, or
+  directory, that another user owns, that has any group or other permission
+  bit, that is a symlink or not a plain file, or that does not hold a token.
+  `talk serve` then exits 2 and serves nothing; the message names the path
+  and the fix, never the token. A wider mode is not tightened for you: a
+  token that was readable may be known, so rotate it.
+- **A deleted token is never quietly re-made** while talk runs: nothing
+  matches until you rotate, and talk's log names the fix on each refused
+  request.
+- **Never** in argv, a URL query, a log line, the launchd plist or the
+  job's environment.
+
+## On a tailnet
+
+Optional, and never a default: nothing in sessionvoice runs Tailscale for
+you.
+
+- **Over TCP:** leave talk on 127.0.0.1 and put Tailscale in front, e.g.
+  `tailscale serve --bg --set-path /talk http://127.0.0.1:8780`, then allow
+  the name your devices use: `talk serve --allow-host
+  machine.example.ts.net` (or `TALK_ALLOW_HOSTS=machine.example.ts.net`).
+  tailscale serve passes the browser's Host through, with no port, so
+  without it the phone gets the 403.
+- **Behind a proxy, prefer socket mode:** `talk serve --unix` (or
+  `TALK_UNIX_SOCKET=PATH`) binds a unix socket and **no TCP port**, so no
+  other user can take talk's port while it is down and collect your
+  browser's cookie. Map it with
+  `tailscale serve --bg --set-path /talk unix:<PATH>`, with
+  `--allow-host machine.example.ts.net` as before. PATH defaults to
+  `<home>/talk/talk.sock`, beside the token.
+  - The socket is 0600 in a 0700 directory. A directory with group or
+    other bits, or a file at PATH that is not a stale socket of yours,
+    exits 2 before anything binds. A unix socket path holds at most 103
+    bytes.
+  - Only talk's own uid and the proxy's may connect: `--proxy-uid UID`,
+    default 0 (root, as tailscaled runs). Any other peer gets a 403 before
+    its request is read.
+  - Over the socket talk answers the proxy's `Host: localhost`, and pairs
+    there: the browser's cookie belongs to the proxy's name. Origin is
+    checked against `--allow-host`, and the pairing cookie is needed
+    exactly as on TCP.
+  - **Then `http://127.0.0.1:8780/` is not talk:** nothing of talk's holds
+    that port, so anyone may. `talk pair` refuses a 127.0.0.1 URL, its
+    default included, whenever `TALK_UNIX_SOCKET` is set or a socket sits
+    at the default PATH. Pair with the proxy's address:
+    `talk pair --url https://machine.example.ts.net/talk`.
+
+## What it reads
+
+Read-only; talk writes none of these.
+
+- **Today's heard log,** where the kit's own writer puts it:
+  `<home>/logs/conversations/heard_<date>.jsonl`, where `<home>` is
+  sessionvoice's home ([where that is][home]).
+- **Each seat's waiter offsets:** `heard.state` in the seat's home, found
+  the way `ears-arm` finds it: `$EARS_HOME`, else
+  `~/.session/agents/home/<seat>`, else `~/.<seat>`, else `~/.ears` (shown
+  as "ears"). No heard.state at all is fine: turns and mouth lines still
+  show; only the "scanned" ticks need one.
+- **Presence and the "shown to" ticks:** `session list --json`
+  (sessiontools), the heard-cursor (`<home>/state/heard-cursor`) and the
+  pager's ride records. Without the `session` command those are simply
+  empty.
+- **Faces, if any:** `~/.session/agents/<name>/avatar.jpg`; else a coloured
+  initial.
+
+## Settings
+
+All off or unset by default; each is a `talk serve` flag or an environment
+variable.
+
+| Flag | Env | What |
+|---|---|---|
+| `--person NAME` | `TALK_PERSON` | the label on the person's side; else a row's `speaker`, else "you" |
+| `--smart-turn DIR` | `TALK_SMART_TURN_DIR` | a smart-turn shadow log dir (`smart_<date>.jsonl`) for the Debug view |
+| `--settings-url URL` | `TALK_SETTINGS_URL` | a Settings link in the header; no link without it |
+| `--call-url URL` | `TALK_CALL_URL` | a phone button in the header that opens this web call (sessionphone) in a new tab; no button without it. Only `https:`, or `http://localhost` / `http://127.0.0.1`; anything else is refused at start and nothing is served |
+| `--allow-host NAME` | `TALK_ALLOW_HOSTS` | another Host to answer, beside `127.0.0.1:<port>`, `localhost:<port>` and the `--host` address. The flag repeats; the env var takes a comma- or space-separated list, and both are merged. `NAME` is answered on any port or none, `NAME:PORT` only on that port. Behind `tailscale serve`, add its name (`machine.example.ts.net`). A scheme, path, `@`, whitespace or `*` is refused at start and nothing is served |
+| `--unix [PATH]` | `TALK_UNIX_SOCKET` | bind a unix socket and no TCP port ([On a tailnet][tailnet]) |
+| `--proxy-uid UID` | | in socket mode, the one other uid that may connect; default 0 |
+
+`SESSIONVOICE_HOME` moves the heard log and the token, the same as for the
+ears.
+
+[home]: logs.md#sessionvoices-home
+[pairing]: #pairing
+[settings]: #settings
+[tailnet]: #on-a-tailnet

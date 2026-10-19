@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""ears-turn SEQ|FIRE_FILE [--wait S] [--json] - the whole turn after an ears fire, one line.
+
+ears-arm wakes an agent on the FIRST partial that matches ("Hey Ada, can we..."), so it can
+answer fast; the agent then wants the whole sentence. Every seat was reading the heard log
+by hand for it (an inline python3 -c, or jq), and an inline script on a seat's screen is
+noise to whoever is watching it. This is that step as one verb:
+
+  ears-turn 76661                       # the seq in the fire's JSON
+  ears-turn /path/to/task.output        # or the fire's output file itself
+
+It waits (up to --wait S, default 30) for the first mic turn at or after SEQ, not a line this
+machine's mouth said (its speaker names an agent seen in the log's saying rows), and prints
+  HH:MM:SS SEQ SPEAKER: TEXT
+The speaker is the side-car's (speakers_DAY.jsonl, by seq; waits 1.5 s for it), else '-'.
+Exit 0 with the turn; 124 on --wait, printing the partials heard so far.
+"""
+import argparse, glob, json, os, sys, time
+
+def sessionvoice_home():
+    """sessionvoice's home: a copy of ears.home.sessionvoice_home (tests/test_home.py holds
+    it). $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it
+    holds the heard log, else ~/.sessionvoice."""
+    import glob, os
+    for name in ("SESSIONVOICE_HOME", "VOICEMODE_BASE_DIR"):
+        if os.environ.get(name):
+            return os.path.expanduser(os.path.expandvars(os.environ[name]))
+    for d in ("~/.sessionvoice", "~/.voicemode"):
+        c = os.path.expanduser(d + "/logs/conversations")
+        if os.path.exists(c + "/heard.lock") or glob.glob(glob.escape(c) + "/heard_*.jsonl"):
+            return os.path.expanduser(d)
+    return os.path.expanduser("~/.sessionvoice")
+
+
+ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+ap.add_argument("what", help="the fire's seq, or the file holding the fire's JSON line")
+ap.add_argument("--wait", type=float, default=30.0, metavar="S")
+ap.add_argument("--json", action="store_true", help="print the turn record as JSON instead")
+ap.add_argument("--source", default="mic,call")
+a = ap.parse_args()
+base = sessionvoice_home()
+logdir = os.path.join(base, "logs", "conversations")
+sources = {x.strip() for x in a.source.split(",") if x.strip()}
+
+if a.what.isdigit():
+    seq, day = int(a.what), None
+else:
+    try:
+        fire = next(json.loads(l) for l in open(a.what) if l.lstrip().startswith("{"))
+    except (OSError, StopIteration, ValueError) as e:
+        sys.exit(f"ears-turn: no fire JSON in {a.what}: {e}")
+    seq, day = int(fire["seq"]), str(fire.get("ts", ""))[:10] or None
+
+
+def logs():
+    fs = sorted(glob.glob(os.path.join(logdir, "heard_????-??-??.jsonl")))[-2:]
+    return [f for f in fs if day is None or day in f] or fs
+
+
+def speaker_of(d, s, until):
+    p = os.path.join(logdir, f"speakers_{d}.jsonl")
+    while True:
+        try:
+            with open(p, "rb") as fh:
+                skip = os.path.getsize(p) > 262144  # a torn first line only when seeked into it
+                fh.seek(max(0, os.path.getsize(p) - 262144))
+                for raw in fh.read().split(b"\n")[1 if skip else 0:]:
+                    try:
+                        r = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if r.get("seq") == s:
+                        return r.get("speaker") or "-"
+        except OSError:
+            pass
+        if time.time() >= until:
+            return "-"
+        time.sleep(0.1)
+
+
+start, offsets, agents, partials = time.time(), {}, set(), []
+while True:
+    for p in logs():
+        try:
+            with open(p, "rb") as fh:
+                if p not in offsets:  # from a little before the end: SEQ is recent
+                    size = os.path.getsize(p)
+                    fh.seek(max(0, size - 4 * 1024 * 1024))
+                    if size > 4 * 1024 * 1024:
+                        fh.readline()  # the torn line the seek landed in
+                else:
+                    fh.seek(offsets[p])
+                chunk = fh.read()
+                whole = chunk[: chunk.rfind(b"\n") + 1]
+                offsets[p] = fh.tell() - (len(chunk) - len(whole))
+        except OSError:
+            continue
+        for raw in whole.split(b"\n")[:-1]:
+            try:
+                r = json.loads(raw)
+            except ValueError:
+                continue
+            if r.get("kind") == "saying" and r.get("agent"):
+                agents.add(r["agent"])
+            if (r.get("seq") or 0) < seq or r.get("source", "mic") not in sources:
+                continue
+            if r.get("kind") == "partial" and str(r.get("text") or "").strip():
+                partials.append(r["text"].strip())
+            if r.get("kind") != "turn" or not str(r.get("text") or "").strip():
+                continue
+            d = str(r.get("ts", ""))[:10]
+            who = r.get("speaker") or speaker_of(d, r["seq"], time.time() + 1.5)
+            if who.rstrip("?") in agents:
+                continue  # this machine's mouth, heard back: not the user's turn
+            r["speaker"] = who
+            print(json.dumps(r) if a.json else f"{str(r.get('ts',''))[11:19]} {r['seq']} {who}: {r['text']}", flush=True)
+            sys.exit(0)
+    if time.time() - start > a.wait:
+        print(f"(no turn in {a.wait:.0f} s; partials so far) " + " ".join(partials), flush=True)
+        sys.exit(124)
+    time.sleep(0.2)

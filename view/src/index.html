@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ears: live</title>
+<style>
+  :root { --bg:#fff; --fg:#1b1b1f; --mute:#6b6b76; --line:#ececf1;
+          --me:#1f5fbf; --ok:#2e8b57; --warn:#c98a00; --hot:#c0392b; --chip:#f3f3f7; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#141417; --fg:#ececf1; --mute:#9a9aa6; --line:#24242a;
+            --me:#7fb0ff; --ok:#4cc38a; --warn:#e0a82e; --hot:#ef6b5b; --chip:#1f1f25; }
+  }
+  html, body { margin:0; background:var(--bg); color:var(--fg);
+    font: 16px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  main { max-width: 34rem; margin: 0 auto; padding: .7rem .9rem 2rem; }
+  #metrics { background:var(--chip); border-radius:.5rem; padding:.45rem .6rem;
+    font-size:.85rem; font-variant-numeric: tabular-nums; cursor:pointer; }
+  #metrics .more { display:none; color:var(--mute); margin-top:.3rem; }
+  #metrics.open .more { display:block; }
+  #status { color:var(--mute); font-size:.8rem; margin:.45rem 0 .6rem; }
+  .dot { display:inline-block; width:.55rem; height:.55rem; border-radius:50%;
+    margin-right:.3rem; vertical-align: middle; background:var(--mute); }
+  .up { background:var(--ok); } .down { background:var(--hot); }
+  #live { color:var(--mute); font-style:italic; min-height:1.2rem;
+    border-left:3px solid var(--line); padding:.2rem .5rem; margin-bottom:.5rem; }
+  .it { padding:.45rem 0; border-bottom:1px solid var(--line); }
+  .t { color:var(--mute); font-size:.72rem; font-variant-numeric: tabular-nums; }
+  .agent { color:var(--me); }
+  .gap { font-size:.72rem; font-variant-numeric: tabular-nums; margin-left:.3rem; }
+  .g-ok { color:var(--ok); } .g-warn { color:var(--warn); } .g-hot { color:var(--hot); }
+  .empty { color:var(--mute); padding:2rem 0; text-align:center; }
+</style>
+</head>
+<body>
+<main>
+  <div id="metrics" title="tap for more"><span id="m1">Reply gap: waiting for the first update...</span>
+    <div class="more" id="m2"></div></div>
+  <div id="status"><span class="dot"></span>no data yet</div>
+  <div id="live"></div>
+  <div id="feed"><div class="empty">Nothing heard yet.</div></div>
+</main>
+<script src="webxdc.js"></script>
+<script>
+// The pusher (view/push) sends the whole picture each time; the newest update wins:
+// {at, st:{cap, dev, heard}, live, items:[[hh:mm:ss, who, text, gap?]...], m:{last, med, min, max, n, ttfa}, label}
+// who: "m" = the person (a closed turn), "c" = the agent (what it said, trimmed).
+// label: the name shown on "c" lines (push's EARS_VIEW_LABEL); none = "Agent".
+// gap = seconds from the end of the user's speech to her first audio.
+(function () {
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]; }); }
+  function sec(x) { return x == null ? "-" : (Math.round(x * 10) / 10).toFixed(1) + " s"; }
+  function gcls(x) { return x == null ? "" : x <= 1 ? "g-ok" : x <= 4 ? "g-warn" : "g-hot"; }
+  document.getElementById("metrics").onclick = function () { this.classList.toggle("open"); };
+  function render(p) {
+    var m = p.m || {};
+    document.getElementById("m1").innerHTML = 'Reply gap: last <b class="' + gcls(m.last) + '">' +
+      sec(m.last) + '</b> · median <b>' + sec(m.med) + '</b> · n ' + (m.n || 0);
+    document.getElementById("m2").innerHTML = 'min ' + sec(m.min) + ' · max ' + sec(m.max) +
+      ' · my time to first audio (last) ' + sec(m.ttfa) +
+      '<br>Gap = end of your speech (from the ears) to the start of my voice. Human target: about 0.2 s.';
+    var st = p.st || {};
+    document.getElementById("status").innerHTML = '<span class="dot ' + (st.cap ? "up" : "down") + '"></span>' +
+      (st.cap ? "listening" : "capture DOWN") + ' · ' + esc(st.dev || "?") +
+      ' · last heard ' + esc(st.heard || "-") + ' · updated ' + esc(p.at || "?");
+    document.getElementById("live").textContent = p.live || "";
+    var items = (p.items || []).slice().reverse();
+    var label = p.label || "Agent";
+    document.getElementById("feed").innerHTML = items.length ? items.map(function (i) {
+      var who = i[1] === "c" ? '<span class="agent">' + esc(label) + ': ' : '<span>';
+      var gap = i[3] != null ? '<span class="gap ' + gcls(i[3]) + '">+' + sec(i[3]) + '</span>' : '';
+      return '<div class="it"><div class="t">' + esc(i[0]) + gap + '</div>' + who + esc(i[2]) + '</span></div>';
+    }).join("") : '<div class="empty">Nothing heard yet.</div>';
+  }
+  if (!window.webxdc) return;
+  window.webxdc.setUpdateListener(function (u) {
+    if (u && u.payload && u.payload.items) render(u.payload);
+  }, 0);
+})();
+</script>
+</body>
+</html>

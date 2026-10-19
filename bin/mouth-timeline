@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# bin/mouth-timeline - `mouth timeline` from this checkout, until a cutover
+# puts the verb on PATH. It runs the ears checkout's reader
+# against the live dirs, which is safe because the reader is read-only: it
+# never takes player.lock, never makes a dir, never moves a mail.
+#
+# A notifier runs this after every tool batch, so a cold call must be cheap (budget:
+# p95 <= 100 ms, bench/timeline_bench.py). Hence:
+# - this checkout's OWN python with PYTHONPATH=<repo>/src, NOT `uv run`;
+# - -S: no site-packages; the reader needs the standard library only (~4 ms);
+# - no subshell unless the script is reached through a symlink (~5 ms);
+# - `-m mouth.timeline`, the verb's own parser, not every mouth subcommand's.
+# The python is this checkout's own, <repo>/.venv/bin/python (README, Install: `uv venv`;
+# bin/ears and bin/mouth make the same one), never PATH's python3: on a clean Mac that is
+# Apple's 3.9, below the package's 3.10 floor. $MOUTH_PYTHON overrides it.
+# No such python: one line naming the floor and the fix, exit 2.
+#
+#   bin/mouth-timeline --future --json      # what the notifier reads
+#   bin/mouth-timeline --words              # the current call, for a human
+set -eu
+src=$0
+if [ -L "$src" ]; then src=$(readlink -f "$src"); fi
+case $src in */*) bin=${src%/*} ;; *) bin=. ;; esac
+export PYTHONPATH="$bin/../src${PYTHONPATH:+:$PYTHONPATH}"
+py=${MOUTH_PYTHON:-$bin/../.venv/bin/python}
+if [ ! -x "$py" ]; then
+  echo "mouth-timeline: no python at $py; it needs Python 3.10 or later: run \`uv sync\` in $bin/.., or set MOUTH_PYTHON" >&2
+  exit 2
+fi
+exec "$py" -S -m mouth.timeline "$@"

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "audio-devices.schema.json",
+  "title": "Audio devices",
+  "description": "The Mac's audio devices and defaults, written by keeper/input-watch.swift on change to ${XDG_STATE_HOME:-$HOME/.local/state}/audio/devices.json (AUDIO_DEVICES_FILE overrides). The human contract and the fresh-or-stale rule: docs/audio-devices.md. Strict here so the writer's test catches drift; readers ignore unknown fields.",
+  "type": "object",
+  "required": ["version", "writer", "pid", "started_at", "written_at", "seq",
+               "default_input", "default_output", "inputs", "outputs"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {"type": "integer", "const": 1,
+                "description": "Schema major version. Bumped only for a breaking change."},
+    "writer": {"type": "string", "const": "input-watch"},
+    "pid": {"type": "integer", "minimum": 1,
+            "description": "The writer's process id; a dead pid means the file is stale."},
+    "started_at": {"type": "number", "minimum": 0,
+                   "description": "When the writer started: seconds since the Unix epoch, 3 decimals."},
+    "written_at": {"type": "number", "minimum": 0,
+                   "description": "When this file was written (a change, or a re-assert): seconds since the Unix epoch, 3 decimals. Not a heartbeat."},
+    "seq": {"type": "integer", "minimum": 1,
+            "description": "1 on this writer's first write, then up by one per write."},
+    "default_input": {"anyOf": [{"$ref": "#/$defs/device"}, {"type": "null"}]},
+    "default_output": {"anyOf": [{"$ref": "#/$defs/device"}, {"type": "null"}]},
+    "inputs": {"type": "array", "items": {"$ref": "#/$defs/device"},
+               "description": "Every device with input streams, sorted by name then uid."},
+    "outputs": {"type": "array", "items": {"$ref": "#/$defs/device"},
+                "description": "Every device with output streams, sorted by name then uid."}
+  },
+  "$defs": {
+    "device": {
+      "type": "object",
+      "required": ["name", "uid", "transport"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string", "description": "kAudioObjectPropertyName"},
+        "uid": {"type": ["string", "null"], "description": "kAudioDevicePropertyDeviceUID"},
+        "transport": {"type": "string",
+                      "enum": ["builtin", "bluetooth", "usb", "virtual", "aggregate", "hdmi",
+                               "displayport", "airplay", "thunderbolt", "pci", "firewire", "avb",
+                               "continuity", "unknown"],
+                      "description": "From kAudioDevicePropertyTransportType"}
+      }
+    }
+  }
+}

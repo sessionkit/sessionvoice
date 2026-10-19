@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The speaker side-car, always on (speaker identification has to work
+     all the time). speakers/run.sh
+     names who said each heard line, into speakers_YYYY-MM-DD.jsonl beside the heard log.
+     It follows the ears keeper's capture from device to device (SPEAKER_DEVICE=follow).
+     A TEMPLATE: render it, then install (no machine paths live here):
+       mkdir -p ~/Library/Logs/ears
+       SPEAKER_PY=/path/to/a/python/with/mlx-audio AGENT_REFS=ada \
+           bin/render-plist launchd/dev.sessionkit.voice.ears-speakers.plist.in > ~/Library/LaunchAgents/dev.sessionkit.voice.ears-speakers.plist
+     bin/render-plist fills @HOME@ and @EARS_REPO@ (the checkout it runs from) itself;
+     @SPEAKER_PY@ and @AGENT_REFS@ have no default.
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.sessionkit.voice.ears-speakers.plist
+     Needs: refs/NAME.wav in @EARS_REPO@/speakers (README), and @SPEAKER_PY@ with mlx-audio
+     (the git build: PyPI 0.5.5 has no nemotron_diarization) and the model already cached:
+     HF_HUB_OFFLINE is set, so a start never downloads.
+     Restarts: a crash or a refusal restarts it (ThrottleInterval apart; a refused reference
+     reloads the model each time, so read the log after a load); touch
+     @EARS_REPO@/speakers/STOP and it exits 0 and STAYS down until the next load or login.
+     The name: run.sh runs a copy of @SPEAKER_PY@'s real binary, bin/ears-speakers in its
+     venv, so ps -c and Activity Monitor say ears-speakers, not Python (README).
+     The microphone: macOS asks for a grant per binary, so that copy (the venv's
+     bin/ears-speakers) under launchd may need its own, again after a python upgrade
+     refreshes it. Without one the stream gives only zeros, and every row says
+     speaker "unheard", why "no signal". Check ~/Library/Logs/ears/ears-speakers.log
+     (run.sh runs in the foreground here; speakers.log is only for run.sh detached) for
+     "mic: open" and for the rows.
+     It opens the mic only while the keeper's capture runs. Never run it beside a
+     hand-started side-car on the same refs: each line would be labelled twice.
+     It replaces the interim follow-capture job some Macs ran under an older hand label
+     (speakers/README.md, "Replacing follow-capture", names it): boot that out and remove
+     its plist in the SAME step that bootstraps this one, so two side-cars never run.
+     The SAME label `ears services install` (only speakers) loads its own job under, at the
+     same path. Install tells the two apart by CONTENT: the plist it writes carries
+     SESSIONKIT_INSTALLED_BY in EnvironmentVariables, and a render of this template does
+     not. So install leaves a render here alone and skips its own (`ears services
+     status` names it). The reverse is yours: rendering this over the plist install
+     wrote REPLACES install's job (bin/render-plist writes only to stdout or -o; the
+     redirect is what overwrites).
+     Remove:  launchctl bootout gui/$(id -u)/dev.sessionkit.voice.ears-speakers -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.sessionkit.voice.ears-speakers</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>@EARS_REPO@/speakers/run.sh</string>
+  </array>
+  <key>WorkingDirectory</key><string>@EARS_REPO@/speakers</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>@HOME@</string>
+    <key>PATH</key><string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>SPEAKER_PY</key><string>@SPEAKER_PY@</string>
+    <key>SPEAKER_DEVICE</key><string>follow</string>
+    <key>SPEAKER_AGENT_REFS</key><string>@AGENT_REFS@</string>
+    <key>HF_HUB_OFFLINE</key><string>1</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>@HOME@/Library/Logs/ears/ears-speakers.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/ears/ears-speakers.log</string>
+</dict>
+</plist>

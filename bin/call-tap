@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# call-tap - put a call from any app on this Mac into the ears, both ways.
+#
+# A call made from this computer, in any app, is tapped into the ears, and the
+# mouth is aggregated with your microphone, so the far end hears the agents too.
+# Used live: the far end heard the agents, and its words landed as its
+# own.
+# Detail and setup: docs/call-tap.md.
+#
+#   the far end  -> app speaker = "AirPods + BlackHole 2ch" (bin/multi-output.swift)
+#                   -> you hear them; a 2nd capture on "BlackHole 2ch" writes
+#                      heard lines with device "BlackHole 2ch" (= the far end)
+#   your mic     --(sox passthrough)--> "BlackHole 16ch" <-- mouth say --device
+#                   "AirPods + BlackHole 16ch" (agents; you hear them too)
+#                   BlackHole SUMS its writers: app mic = "BlackHole 16ch"
+#
+#   call-tap up       both legs in the FOREGROUND until `call-tap down`
+#                     (agents: a backgrounded Bash call, never a raw &)
+#   call-tap down     stop both legs
+#   call-tap status   what is running, and whether the far-end ear is paused
+#
+#   listen: false in ears.json pauses the far-end ear and keeps the passthrough:
+#   the ears keeper touches $RUN/LISTEN-OFF, then STOP-ear, the
+#   capture's own stop file. While LISTEN-OFF is there no capture runs; when the
+#   keeper removes it the capture starts again. `down` still ends both legs.
+#   call-tap [up|down|status] -h|--help
+#                     this text (exit 0), -h/--help anywhere: never runs a leg
+#   anything else, or no command: this text, exit 1
+#
+# Env: CALL_TAP_MIC (airpods), CALL_TAP_FAR ("BlackHole 2ch"), CALL_TAP_NEAR
+# ("BlackHole 16ch"), EARS_PY (this repo's .venv python), EARS_SILERO_MODEL,
+# else EARS_SILERO_ONNX, else ~/.cache/ears/silero_vad.onnx (`ears install`).
+set -u
+# The header above, from line 2 to the first line that is not a comment.
+usage() { awk 'NR > 1 { if (/^#/) print; else exit }' "$0"; }
+# Help before the mkdir below: asking for help changes nothing.
+# Any argument, not only $1: `call-tap up --help` once started both legs.
+# No subcommand takes an operand, so a -h/--help anywhere is always a help ask.
+for a in "$@"; do case "$a" in -h|--help) usage; exit 0 ;; esac; done
+REPO=$(cd "$(dirname "$0")/.." && pwd)
+RUN="${XDG_STATE_HOME:-$HOME/.local/state}/ears/call-tap"; mkdir -p "$RUN"
+STOP=$RUN/STOP
+# The far-end capture has a stop file of its own, so the keeper can stop the ear and not the
+# tap: `down` touches both; the keeper, on listen:false, touches LISTEN-OFF and then STOP-ear.
+STOP_EAR=$RUN/STOP-ear; OFF=$RUN/LISTEN-OFF
+MIC="${CALL_TAP_MIC:-airpods}"; FAR="${CALL_TAP_FAR:-BlackHole 2ch}"; NEAR="${CALL_TAP_NEAR:-BlackHole 16ch}"
+PY="${EARS_PY:-$REPO/.venv/bin/python}"
+# The Silero model: the same home src/ears/vad.py silero_model_path() reads and
+# `ears install` (src/ears/cli.py) downloads to; EARS_SILERO_MODEL first. Its old name
+# (src/ears/envnames.py) is read only when EARS_SILERO_MODEL is not set at all: no colon,
+# so set-but-empty still wins, as in python. An empty path is no model, so it then falls
+# through to EARS_SILERO_ONNX and the default, as an empty old name always did.
+SILERO="${EARS_SILERO_MODEL-${VOICEMODE_SILERO_MODEL-}}"
+SILERO="${SILERO:-${EARS_SILERO_ONNX:-$HOME/.cache/ears/silero_vad.onnx}}"
+
+case "${1:-}" in
+up)
+  if [ ! -f "$SILERO" ]; then
+    echo "call-tap: no Silero VAD model at $SILERO; run \`ears install\` or set EARS_SILERO_MODEL" >&2
+    exit 2
+  fi
+  [ -e "$STOP" ] && mv -f "$STOP" "$STOP.old"
+  echo "call-tap: mic passthrough $MIC -> $NEAR"
+  sox -q -t coreaudio "$MIC" -t coreaudio "$NEAR" &
+  SOX=$!; echo $SOX > "$RUN/sox.pid"
+  # Through runpy, NOT `-m ears.listen capture`: the ears-keeper pgreps
+  # '(ears|voice_mode)\.listen capture' for THE room capture and, following the
+  # default input, touches the stop-file of one on another device (measured:
+  # this capture stopped within a second). This one is not
+  # the room's, so it stays out of the keeper's sight.
+  # --missed-reply-window 0: this "mic" is the FAR END's voice (BlackHole 2ch), not
+  # the user's. The missed-reply clip is for the user's own mic audio only. It is
+  # opt-in (off by default), and this leg also turns it off by name.
+  ear() {
+    echo "call-tap: ears capture on $FAR (the far end), stop-file $STOP_EAR"
+    "$PY" -c 'import runpy, sys; sys.argv[0] = "call-tap-ear"; runpy.run_module("ears.listen", run_name="__main__")' \
+       capture --source mic --device "$FAR" --heartbeat 15 \
+       --agent ears --session call-tap --stop-file "$STOP_EAR" --turn-text redecode \
+       --detector silero --silero-model "$SILERO" --missed-reply-window 0 &
+    CAP=$!; echo $CAP > "$RUN/capture.pid"
+  }
+  # The ear runs until it ends. Then: `down` (STOP) or a dead passthrough ends the tap, as
+  # before. A pause (LISTEN-OFF, or the keeper's STOP-ear) holds the ear off while the
+  # passthrough runs, polling once a second, and starts it again when LISTEN-OFF clears.
+  # An ear that ended by itself ends the tap, as before.
+  while :; do
+    if [ -e "$OFF" ]; then
+      rm -f "$RUN/capture.pid"
+      echo "call-tap: listening is OFF (ears.json): far-end ear paused, passthrough running"
+      while [ -e "$OFF" ] && [ ! -e "$STOP" ] && kill -0 "$SOX" 2>/dev/null; do sleep 1; done
+      if [ -e "$STOP" ] || ! kill -0 "$SOX" 2>/dev/null; then break; fi
+      echo "call-tap: listening is ON again: the far-end ear starts"
+    fi
+    rm -f "$STOP_EAR"
+    ear
+    wait $CAP; echo "call-tap: capture exited $?"
+    [ -e "$STOP" ] && break
+    kill -0 "$SOX" 2>/dev/null || break
+    [ -e "$OFF" ] || [ -e "$STOP_EAR" ] || break   # it ended by itself: the tap ends
+  done
+  kill "$SOX" 2>/dev/null; wait "$SOX" 2>/dev/null; echo "call-tap: passthrough stopped"
+  ;;
+down)
+  touch "$STOP" "$STOP_EAR"; [ -f "$RUN/sox.pid" ] && kill "$(cat "$RUN/sox.pid")" 2>/dev/null
+  echo "call-tap: stop requested (stop-files + passthrough pid)"
+  ;;
+status)
+  sox_up=""
+  for f in sox capture; do
+    p=$(cat "$RUN/$f.pid" 2>/dev/null)
+    if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then echo "$f: running pid $p"; [ "$f" = sox ] && sox_up=1
+    elif [ "$f" = capture ] && [ -n "$sox_up" ] && [ -e "$OFF" ]; then echo "capture: paused (listening OFF by ears.json)"
+    else echo "$f: not running"; fi
+  done
+  ;;
+*) usage; exit 1 ;;
+esac

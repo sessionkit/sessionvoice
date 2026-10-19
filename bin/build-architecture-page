@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""Build docs/architecture.html from docs/architecture.md: the page a reader opens.
+Markdown and Mermaid are rendered in the browser (marked + mermaid from jsdelivr).
+
+Usage: bin/build-architecture-page   (from anywhere; paths are this checkout's)
+"""
+import json
+import pathlib
+
+docs = pathlib.Path(__file__).resolve().parent.parent / "docs"
+src, out = docs / "architecture.md", docs / "architecture.html"
+md = src.read_text()
+page = """<!doctype html>
+<meta charset="utf-8">
+<title>ears: architecture</title>
+<meta name="color-scheme" content="light dark">
+<style>
+ :root { --fg: #222; --bg: #fff; --code: #f3f3f3; --link: #0a58ca; }
+ @media (prefers-color-scheme: dark) {
+   :root { --fg: #ddd; --bg: #16181c; --code: #2a2d33; --link: #7fb2ff; }
+ }
+ body { font: 16px/1.5 -apple-system, sans-serif; max-width: 1100px;
+        margin: 2em auto; padding: 0 1em; color: var(--fg); background: var(--bg); }
+ a { color: var(--link); }
+ pre.mermaid { background: none; text-align: center; }
+ code { background: var(--code); padding: 0 .2em; }
+</style>
+<div id="doc"></div>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script type="module">
+ import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+ const md = %s;
+ const r = new marked.Renderer();
+ r.code = ({text, lang}) => lang === "mermaid"
+   ? `<pre class="mermaid">${text.replace(/</g, "&lt;")}</pre>`
+   : `<pre><code>${text.replace(/</g, "&lt;")}</code></pre>`;
+ // Follows the system's light/dark mode, and re-draws when it changes.
+ const dark = matchMedia("(prefers-color-scheme: dark)");
+ async function render() {
+   document.body.dataset.done = "";
+   document.getElementById("doc").innerHTML = marked.parse(md, {renderer: r});
+   mermaid.initialize({startOnLoad: false, securityLevel: "loose",
+                       theme: dark.matches ? "dark" : "default"});
+   try { await mermaid.run(); document.body.dataset.done = "ok"; }
+   catch (e) { document.body.dataset.done = "error: " + e; }
+ }
+ dark.addEventListener("change", render);
+ await render();
+</script>
+""" % json.dumps(md)
+out.write_text(page)
+print(out)

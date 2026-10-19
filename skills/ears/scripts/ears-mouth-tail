@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""ears-mouth-tail - one live, interleaved view of the ears and the mouths.
+
+It tails the logs of the ears and the mouth at the same time, interleaved,
+so a reader sees when a turn lands and then what comes back in
+answer.
+
+Sources (followed from their current end; date-named files are re-resolved on
+every pass, because a path picked once goes deaf at midnight):
+  EARS/TURN/MOUTH  <home>/logs/conversations/heard_<today>.jsonl, <home> being sessionvoice's
+                   home (ears.home; ~/.voicemode on a host that keeps it there):
+                   partials, turns, events, and the mouth's saying/said (with agent)
+  CONV             ~/.voicemode/logs/conversations/exchanges_<today>.jsonl
+                   converse, the old path: > an agent spoke, < heard = converse's own mic
+  MAIL             <home>/mouth/mail.log: mail -> mouth, queued/amended/...
+  SMART            $EARS_SHADOW_LOG_DIR/smart_<today>.jsonl (default: the package's
+                   shadow/log, where shadow/shadow.py writes): Smart Turn in
+                   SHADOW mode, its verdict at each pause; compare with TURN
+  WHO              <home>/logs/conversations/speakers_<today>.jsonl: who spoke each
+                   heard line (bob, alice, other, mixed), from the speaker-sidecar2
+                   side-car. While that file is live, partial and
+                   turn lines wait up to HOLD_S for their name; otherwise nothing changes.
+Columns: time, label (one width), who (agent or mic), text: each line says who
+it is from, and the columns line up. player.log dropped: said lines carry it.
+
+Usage: ears-mouth-tail [--heartbeats] [--back N]
+  --back N      also print the last N lines of each source first (default 0)
+  --heartbeats  show ears heartbeats (hidden by default: one every 15 s)
+"""
+import argparse, datetime, json, os, sys, time
+from pathlib import Path
+
+def sessionvoice_home():
+    """sessionvoice's home: a copy of ears.home.sessionvoice_home (tests/test_home.py holds
+    it). $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it
+    holds the heard log, else ~/.sessionvoice."""
+    import glob, os
+    for name in ("SESSIONVOICE_HOME", "VOICEMODE_BASE_DIR"):
+        if os.environ.get(name):
+            return os.path.expanduser(os.path.expandvars(os.environ[name]))
+    for d in ("~/.sessionvoice", "~/.voicemode"):
+        c = os.path.expanduser(d + "/logs/conversations")
+        if os.path.exists(c + "/heard.lock") or glob.glob(glob.escape(c) + "/heard_*.jsonl"):
+            return os.path.expanduser(d)
+    return os.path.expanduser("~/.sessionvoice")
+
+
+HOME = os.path.expanduser("~")
+CONV = f"{sessionvoice_home()}/logs/conversations"      # heard_*, speakers_*
+# VoiceMode's own logs stay in VoiceMode's home, whatever sessionvoice's is
+VM_CONV = f"{HOME}/.voicemode/logs/conversations"
+# The Smart Turn shadow's log: shadow/shadow.py and shadow/score honor the same variable.
+SHADOW_LOG = os.path.expanduser(os.environ.get("EARS_SHADOW_LOG_DIR")
+                                or str(Path(__file__).resolve().parents[3] / "shadow" / "log"))
+C = {"BACK": "\033[34m", "SMART": "\033[32m", "EARS": "\033[36m", "TURN": "\033[1;36m", "SAY": "\033[1;35m", "MOUTH": "\033[33m",
+     "PLAY": "\033[1;33m", "dim": "\033[2m", "off": "\033[0m"}
+
+
+def paths():
+    d = datetime.date.today().strftime("%Y-%m-%d")
+    return {"EARS": f"{CONV}/heard_{d}.jsonl", "SAY": f"{VM_CONV}/exchanges_{d}.jsonl",
+            "MOUTH": f"{sessionvoice_home()}/mouth/mail.log",
+            "SMART": f"{SHADOW_LOG}/smart_{d}.jsonl",
+            "WHO": f"{CONV}/speakers_{d}.jsonl",
+            "BACK": f"{VM_CONV}/backchannel_{d}.jsonl"}
+
+
+SPEAK = {}     # heard seq -> who spoke it (speaker-sidecar2)
+HOLD_S = 3.0   # how long a partial/turn waits for its name; the side-car labels a line in about 2 s
+
+
+def who_live():
+    """The side-car is running: its file for today was written in the last 2 minutes."""
+    try:
+        return time.time() - os.path.getmtime(paths()["WHO"]) < 120
+    except OSError:
+        return False
+
+
+class Held:
+    """A partial/turn line whose who-column waits for the speaker of its seq."""
+    def __init__(self, seq, tmpl, dflt):
+        self.seq, self.tmpl, self.dflt, self.born = seq, tmpl, dflt, time.time()
+
+    def ready(self):
+        return self.seq in SPEAK or time.time() - self.born > HOLD_S
+
+    def text(self):
+        who = SPEAK.get(self.seq)
+        if who in (None, "silent"):
+            who = self.dflt if who is None else "-"
+        return self.tmpl.replace("\x00WHO\x00", f"{who:<6}")
+
+
+# TTFA, time to first audio: from the user's last word to
+# the first sound the mouth makes after it, in seconds to two decimals; target 0.01.
+# The user's last word = the turn line's t1 (stream seconds) on the wall clock via the newest
+# heartbeat's ts - stream_s (as fast-voice/measure.py does); without a heartbeat yet,
+# the turn line's ts minus the 2.0 s silence rule, marked "~".
+TT = {"zero": None, "end": None, "approx": False, "pending": False, "real": False}
+# TTFR, time to first REAL response: TTFA counts the canned opener too;
+# TTFR is the first line after the user's turn that the auto-opener didn't write
+# (the opener's utts file lists every canned utt; mouth-sounds.py reads the same one).
+CANNED = Path(os.environ.get("MOUTH_SOUNDS_CANNED")
+              or os.path.join(os.environ.get("EARS_RUN") or "~/.cache/ears/run", "auto-opener.utts")).expanduser()
+
+
+def canned(utt):
+    try:
+        return utt in CANNED.read_text().split()
+    except OSError:
+        return False
+
+
+def _t(ts):
+    try:
+        return datetime.datetime.fromisoformat(ts).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+W = 5  # every label padded to one width so the text column lines up
+
+
+def lab(name, color, who=""):
+    return f"{C[color]}{name:<{W}} {who:<6} "
+
+
+def agent_of(path):
+    """converse's project_path -> the agent: ~/.alice -> alice."""
+    b = os.path.basename((path or "").rstrip("/"))
+    return b.lstrip(".") or "?"
+
+
+def fmt(src, line, beats, live=True):
+    line = line.rstrip("\n")
+    try:
+        r = json.loads(line)
+    except ValueError:
+        return None  # player.log's plain python-logging lines: not events
+    if not isinstance(r, dict):
+        return None
+    now = datetime.datetime.now().strftime("%H:%M:%S") if live else "--:--:--"  # PLAY lines carry no time of their own
+    off = C["off"]
+    if src == "WHO":
+        if r.get("seq") is not None and r.get("speaker"):
+            who, fr = r["speaker"], r.get("fracs") or {}
+            if who == "mixed" and fr:  # say whose voice leads, marked unsure: alice?
+                who = max(fr, key=fr.get) + "?"
+            SPEAK[r["seq"]] = who
+        return None
+    if src == "EARS":
+        ts = (r.get("ts") or "")[11:19] or now
+        k = r.get("kind")
+        if k == "event" and r.get("event") == "heartbeat" and r.get("stream_s") is not None and _t(r.get("ts")):
+            TT["zero"] = _t(r["ts"]) - float(r["stream_s"])
+        if k == "turn" and r.get("source") in ("mic", "call"):
+            if TT["zero"] is not None and r.get("t1") is not None:
+                TT["end"], TT["approx"] = TT["zero"] + float(r["t1"]), False
+            elif _t(r.get("ts")):
+                TT["end"], TT["approx"] = _t(r["ts"]) - 2.0, True
+            TT["pending"] = TT["real"] = True
+        if k == "saying" and TT["end"] and _t(r.get("ts")) and (TT["pending"] or TT["real"]):
+            dt = _t(r["ts"]) - TT["end"]
+            tag, a = "", "~" if TT["approx"] else ""
+            if TT["pending"]:
+                TT["pending"] = False
+                tag += f"TTFA {a}{dt:.2f}s "
+            if TT["real"] and not canned(r.get("utt", "")):
+                TT["real"] = False
+                tag += f"TTFR {a}{dt:.2f}s "
+            if tag:
+                r = dict(r, _ttfa=tag)
+        if k in ("partial", "turn") and live and r.get("seq") is not None and who_live():
+            if k == "partial":
+                return Held(r["seq"], f"{C['dim']}{ts} {C['dim']}{'EARS':<{W}} \x00WHO\x00 ... {r.get('text', '')}{off}", "?")
+            return Held(r["seq"], f"{ts} {C['TURN']}{'TURN':<{W}} \x00WHO\x00 {r.get('text', '')}{off}", "?")
+        if k == "partial":
+            who = SPEAK.get(r.get("seq"), "")
+            return f"{C['dim']}{ts} {lab('EARS', 'dim', who)}... {r.get('text', '')}{off}"
+        if k == "turn":
+            return f"{ts} {lab('TURN', 'TURN', SPEAK.get(r.get('seq')) or r.get('device', ''))}{r.get('text', '')}{off}"
+        if k == "event":
+            ev = r.get("event")
+            if ev == "heartbeat" and not beats:
+                return None
+            extra = {k2: v for k2, v in r.items() if k2 in ("peak", "reason", "to", "from")}
+            return f"{ts} {lab('EARS', 'EARS', r.get('device', ''))}event:{ev} {r.get('text') or ''} {json.dumps(extra) if extra else ''}{off}"
+        if k in ("saying", "said"):  # the mouth speaking: the sender rides on every line
+            who = r.get("agent") or "?"
+            if k == "saying":
+                return f"{ts} {lab('MOUTH', 'MOUTH', who)}{r.get('_ttfa', '')}> {r.get('text', '')}{off}"
+            cut = " CUT" if r.get("cut") else ""
+            return (f"{ts} {lab('MOUTH', 'PLAY', who)}said {r.get('played_s', '')}s{cut} "
+                    f"utt={r.get('utt', '')} voice={r.get('voice', '')}{off}")
+        return f"{ts} {lab('EARS', 'EARS')}{k}: {r.get('text', '')}{off}"
+    if src == "SAY":  # converse, the old path: tts = an agent spoke, stt = converse's own mic
+        ts = (r.get("timestamp") or "")[11:19] or now
+        who = agent_of(r.get("project_path"))
+        arrow = "> " if r.get("type") == "tts" else "< heard: "
+        return f"{ts} {lab('CONV', 'SAY', who)}{arrow}{r.get('text', '')}{off}"
+    if src == "BACK":  # the backchannel runner: a clip it played, or would in shadow
+        ts = (r.get("at") or "")[11:19] or now
+        d, mode, seat = r.get("decision"), r.get("mode", ""), r.get("seat", "")
+        clip = os.path.basename(r.get("clip") or "")
+        if d in ("mid", "end"):
+            played = r.get("played")
+            verb = "played" if (played if played is not None else mode == "live") else "would play"
+            pd = r.get("pause_to_decision_s")
+            clip = clip + (f" {pd:.2f}s into the pause" if isinstance(pd, (int, float)) else "")
+            return (f"{C['BACK']}\033[1m{ts} {lab('BACK', 'BACK', seat)}{verb} {d}: {clip or '?'} "
+                    f"({r.get('why', '')}) after '{r.get('text', '')}'{off}")
+        return f"{C['dim']}{ts} {lab('BACK', 'dim', seat)}quiet: {r.get('why', '')}{off}"
+    if src == "SMART":  # Smart Turn in shadow mode: logs its verdict, never ends a turn
+        ts = (r.get("ts") or "")[11:19] or now
+        if r.get("kind") == "onset":  # the user started speaking (VAD); dim, it is context not a verdict
+            return f"{C['dim']}{ts} {lab('SMART', 'dim', r.get('mode', ''))}speaking{off}"
+        if r.get("kind") != "offset":
+            return f"{ts} {lab('SMART', 'SMART', r.get('mode', ''))}{r.get('kind')} {r.get('device', '')}{off}"
+        # "would close" on every line read as if every line closed.
+        # Only a DONE line closes; a going line is a pause it would wait through.
+        ve = (r.get("voice_end") or "")[11:22]
+        if r.get("complete"):
+            return (f"{C['SMART']}\033[1m{ts} {lab('SMART', 'SMART', r.get('mode', ''))}DONE  p={r.get('p'):.2f} "
+                    f"sounds finished: would end the turn at {(r.get('would_close') or '')[11:22]} "
+                    f"(voice stopped {ve}){off}")
+        return (f"{C['dim']}{ts} {lab('SMART', 'dim', r.get('mode', ''))}pause p={r.get('p'):.2f} "
+                f"not finished: would wait the full 2 s{off}")
+    if src == "MOUTH":
+        ts = r.get("t") or now
+        if "action" not in r:
+            return None
+        who = (r.get("mail_from") or "").split("@")[0]
+        return f"{ts} {lab('MAIL', 'MOUTH', who)}{r['action']} utt={r.get('utt', '')}{off}"
+    return None
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--back", type=int, default=0)
+    ap.add_argument("--heartbeats", action="store_true")
+    a = ap.parse_args()
+    fh = {}  # src -> (path, file)
+    first = True
+    queue = []  # lines in arrival order; a Held line at the head waits for its speaker
+
+    def drain():
+        while queue and (not isinstance(queue[0], Held) or queue[0].ready()):
+            q = queue.pop(0)
+            print(q.text() if isinstance(q, Held) else q, flush=True)
+    print(f"ears-mouth-tail: following {', '.join(paths())} (Ctrl-C to stop)", flush=True)
+    while True:
+        for src, p in sorted(paths().items(), key=lambda kv: kv[0] != "WHO"):
+            cur = fh.get(src)
+            if cur is None or cur[0] != p:  # new day or first pass: (re)open
+                if cur:
+                    cur[1].close()
+                if not os.path.exists(p):
+                    fh.pop(src, None)
+                    continue
+                f = open(p, errors="replace")
+                if first and (a.back or src == "WHO"):
+                    # WHO whole (small, and names can land out of order); the rest their last N
+                    lines = f.readlines() if src == "WHO" else f.readlines()[-a.back:]
+                    for l in lines:
+                        out = fmt(src, l, a.heartbeats, live=False)
+                        if out:
+                            print(out.text() if isinstance(out, Held) else out, flush=True)
+                elif cur is None and first:
+                    f.seek(0, 2)
+                fh[src] = (p, f)
+            f = fh[src][1]
+            while True:
+                l = f.readline()
+                if not l:
+                    break
+                out = fmt(src, l, a.heartbeats)
+                if out:
+                    queue.append(out)
+        drain()
+        first = False
+        time.sleep(0.25)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)

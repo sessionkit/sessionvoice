@@ -1,0 +1,1 @@
+../../../speakers/speaker-sidecar2.py

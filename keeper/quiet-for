@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# quiet-for SECONDS - exit 0 only if the heard log has had no mic partial/turn for SECONDS.
+# Run it right before `mouth say`: a heard_wait "turn" can be a pause, not the end
+# (an agent once spoke over the user twice that way).
+# --- sessionvoice_home: a copy of ears.home.sessionvoice_home (tests/test_home.py holds it) ---
+# $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it holds the
+# heard log (a heard.lock or a heard_*.jsonl in logs/conversations), else ~/.sessionvoice.
+sessionvoice_home() {
+  local v d
+  for v in "${SESSIONVOICE_HOME:-}" "${VOICEMODE_BASE_DIR:-}"; do
+    [ -n "$v" ] || continue
+    case $v in "~" | "~/"*) v="$HOME${v#\~}" ;; esac
+    echo "$v"; return 0
+  done
+  for d in "$HOME/.sessionvoice" "$HOME/.voicemode"; do
+    if [ -e "$d/logs/conversations/heard.lock" ] \
+        || compgen -G "$d/logs/conversations/heard_*.jsonl" >/dev/null; then
+      echo "$d"; return 0
+    fi
+  done
+  echo "$HOME/.sessionvoice"
+}
+# --- end sessionvoice_home ---
+N=${1:-6}; LOG=$(sessionvoice_home)/logs/conversations/heard_$(date +%F).jsonl
+python3 - "$LOG" "$N" <<'PY'
+import json,sys,datetime
+log,n=sys.argv[1],float(sys.argv[2]); last=None
+for ln in open(log):
+    try: r=json.loads(ln)
+    except ValueError: continue
+    if r.get("source")=="mic" and r.get("kind") in ("partial","turn") and r.get("text"): last=r["ts"]
+age=(datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(last)).total_seconds() if last else 1e9
+print(f"quiet-for: last mic speech {age:.1f}s ago (need {n:g}s) -> {'QUIET' if age>=n else 'TALKING'}")
+sys.exit(0 if age>=n else 1)
+PY

@@ -1,0 +1,8 @@
+.build/
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.build-dev/
+.build-old/
+bench/out/

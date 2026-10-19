@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""render-plist - fill a launchd/*.plist.in template with this machine's paths.
+
+    bin/render-plist launchd/dev.sessionkit.voice.ears-sounds.plist.in            # to stdout
+    bin/render-plist -o ~/scratch launchd/*.plist.in                       # one file each
+    bin/render-plist --set SPEAKER_PY=/path/to/python launchd/dev.sessionkit.voice.ears-speakers.plist.in
+
+It only renders. It never calls launchctl and, by default, writes nothing but stdout:
+copying a plist into ~/Library/LaunchAgents and bootstrapping it is yours to do by
+hand, as each template's header says.
+
+Each @NAME@ placeholder takes, first found: --set NAME=VALUE, then the environment
+variable NAME, then a default:
+  HOME       $HOME
+  EARS_REPO  this repo (the directory above bin/)
+  PYTHON     @EARS_REPO@/.venv/bin/python
+  BASH       the first bash on PATH
+  RULES      @HOME@/.sessionkit/voice/settings/wake.json, the user file ears-mail reads
+             by default (the repo's keeper/defaults/wake.json ships no seats)
+Anything else (SPEAKER_PY, AGENT_REFS, TALK) has no default: pass --set. TALK, the
+installed `talk`, is never looked up on PATH: macOS ships an unrelated /usr/bin/talk. A template
+with a placeholder left unfilled is refused (exit 2), and so is a result that does not
+parse as a plist. Stdlib only.
+
+Only the plist itself is filled: a @NAME@ inside a <!-- --> comment is left as written. The
+headers name placeholders in prose, and a path holding "--" (a scratch checkout under
+/private/tmp/claude-501/-Users-...) is illegal inside an XML comment, so filling one there
+wrote a plist that does not parse.
+"""
+import argparse
+import os
+import plistlib
+import re
+import shutil
+import sys
+from pathlib import Path
+from xml.sax.saxutils import escape
+
+REPO = Path(__file__).resolve().parents[1]
+#: The voice settings folder under HOME: a copy of ears.home.SETTINGS (stdlib only, this
+#: imports nothing from src/; tests/test_settings_dir.py holds the copy to it).
+VOICE_SETTINGS = ".sessionkit/voice/settings"
+PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
+COMMENT = re.compile(r"(<!--.*?-->)", re.S)  # one group: re.split keeps them
+
+
+def defaults(get):
+    repo = get("EARS_REPO") or str(REPO)
+    home = get("HOME") or str(Path.home())
+    return {
+        "HOME": home,
+        "EARS_REPO": repo,
+        "PYTHON": f"{repo}/.venv/bin/python",
+        "BASH": shutil.which("bash") or "/bin/bash",
+        "RULES": f"{home}/{VOICE_SETTINGS}/wake.json",
+    }
+
+
+def render(text, sets, env=os.environ):
+    """The template with every @NAME@ outside a comment filled; raises KeyError naming
+    what is missing. Comments are copied through untouched (see the module help)."""
+    get = lambda k: sets.get(k) or env.get(k)
+    values = defaults(get)
+    parts = COMMENT.split(text)  # even: plist text, odd: <!-- comments -->
+    missing, out = [], {}
+    for name in sorted({n for x in parts[::2] for n in PLACEHOLDER.findall(x)}):
+        v = get(name) or values.get(name)
+        if v:
+            out[name] = v
+        else:
+            missing.append(name)
+    if missing:
+        raise KeyError(", ".join(f"@{m}@" for m in missing))
+    fill = lambda m: escape(out[m.group(1)])
+    return "".join(x if i % 2 else PLACEHOLDER.sub(fill, x) for i, x in enumerate(parts))
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="render-plist", description=__doc__.split("\n\n")[0])
+    p.add_argument("templates", nargs="+", type=Path, help="launchd/*.plist.in")
+    p.add_argument("-o", "--out", type=Path,
+                   help="write NAME.plist into this directory (default: stdout, one template)")
+    p.add_argument("--set", action="append", default=[], metavar="NAME=VALUE",
+                   help="fill @NAME@ with VALUE (repeatable)")
+    a = p.parse_args(argv)
+    sets = {}
+    for s in a.set:
+        k, sep, v = s.partition("=")
+        if not sep or not k or not v:
+            p.error(f"--set wants NAME=VALUE with a non-empty VALUE, got {s!r}")
+        sets[k] = v
+    if a.out is None and len(a.templates) > 1:
+        p.error("several templates need -o DIR")
+    for t in a.templates:
+        if not t.name.endswith(".plist.in"):
+            p.error(f"{t}: not a *.plist.in template")
+        try:
+            text = render(t.read_text(), sets)
+        except KeyError as e:
+            print(f"render-plist: {t}: no value for {e.args[0]}: pass --set NAME=VALUE"
+                  " or set NAME in the environment", file=sys.stderr)
+            return 2
+        try:
+            plistlib.loads(text.encode())
+        except Exception as e:
+            print(f"render-plist: {t}: the result is not a plist: {e}", file=sys.stderr)
+            return 2
+        if a.out is None:
+            sys.stdout.write(text)
+        else:
+            a.out.mkdir(parents=True, exist_ok=True)
+            dest = a.out / t.name[: -len(".in")]
+            dest.write_text(text)
+            print(dest)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

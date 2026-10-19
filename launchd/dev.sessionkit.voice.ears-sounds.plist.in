@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- ears-sounds as a launch agent: the tick on a turn and the blip on a partial, so a reboot
+     or a session handover no longer turns them off. Before, nothing started it: it
+     was a hand-run spike, and a reboot left it
+     off.
+     Runs the ears repo's copy (keeper/ears-sounds.py), which reads the user's paths:
+       settings ~/.sessionkit/voice/settings/ears-sounds.json (reread live, no restart)
+       sound log ~/Library/Logs/ears/ears-sounds.jsonl
+     @PYTHON@ is the ears .venv (sounddevice, numpy).
+     A TEMPLATE: render it, then install (no machine paths live here):
+       mkdir -p ~/Library/Logs/ears
+       bin/render-plist launchd/dev.sessionkit.voice.ears-sounds.plist.in > ~/Library/LaunchAgents/dev.sessionkit.voice.ears-sounds.plist
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.sessionkit.voice.ears-sounds.plist
+     bin/render-plist fills @HOME@, @EARS_REPO@ and @PYTHON@ from this machine (see its
+     help for the defaults and the overrides).
+     Remove:  launchctl bootout gui/$(id -u)/dev.sessionkit.voice.ears-sounds
+     Was dev.sessionvoice.ears-sounds before the rename (dev.voicemode.ears-sounds before that): one
+     still loaded under an old label is booted out first (launchctl bootout
+     gui/$(id -u)/OLD, then rm ~/Library/LaunchAgents/OLD.plist), or two would run.
+     `ears services status` names one it finds; install never touches it. -->
+<dict>
+  <key>Label</key><string>dev.sessionkit.voice.ears-sounds</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@PYTHON@</string>
+    <string>@EARS_REPO@/keeper/ears-sounds.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>@EARS_REPO@/keeper</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>@HOME@</string>
+    <key>PATH</key><string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PYTHONUNBUFFERED</key><string>1</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>@HOME@/Library/Logs/ears/ears-sounds.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/ears/ears-sounds.log</string>
+</dict>
+</plist>

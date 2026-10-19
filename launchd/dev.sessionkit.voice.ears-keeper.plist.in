@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The room's ears as a launch agent, so no agent's handover stops them: the ears
+     do not depend on any one agent's session.
+     Runs the ears repo's keeper (it reads
+     ~/.sessionkit/voice/settings/ears.json). The mic grant is on homebrew bash, the job's
+     responsible process: TCC prompts once, and the user approves it (authValue=2, reason 2).
+     A TEMPLATE: render it, then install (no machine paths live here):
+       bin/render-plist launchd/dev.sessionkit.voice.ears-keeper.plist.in > ~/Library/LaunchAgents/dev.sessionkit.voice.ears-keeper.plist
+     bin/render-plist fills @HOME@, @BASH@ (the first bash on PATH) and @EARS_REPO@ (the
+     checkout it runs from) itself; EARS_REPO=... or BASH=... in its environment overrides.
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.sessionkit.voice.ears-keeper.plist
+     @BASH@ is the bash that gets the microphone grant (TCC asks once, for that binary).
+     The capture is ears.listen, run by @EARS_REPO@/.venv/bin/python (EARS_PY overrides). EARS_W, the
+     old VoiceMode checkout, is gone: a plist that still sets it starts, and the keeper logs
+     that it is ignored.
+     The SAME label `ears services install` (only keeper) loads its own job under, at the
+     same path. Install tells the two apart by CONTENT: the plist it writes carries
+     SESSIONKIT_INSTALLED_BY in EnvironmentVariables, and a render of this template does
+     not. So install leaves a render here alone and skips its own (`ears services
+     status` names it). The reverse is yours: rendering this over the plist install
+     wrote REPLACES install's job (bin/render-plist writes only to stdout or -o; the
+     redirect is what overwrites).
+     Remove:  launchctl bootout gui/$(id -u)/dev.sessionkit.voice.ears-keeper
+              AbandonProcessGroup keeps the capture alive through bootout and kickstart -k, so
+              the next keeper adopts it with no gap. Without it launchd kills the job's whole
+              process group and the room loses ~4 s of ears (measured).
+              To stop the ears, touch the capture's stop file.
+     Live code: @EARS_REPO@ is a DETACHED checkout at the live sha; develop in
+     worktrees. Deploy = check out SHA there, detached, then launchctl kickstart -k.
+     TM_AGENT_ADDRESS=ears is the daemon's mail From (mail_me); measured with this PATH. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.sessionkit.voice.ears-keeper</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@BASH@</string>
+    <string>@EARS_REPO@/keeper/ears-keeper.sh</string>
+    <string>default</string>
+  </array>
+  <key>WorkingDirectory</key><string>@HOME@</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>@HOME@</string>
+    <key>PATH</key><string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>EARS_AGENT</key><string>ears</string>
+    <key>EARS_SESSION</key><string>ears-keeper</string>
+    <key>TM_AGENT_ADDRESS</key><string>ears</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>AbandonProcessGroup</key><true/>
+  <key>StandardOutPath</key><string>@HOME@/Library/Logs/ears/ears-keeper.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/ears/ears-keeper.log</string>
+</dict>
+</plist>

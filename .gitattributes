@@ -1,0 +1,22 @@
+docs/internal/ export-ignore
+/docs/internal/** export-ignore
+/CLAUDE.md export-ignore
+CHANGELOG.md merge=union
+
+# Internal notes that live beside shipped code. Whole files only,
+# one anchored line each; the code beside them still ships.
+/keeper/QUESTIONS.md export-ignore
+/keeper/ROADMAP.md export-ignore
+/src/mouth/DESIGN.md export-ignore
+/docs/phone-voice.md export-ignore
+/talk/README.md export-ignore
+/talk/ask-4890.1.md export-ignore
+/talk/ruling-question-wake.md export-ignore
+/talk/pager-files-design.md export-ignore
+/talk/wake-settings-design.md export-ignore
+/talk/features/200.md export-ignore
+/talk/features/200.1.md export-ignore
+/talk/features/200.2.md export-ignore
+/talk/features/60.2.1.md export-ignore
+/talk/features/70.1.md export-ignore
+/talk/features/70.2.md export-ignore

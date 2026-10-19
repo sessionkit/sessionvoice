@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""score - Smart Turn shadow against the ears' real turns, today.
+
+For each ears TURN since the shadow started: the pauses Smart Turn judged,
+how many it called DONE before the real end, and whether each early DONE
+would have CUT THE USER OFF under the `shorten` rule (no onset before its
+would_close; needs the onset lines in the log). For a
+final DONE, how many seconds sooner than the ears it would have closed.
+
+Usage: score [--since HH:MM] [--log-dir DIR]
+  --log-dir  where shadow.py writes smart_<date>.jsonl: default $EARS_SHADOW_LOG_DIR,
+             else log/ beside this file (shadow.py's own default)
+"""
+import argparse, datetime, json, os
+from pathlib import Path
+
+def sessionvoice_home():
+    """sessionvoice's home: a copy of ears.home.sessionvoice_home (tests/test_home.py holds
+    it). $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it
+    holds the heard log, else ~/.sessionvoice."""
+    import glob, os
+    for name in ("SESSIONVOICE_HOME", "VOICEMODE_BASE_DIR"):
+        if os.environ.get(name):
+            return os.path.expanduser(os.path.expandvars(os.environ[name]))
+    for d in ("~/.sessionvoice", "~/.voicemode"):
+        c = os.path.expanduser(d + "/logs/conversations")
+        if os.path.exists(c + "/heard.lock") or glob.glob(glob.escape(c) + "/heard_*.jsonl"):
+            return os.path.expanduser(d)
+    return os.path.expanduser("~/.sessionvoice")
+
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--since", default="00:00")
+ap.add_argument("--log-dir", default=os.environ.get("EARS_SHADOW_LOG_DIR")
+                or str(Path(__file__).resolve().parent / "log"))
+a = ap.parse_args()
+d = f"{datetime.date.today():%Y-%m-%d}"
+H = os.path.join(sessionvoice_home(), f"logs/conversations/heard_{d}.jsonl")
+S = os.path.join(os.path.expanduser(a.log_dir), f"smart_{d}.jsonl")
+ts = lambda s: datetime.datetime.fromisoformat(s).timestamp()
+hm = lambda t: datetime.datetime.fromtimestamp(t).strftime("%H:%M:%S")
+
+rows = [json.loads(l) for l in open(S)]
+offs = [r for r in rows if r["kind"] == "offset"]
+ons = sorted(ts(r["voice_start"]) for r in rows if r["kind"] == "onset")
+have_onsets = bool(ons)
+turns, start = [], None
+for l in open(H):
+    r = json.loads(l)
+    if r.get("source") != "mic":
+        continue
+    if r["kind"] == "partial" and start is None:
+        start = ts(r["ts"])
+    if r["kind"] == "turn":
+        turns.append((start or ts(r["ts"]), ts(r["ts"]), r["text"]))
+        start = None
+
+n = cuts = right = 0
+saved = []
+first = ts(offs[0]["ts"]) if offs else 0
+for a0, b, text in turns:
+    if b < first or hm(b)[:5] < a.since:
+        continue
+    ins = [x for x in offs if a0 - 3 <= ts(x["voice_end"]) <= b]
+    if not ins:
+        continue
+    n += 1
+    last = ins[-1]
+    early = [x for x in ins[:-1] if x["complete"]]
+    cut = [x for x in early if have_onsets and not any(ts(x["voice_end"]) < o < ts(x["would_close"]) for o in ons)]
+    cuts += bool(cut)
+    gain = round(b - ts(last["would_close"]), 2) if last["complete"] else None
+    if gain is not None:
+        right += 1
+        saved.append(gain)
+    flag = "CUT" if cut else ("early?" if early and not have_onsets else "")
+    print(f"{hm(b)} pauses {len(ins):2} early-DONE {len(early)} {flag:6} end-DONE {'yes' if gain is not None else 'no ':3}"
+          f" saves {gain if gain is not None else '-':>5}  {text[:48]}")
+print(f"\n{n} turns: Smart Turn would have CUT THE USER OFF in {cuts}"
+      + ("" if have_onsets else " (no onsets logged yet: early DONEs unscored)")
+      + f"; called the real end in {right}; median saving "
+      + (f"{sorted(saved)[len(saved)//2]} s" if saved else "-"))

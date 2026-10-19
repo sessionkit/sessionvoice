@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Talk as a launch agent: `talk serve`, the live view of what the ears heard and the
+     mouth said (src/talk), kept running across reboots and session handovers.
+     It runs the INSTALLED talk command (the sessionvoice wheel's console script), not a
+     checkout. It is read-only: it reads the heard log, the seats' heard.state and the
+     heard-cursors (docs/talk.md, "What it reads"), so it needs no microphone and no TCC grant.
+     It binds 127.0.0.1 only. Reaching it from your other devices is your choice (e.g.
+     `tailscale serve` in front of it, docs/talk.md, "On a tailnet"); this job never does that.
+     It answers only Host 127.0.0.1:8780 and localhost:8780. Behind tailscale
+     serve, the browser's Host is the tailnet name, so add TALK_ALLOW_HOSTS (e.g.
+     machine.example.ts.net) to EnvironmentVariables, or the phone gets a 403.
+     Its first start makes the per-install pairing token, <sessionvoice home>/talk/token
+     (0600): nothing about it goes in this file, its arguments or its
+     environment. Pair each browser once: run `talk pair` in a terminal on the host and open
+     the link it prints (docs/talk.md, "Pairing"). Rotating the token (`talk token` with
+     its rotate flag; an XML comment cannot hold two hyphens) makes every browser pair
+     again, with no reload of this job.
+     Socket mode: add TALK_UNIX_SOCKET (a path, not a secret; talk.sock beside
+     the token is the usual one) to EnvironmentVariables and talk binds that unix
+     socket and NO TCP port, so nobody else can hold 8780 for it. Point tailscale serve's
+     /talk path at unix:PATH. Then 127.0.0.1:8780 is not talk, and talk pair takes the
+     tailnet URL instead (docs/talk.md, "On a tailnet").
+     A TEMPLATE: render it, then install (no machine paths live here):
+       mkdir -p ~/Library/Logs/ears
+       TALK=/path/to/the/installed/talk \
+           bin/render-plist launchd/dev.sessionkit.voice.talk.plist.in > ~/Library/LaunchAgents/dev.sessionkit.voice.talk.plist
+       launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.sessionkit.voice.talk.plist
+     bin/render-plist fills @HOME@ itself. @TALK@ has no default: it is the full path of the
+     installed `talk` (launchd does not search PATH for it), and not just the first talk on
+     PATH, because macOS ships an unrelated /usr/bin/talk.
+     Remove:  launchctl bootout gui/$(id -u)/dev.sessionkit.voice.talk
+     Was dev.sessionvoice.talk before the rename (dev.voicemode.talk before that): one
+     still loaded under an old label is booted out first (launchctl bootout
+     gui/$(id -u)/OLD, then rm ~/Library/LaunchAgents/OLD.plist), or two would run.
+     `ears services status` names one it finds; install never touches it.
+     Port 8780 is talk's default. Only one thing can hold it: change the port here (and in
+     anything in front of it) before loading this beside another Talk on the same machine.
+     Optional settings, all off by default (docs/talk.md, "Settings"): add TALK_PERSON,
+     TALK_SMART_TURN_DIR, TALK_SETTINGS_URL or TALK_ALLOW_HOSTS to EnvironmentVariables. SESSIONVOICE_HOME
+     moves the heard log, the same as for the ears. The services install that renders and
+     loads this for you is not built yet. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.sessionkit.voice.talk</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@TALK@</string>
+    <string>serve</string>
+    <string>--host</string><string>127.0.0.1</string>
+    <string>--port</string><string>8780</string>
+  </array>
+  <key>WorkingDirectory</key><string>@HOME@</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>@HOME@</string>
+    <key>PATH</key><string>@HOME@/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PYTHONUNBUFFERED</key><string>1</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>@HOME@/Library/Logs/ears/talk.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/ears/talk.log</string>
+</dict>
+</plist>

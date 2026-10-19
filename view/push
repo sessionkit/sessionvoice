@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+"""push MSG_ID - keep the "Ears: live" webxdc (message MSG_ID) current.
+
+A Delta XDC in the chat showing what
+the transcript thinks the user said (partials), what the agent said (short), one status
+line, and small metrics on top: the gap from the end of the user's speech to the
+start of the agent's voice.
+
+Reads, from their ends at start (plus a short backfill):
+  - the heard log  <home>/logs/conversations/heard_<today>.jsonl, <home> being
+    sessionvoice's home (ears.home; ~/.voicemode on a host that keeps it there)
+    (partials, turns with t0/t1 in stream seconds, heartbeats that map
+    stream seconds to wall time)
+  - VoiceMode's exchanges log  ~/.voicemode/logs/conversations/exchanges_<today>.jsonl: type "tts" rows whose
+    project_path is under EARS_VIEW_PROJECT (default: every agent's);
+    timestamp is written at the END of
+    playback, so first audio = timestamp - playback_time (derived, not
+    measured)
+Pushes the whole picture with dc-xdc-update when something changed and at
+least GAP seconds passed (webxdc's default sendUpdateInterval is 10 s), plus
+a heartbeat. Log: $EARS_LOG_DIR/ears-view-push.log (default ~/Library/Logs/ears, as the keeper).
+DC_OUTBOX picks the profile.
+Env: EARS_VIEW_GAP (default 10), EARS_VIEW_SESSION (default: every session),
+EARS_VIEW_UPDATE (default: dc-xdc-update on PATH), EARS_VIEW_PROJECT (default: every agent),
+EARS_VIEW_LABEL (the name the page shows on the agent's lines; unset = the page's neutral "Agent").
+"""
+import ast, json, os, statistics, subprocess, sys, time
+from datetime import datetime, date
+
+def sessionvoice_home():
+    """sessionvoice's home: a copy of ears.home.sessionvoice_home (tests/test_home.py holds
+    it). $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it
+    holds the heard log, else ~/.sessionvoice."""
+    import glob, os
+    for name in ("SESSIONVOICE_HOME", "VOICEMODE_BASE_DIR"):
+        if os.environ.get(name):
+            return os.path.expanduser(os.path.expandvars(os.environ[name]))
+    for d in ("~/.sessionvoice", "~/.voicemode"):
+        c = os.path.expanduser(d + "/logs/conversations")
+        if os.path.exists(c + "/heard.lock") or glob.glob(glob.escape(c) + "/heard_*.jsonl"):
+            return os.path.expanduser(d)
+    return os.path.expanduser("~/.sessionvoice")
+
+
+HOME = os.path.expanduser("~")
+LOGDIR = os.path.join(sessionvoice_home(), "logs/conversations")   # heard_*
+# VoiceMode's own exchanges log stays in VoiceMode's home, whatever sessionvoice's is
+VM_LOGDIR = os.path.join(HOME, ".voicemode/logs/conversations")
+LOG = os.path.join(os.path.expanduser(os.environ.get("EARS_LOG_DIR") or "~/Library/Logs/ears"),
+                   "ears-view-push.log")
+UPDATE = os.environ.get("EARS_VIEW_UPDATE") or "dc-xdc-update"
+POLL, HEARTBEAT, KEEP, BACKFILL = 1.0, 60, 30, 40
+GAP = float(os.environ.get("EARS_VIEW_GAP", "10"))
+SESSION = os.environ.get("EARS_VIEW_SESSION") or None
+# Only this agent's voice lines (its converse project_path prefix); unset = every agent's.
+AGENT_PATH = os.path.expanduser(os.environ.get("EARS_VIEW_PROJECT") or "")
+# The name on the agent's lines, sent with every push; unset = null, and the page says "Agent".
+LABEL = os.environ.get("EARS_VIEW_LABEL") or None
+
+
+def log(msg):
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    with open(LOG, "a") as f:
+        f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
+
+
+class Tail:
+    """Read new complete lines of today's file; follows the date rollover."""
+    def __init__(self, stem, backfill=0, directory=None):
+        self.stem, self.day, self.pos, self.backfill = stem, None, 0, backfill
+        self.directory = directory or LOGDIR
+
+    def lines(self):
+        day = date.today()
+        path = os.path.join(self.directory, "%s_%s.jsonl" % (self.stem, day.isoformat()))
+        if day != self.day:
+            self.day, self.pos = day, 0
+            if self.backfill and os.path.exists(path):
+                with open(path, "rb") as f:
+                    data = f.read()
+                keep = data.splitlines(True)[-self.backfill:]
+                self.pos = len(data) - sum(len(l) for l in keep)
+            elif os.path.exists(path):
+                self.pos = os.path.getsize(path)
+        if not os.path.exists(path):
+            return []
+        with open(path, "rb") as f:
+            f.seek(self.pos)
+            data = f.read()
+        cut = data.rfind(b"\n") + 1
+        self.pos += cut
+        out = []
+        for raw in data[:cut].splitlines():
+            try:
+                out.append(json.loads(raw))
+            except ValueError:
+                pass
+        return out
+
+
+def wall(ts):
+    return datetime.fromisoformat(ts).timestamp()
+
+
+def hms(t):
+    return time.strftime("%H:%M:%S", time.localtime(t))
+
+
+def make_payload(st, live, items, m):
+    """One push: the whole picture, plus the label for the agent's ("c") lines."""
+    return {"at": time.strftime("%H:%M:%S"), "st": st, "live": live, "items": items, "m": m,
+            "label": LABEL}
+
+
+def main():
+    if len(sys.argv) != 2 or not sys.argv[1].isdigit():
+        sys.exit("usage: push MSG_ID")
+    msg = sys.argv[1]
+    heard, said = Tail("heard", BACKFILL * 20), Tail("exchanges", BACKFILL, VM_LOGDIR)
+    items, gaps, partials = [], [], []
+    st = {"cap": False, "dev": "?", "heard": None}
+    clock = None          # (wall, stream_s) from the newest heartbeat
+    last_end = None       # wall time the speech of the user's last turn ended
+    last_turn = None      # wall time the ears closed that turn (turn.ts)
+    stages = {"gate": [], "me": [], "mouth": []}   # the gap, split (mouth lines only)
+    by_utt = {}           # mouth utterance id -> its item, so a cut `said` can mark it
+    ttfa = None
+    last_sig, last_push, dirty = None, 0.0, True
+    log("start msg=%s gap=%ss session=%s" % (msg, GAP, SESSION or "any"))
+    while True:
+        try:
+            batch = []
+            for r in heard.lines():
+                if SESSION and r.get("session") and r.get("session") != SESSION:
+                    continue
+                if r.get("ts"):
+                    batch.append((wall(r["ts"]), 0, r))
+            for r in said.lines():
+                if r.get("type") != "tts" or not str(r.get("project_path", "")).startswith(AGENT_PATH):
+                    continue
+                meta = r.get("metadata")
+                if isinstance(meta, str):
+                    try:
+                        meta = ast.literal_eval(meta)
+                    except Exception:
+                        meta = {}
+                r["_meta"] = meta or {}
+                play = float(r["_meta"].get("playback_time") or 0)
+                batch.append((wall(r["timestamp"]) - play, 1, r))
+            batch.sort(key=lambda b: (b[0], b[1]))
+            for t, src_, r in batch:
+                if src_ == 1:
+                    meta = r["_meta"]
+                    ttfa = meta.get("time_to_first_audio", ttfa)
+                    gap = None
+                    if last_end is not None and t >= last_end:
+                        gap = round(t - last_end, 1)
+                        gaps.append(gap); gaps[:] = gaps[-50:]
+                        last_end = None      # one gap per turn: the FIRST reply after it
+                    text = r.get("text") or ""
+                    items.append([hms(t), "c", text if len(text) <= 110 else text[:107] + "...", gap])
+                    dirty = True
+                    continue
+                k = r.get("kind")
+                if k == "event":
+                    if r.get("event") == "heartbeat" and r.get("stream_s") is not None:
+                        clock = (t, float(r["stream_s"]))
+                        st["cap"], st["dev"] = True, r.get("device") or st["dev"]
+                    elif r.get("event") in ("stop", "error", "eof"):
+                        st["cap"] = False
+                    continue
+                if k == "saying":
+                    # the mouth (src/mouth): written AT the first audio frame,
+                    # so t is first audio itself, not derived from playback_time
+                    gap, split = None, None
+                    try:
+                        req = wall(r["requested_ts"]) if r.get("requested_ts") else None
+                    except ValueError:
+                        req = None
+                    if req is not None:
+                        ttfa = round(t - req, 2)
+                    if last_end is not None and t >= last_end:
+                        gap = round(t - last_end, 1)
+                        gaps.append(gap); gaps[:] = gaps[-50:]
+                        if req is not None and last_turn is not None:
+                            split = {"gate": round(last_turn - last_end, 2),
+                                     "me": round(req - last_turn, 2),
+                                     "mouth": round(t - req, 2)}
+                            for key, v in split.items():
+                                stages[key].append(v); stages[key][:] = stages[key][-50:]
+                            log("gap %.1f = gate %.2f + me %.2f + mouth %.2f (utt %s)" % (
+                                gap, split["gate"], split["me"], split["mouth"], r.get("utt")))
+                        last_end = None
+                    text = r.get("text") or ""
+                    item = [hms(t), "c", text if len(text) <= 110 else text[:107] + "...", gap]
+                    items.append(item); by_utt[r.get("utt")] = item
+                    dirty = True
+                    continue
+                if k == "said":
+                    item = by_utt.pop(r.get("utt"), None)
+                    if item is None and r.get("reason") in ("device-absent", "device-lost", "error"):
+                        items.append([hms(t), "c", "[mouth: not played, %s]" % r.get("reason"), None])
+                        dirty = True
+                    elif item is not None and r.get("cut"):
+                        item[2] = "%s [cut at %.1fs: %s]" % (item[2], float(r.get("cut_at_s") or 0),
+                                                            r.get("reason") or "?")
+                        dirty = True
+                    continue
+                if k == "partial" and r.get("text"):
+                    partials.append(r["text"]); dirty = True
+                    st["heard"] = r["ts"][11:19]
+                elif k == "turn" and r.get("text"):
+                    end = t
+                    if clock and r.get("t1") is not None:
+                        end = clock[0] - (clock[1] - float(r["t1"]))
+                    last_end, last_turn = end, t
+                    items.append([r["ts"][11:19], "m", r["text"], None])
+                    partials, dirty = [], True
+                    st["heard"] = r["ts"][11:19]
+            items[:] = items[-KEEP:]
+            if clock and time.time() - clock[0] > 40:
+                st["cap"] = False
+            now = time.time()
+            if (dirty and now - last_push >= GAP) or now - last_push >= HEARTBEAT:
+                m = {"n": len(gaps), "ttfa": ttfa}
+                if gaps:
+                    m.update(last=gaps[-1], med=statistics.median(gaps), min=min(gaps), max=max(gaps))
+                if stages["mouth"]:
+                    m["stages"] = {k2: {"last": v[-1], "med": statistics.median(v), "n": len(v)}
+                                   for k2, v in stages.items()}
+                live = " ".join(partials)[-400:]
+                payload = make_payload(st, live, items, m)
+                r = subprocess.run([UPDATE, msg, json.dumps(payload, separators=(",", ":"))],
+                                   capture_output=True, text=True, timeout=30)
+                log("push %s rc=%d items=%d gaps=%d live=%d" % ("change" if dirty else "heartbeat",
+                    r.returncode, len(items), len(gaps), len(live)))
+                if r.returncode == 0:
+                    last_push, dirty = now, False
+        except Exception as e:
+            log("error: %r" % e)
+        time.sleep(POLL)
+
+
+if __name__ == "__main__":
+    main()

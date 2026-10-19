@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""mid-turn-wait - wake me once the user has been talking S seconds in one turn (default 8).
+
+A turn can run a minute, and only a turn wakes an agent, not its partials, so
+the opener would be written with nothing heard yet.
+So on a LONG turn this fires mid-speech with the
+partials so far, and I write a real opener and swap it for the canned one
+(the agent's own opener script) before the user's turn ends. Short turns never fire it: they keep
+the canned opener.
+
+Follows the heard log from its end. Turn start = the first mic partial after the last
+turn (or after arming). Fires on the first partial at least S seconds after that start,
+printing one JSON line {since_s, text}; exits. If the turn ends first, it resets and
+waits for the next turn. Echo of the mouth is not filtered here (the line's text shows
+it). Re-arm on every fire. Re-resolves today's log on each read (midnight).
+"""
+import argparse, datetime, json, os, time
+
+def sessionvoice_home():
+    """sessionvoice's home: a copy of ears.home.sessionvoice_home (tests/test_home.py holds
+    it). $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it
+    holds the heard log, else ~/.sessionvoice."""
+    import glob, os
+    for name in ("SESSIONVOICE_HOME", "VOICEMODE_BASE_DIR"):
+        if os.environ.get(name):
+            return os.path.expanduser(os.path.expandvars(os.environ[name]))
+    for d in ("~/.sessionvoice", "~/.voicemode"):
+        c = os.path.expanduser(d + "/logs/conversations")
+        if os.path.exists(c + "/heard.lock") or glob.glob(glob.escape(c) + "/heard_*.jsonl"):
+            return os.path.expanduser(d)
+    return os.path.expanduser("~/.sessionvoice")
+
+
+ap = argparse.ArgumentParser()
+ap.add_argument("seconds", nargs="?", type=float, default=8.0)
+ap.add_argument("--source", default="mic,call")
+a = ap.parse_args()
+sources = set(a.source.split(","))
+D = os.path.join(sessionvoice_home(), "logs/conversations")
+# mouth-sounds.py plays a "bud" when this file's mtime moves; both read the same
+# MOUTH_SOUNDS_FIRED, else EARS_RUN/mid-turn.fired (EARS_RUN defaults to ~/.cache/ears/run).
+FIRED = os.path.expanduser(os.environ.get("MOUTH_SOUNDS_FIRED")
+                           or os.path.join(os.environ.get("EARS_RUN") or "~/.cache/ears/run", "mid-turn.fired"))
+
+
+def path():
+    return f"{D}/heard_{datetime.date.today():%Y-%m-%d}.jsonl"
+
+
+def ts(r):
+    return datetime.datetime.fromisoformat(r["ts"]).timestamp()
+
+
+p = path()
+f = open(p)
+# Once per turn: if the user is mid-turn when armed (the newest mic/call record is a partial),
+# this turn already had its wake, so wait for its end before counting (once, re-armed
+# mid-turn, it fired again 8 s later in the same turn).
+skip = False
+try:
+    f.seek(max(0, os.path.getsize(p) - 20000))
+    for l in reversed(f.read().splitlines()[1:]):
+        try:
+            r = json.loads(l)
+        except ValueError:
+            continue
+        if r.get("source") in sources and r.get("kind") in ("partial", "turn"):
+            skip = r["kind"] == "partial"
+            break
+except OSError:
+    pass
+f.seek(0, 2)
+start, parts = None, []
+while True:
+    l = f.readline()
+    if not l:
+        if path() != p and os.path.exists(path()):
+            f.close(); p = path(); f = open(p)
+        time.sleep(0.1)
+        continue
+    try:
+        r = json.loads(l)
+    except ValueError:
+        continue
+    if r.get("source") not in sources:
+        continue
+    if r.get("kind") == "turn":
+        start, parts, skip = None, [], False
+        continue
+    if skip:
+        continue
+    if r.get("kind") != "partial" or not (r.get("text") or "").strip():
+        continue
+    if start is None:
+        start = ts(r)
+    parts.append(r["text"].strip())
+    if ts(r) - start >= a.seconds:
+        print(json.dumps({"since_s": round(ts(r) - start, 1), "at": r["ts"][11:19], "text": " ".join(parts)}),
+              flush=True)
+        # mouth-sounds.py plays a "bud" when this file's mtime moves
+        os.makedirs(os.path.dirname(FIRED), exist_ok=True)
+        open(FIRED, "w").write(r["ts"] + "\n")
+        break

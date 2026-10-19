@@ -1,0 +1,48 @@
+{
+  "_doc": "The name_hint bench's corpus manifest. bench/name_hint.py builds every clip from this file alone: same file + same host voices = same clips. The clips live under $EARS_EVAL_HARNESS/name-hint (never in git); this file and the generator are. wake: the TEST wake file, with a seat and its sound-alikes (dave|dav|daev): the hint is built from its keys by ears.wake, and every transcript is scored by ears-mail's own _call regex built from its names. say: how macOS say is told to pronounce a seat (a name in capitals would be spelled out). positives: 'hey <name>, <tail>' per seat. negatives: speech with no seat in it, 'near' = 'hey <a real word near a name>' (a real 'hey Davis' must not become Dave), and nonspeech (silence, noise-only: the prompt-echo risk). conditions: each clip is rendered through every one, ending 16 kHz mono int16.",
+  "seed": 246,
+  "wake": {
+    "defaults": {"openers": "hey|hay", "everyone": "everyone|everybody", "reply": true, "name_first": false, "light": 0},
+    "seats": {
+      "dave": {"names": "dave|dav|daev"},
+      "bob":  {"names": "bob"},
+      "carol": {"names": "carol"}
+    }
+  },
+  "say": {"dave": "Dave", "bob": "Bob", "carol": "Carol"},
+  "voices": ["Samantha", "Daniel", "Karen", "Rishi"],
+  "rates": [160, 220],
+  "positives": {
+    "opener": "hey",
+    "tails": ["what's the time", "are you there", "read me the last message"]
+  },
+  "negatives": {
+    "speech": [
+      "what's the weather like this afternoon",
+      "can you pass me the salt please",
+      "I think the meeting moved to Thursday",
+      "turn the music down a little"
+    ],
+    "near": [
+      "hey Davis, what's the time",
+      "hey caves are cold inside",
+      "hey Dan, are you there",
+      "hey days are short now",
+      "hey Rob, read me the last message",
+      "hey Carl, what's the time"
+    ],
+    "nonspeech": [
+      {"id": "silence-1s5", "kind": "silence", "seconds": 1.5},
+      {"id": "silence-3s", "kind": "silence", "seconds": 3.0},
+      {"id": "white-2s", "kind": "noise", "color": "white", "seconds": 2.0, "dbfs": -30},
+      {"id": "pink-2s", "kind": "noise", "color": "pink", "seconds": 2.0, "dbfs": -30}
+    ]
+  },
+  "speech_dbfs": -20,
+  "conditions": {
+    "clean":       {},
+    "phone8k":     {"band": [300, 3400], "rate": 8000, "mulaw": true},
+    "bt16k":       {"band": [80, 7000]},
+    "bt16k-noise": {"band": [80, 7000], "snr_db": 10, "floor_dbfs": -45}
+  }
+}

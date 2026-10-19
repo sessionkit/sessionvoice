@@ -1,0 +1,7 @@
+# voices never go in git: references and recorded lines are people
+refs/
+room*/
+*.wav
+.venv/
+STOP
+speakers.log

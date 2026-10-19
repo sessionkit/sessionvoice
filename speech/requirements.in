@@ -1,0 +1,25 @@
+# The speech server's own venv: mlx-audio's server on :8890, under sessionvoice's
+# label dev.sessionkit.voice.mlx-audio. `ears services install` builds it under the speech home,
+# ~/.local/share/ears/speech/venv, only when nothing holds :8890 and no mlx-audio job is loaded.
+# It never runs `uv tool install mlx-audio`, the env VoiceMode installs. Compiled into
+# requirements.lock, which is what install uses:
+#   MACOSX_DEPLOYMENT_TARGET=14.0 uv pip compile requirements.in --python-version 3.12 \
+#     --python-platform aarch64-apple-darwin --no-header --generate-hashes -o requirements.lock
+# over the existing lock, so its pins hold (`--upgrade-package X` moves one; a fresh output
+# file re-resolves and can drift them), then put the lock's header back. Install runs
+# `uv pip install --require-hashes -b build-constraints.txt`, so the lock must carry a --hash
+# for every pin. --require-hashes does not reach the backend uv fetches to build an sdist-only
+# pin, so build-constraints.txt pins that backend's whole closure with hashes. A
+# re-compile that adds an sdist-only pin (one --hash: no wheel) fails
+# tests/test_service_build_constraints.py until its build closure is measured and pinned there.
+# - server: fastapi, uvicorn, python-multipart, webrtcvad, setuptools<81 (mlx_audio.server);
+# - stt: Parakeet, the ears' engine;
+# - misaki[en]: Kokoro's text front end, the mouth's voice;
+# - en-core-web-sm: the spaCy model misaki loads. Without it, misaki downloads it at the
+#   first line spoken (spacy.cli.download runs pip, and a uv venv has none). It is not on
+#   PyPI, so it is the one direct URL: a release wheel, never a git URL. VoiceMode's own
+#   mlx-audio install adds the same five.
+# The pin matches the speakers venv (speakers/requirements.in): one mlx-audio for the host.
+mlx-audio[server,stt]==0.5.8
+misaki[en]
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl

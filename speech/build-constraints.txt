@@ -1,0 +1,19 @@
+# The build backend for the speech lock's sdist-only pins, hash-pinned.
+# Two pins in requirements.lock ship no wheel, only an sdist, so uv builds them on install,
+# and to build them it fetches a build backend. `--require-hashes` does not reach build
+# dependencies: a build dependency missing from this file is fetched with no hash check.
+# So this file pins, with every hash PyPI publishes for it, the WHOLE build closure of
+# every sdist-only pin. Install runs:
+#   uv pip install --python <speech home>/venv/bin/python --require-hashes \
+#     -b build-constraints.txt -r requirements.lock
+# Each sdist-only pin is declared below, with the build closure it needs. Both are setup.py
+# sdists with no pyproject.toml, so uv builds them with the legacy backend, which needs
+# setuptools>=40.8.0 and nothing else (measured with `uv pip install -v`).
+# setuptools is the version the lock already pins at runtime: one setuptools for the venv.
+# tests/test_service_build_constraints.py refuses a lock that gains an sdist-only pin not
+# declared here, a declared closure package not pinned here, and a pin here with no hash.
+# sdist-only: docopt==0.6.2 needs setuptools
+# sdist-only: webrtcvad==2.0.10 needs setuptools
+setuptools==80.10.2 \
+    --hash=sha256:8b0e9d10c784bf7d262c4e5ec5d4ec94127ce206e8738f29a437945fbc219b70 \
+    --hash=sha256:95b30ddfb717250edb492926c92b5221f7ef3fbcc2b07579bcd4a27da21d0173
