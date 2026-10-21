@@ -8,7 +8,43 @@ All notable changes to sessionvoice are documented here. The format is
 
 <!-- markdownlint-configure-file {"MD024": {"siblings_only": true}} -->
 
-## [Unreleased]
+## [0.2.1]
+
+### Fixed
+
+- `docs/ears.md` no longer says the turn mail waits on sessionmail under
+  its mail drop (EARS-413). Two claims were false against sessionmail
+  0.2.0: the drop does qualify a heard turn's bare From with the host, and
+  the carrier is set by the `sendmail` key in sessionmail's settings file,
+  with the drop as the default when neither it nor `SESSIONMAIL_SENDMAIL`
+  is set. The page now says the `heard` box must exist first
+  (`message setup --box heard`), that a fire-log `exit 0` proves only
+  that the turn reached that box, and that an agent hears a heard turn
+  only once it subscribes to `heard+<device>`.
+- `ears services install` asks sessionmail what carries the launch
+  agents' mail (`message setup --dry-run`, sessionmail 0.2.0 or later)
+  instead of guessing from postfix (EARS-414). macOS ships `postconf`, so
+  before this a Mac with no postfix took the postfix checks: it never said
+  "mail drop" and warned that no agent would be paged. Under the mail
+  drop, which is sessionmail's default, install runs no postfix check and
+  makes the `heard` box itself with `message setup --box heard`. The drop
+  never makes a mailbox, and with no box each heard turn is refused. On a
+  host whose `sendmail` key names an MTA, the postfix checks and the
+  store-dir `heard` box are as before. When sessionmail's answer cannot be
+  read, install says so, makes no box, checks neither, and goes on.
+- `ears services install` and the README no longer say that under the
+  mail drop a heard turn's From is not qualified and reads as plain mail,
+  that a Mac with no postfix delivers nothing until sessionmail reads its
+  settings, that `message send` needs `SESSIONMAIL_SENDMAIL=drop`, or that
+  the launch agents send by postfix because it is installed (EARS-414).
+  With sessionmail 0.2.0 the drop is the default, and postfix is used only
+  when the `sendmail` key in `~/.sessionkit/mail/settings/mail.json` names
+  it (`"sendmail": "/usr/sbin/sendmail"`). Install still says that the
+  launch agents do not see a `SESSIONMAIL_SENDMAIL` set in your shell. This
+  supersedes the 0.2.0 note that described the drop's From and the
+  settings file as waiting on sessionmail.
+
+## [0.2.0] - 2026-10-20
 
 ### Added
 

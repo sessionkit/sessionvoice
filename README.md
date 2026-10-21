@@ -129,9 +129,19 @@ streams transcription, and decides when the speaker has finished.
   SwitchAudioSource only when it is not. `keeper/speak:13-17` still reads with it.
 - **sessionmail's `message`** only if you use mail: the mouth's notices and
   the keeper's turn mail (`keeper/ears-mail.py`) go out by `message send`,
-  never straight to an MTA. It delivers through postfix, or, on a Mac with no
-  postfix, through sessionmail's mail drop (`SESSIONMAIL_SENDMAIL=drop`).
-  Mail to `mouth@<host>` reaches the speech queue only if that carrier
+  never straight to an MTA. With no `sendmail` key in
+  sessionmail's settings file (`~/.sessionkit/mail/settings/mail.json`)
+  and no `SESSIONMAIL_SENDMAIL`, sessionmail (0.2.0 and later) delivers
+  by its mail drop: it writes each mail straight into your own mailbox,
+  as you, with no mail server. That is how the launch agents deliver on
+  a Mac with no postfix. The drop never makes a mailbox, so the `heard`
+  box must exist first: `message setup --box heard` makes it. A turn
+  mailed to a box that is not there is refused, nothing is delivered,
+  and the turn is lost. To send by postfix instead, set
+  `"sendmail": "/usr/sbin/sendmail"` in that file: the launch agents do
+  not see a `SESSIONMAIL_SENDMAIL` set in your shell.
+  On a drop host, `ears services install` runs sessionmail's first-run setup, `message setup --box heard`.
+  Mail to `mouth@<host>` reaches the speech queue only if sessionmail
   delivers it there (`src/mouth/box.py`). The mouth's notices go through
   `MOUTH_SENDMAIL` (`src/mouth/notice.py`): only the mouth service (`mouth serve`, `mouth mail`,
   `mouth retract`, `mouth again`) uses the default `message`; any other process
@@ -407,15 +417,22 @@ answers.
   install finds nothing old and does nothing to it. `ears services status`
   names an old label still on the host, and `ears services uninstall`
   removes them all;
-- checks `message` and its carrier, postfix or the mail drop (it configures
-  neither), and says when the launch agents will not see the carrier your
-  shell sets. It makes the `heard` box NESTED
-  under the store dir that carries `.tm-store`, as
-  `~/.mail/agents/<store>/heard/`, when there is exactly one such dir. It then
-  runs `vmailbox-gen` if that is on `PATH`, and otherwise prints the commands,
-  naming the host's copy (`~/.mail/.postfix/vmailbox-gen`: sessionmail keeps it
-  off `PATH`).
-  It also prints the box to subscribe to: `message subscription add heard+macbook`;
+- checks `message` and asks sessionmail what carries the launch agents'
+  mail (`message setup --dry-run`; it configures neither postfix nor the
+  `sendmail` key), and says when the launch agents will not see a
+  `SESSIONMAIL_SENDMAIL` your shell sets. Under the mail drop it checks no
+  postfix and makes the `heard` box with `message setup --box heard`
+  (which also makes sessionmail's mail root, your own box and its notmuch
+  profile, if they are missing, and prints each one). On a host that
+  sends by postfix, it makes the `heard` box NESTED under the store dir
+  that carries `.tm-store`, as `~/.mail/agents/<store>/heard/`, when there
+  is exactly one such dir, then runs `vmailbox-gen` if that is on `PATH`,
+  and otherwise prints the commands (`~/.mail/.postfix/vmailbox-gen`:
+  sessionmail keeps it off `PATH`). When sessionmail's answer cannot be
+  read (no `message`, or one older than 0.2.0), it warns, makes no box,
+  checks neither, and goes on.
+  On a postfix host it also prints the box to subscribe to:
+  `message subscription add heard+macbook`;
 - `--agent NAME` adds NAME's wake seat (`ears wake add NAME`) and sends the
   keeper's notices to NAME (`EARS_NOTIFY`; `--notify ADDR` sends them
   elsewhere). Without it, nobody is woken, and install says so. The notices

@@ -81,6 +81,12 @@ def pytest_sessionfinish(session):
     audio_fence.pytest_sessionfinish(session)   # a refusal no test was running for fails the run
 
 
+# ...nor runs sessionmail's real `message setup`, the dry run included: install asks it what
+# carries the mail and makes the heard box with it (tests/setup_fence.py holds both fences).
+from tests import setup_fence  # noqa: E402,F401
+from tests.setup_fence import no_real_message_setup  # noqa: E402,F401
+
+
 # ...and a host with no ffmpeg on PATH says so ONCE, in red, by name (EARS-327 fix 4, ruled
 # (b2) by the super; narrowed by EARS-377). Without ffmpeg, mouth's file player
 # (backends.FileSound.stream) cannot decode a bed or a tink. The decode thread swallows the

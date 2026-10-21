@@ -139,12 +139,14 @@ from __future__ import annotations
 
 import os
 import plistlib
+import re
 import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 from . import envnames, speech        # the speech server on :8890: found, or ours
+from .home import SETTINGS as _VOICE_SETTINGS   # <kit root>/voice/settings
 
 ROOT = Path(__file__).resolve().parents[2]          # the package checkout (src/ears/ -> root)
 AGENTS = Path.home() / "Library/LaunchAgents"
@@ -1147,6 +1149,13 @@ def _wake_file() -> Path:
 MESSAGE = "message"
 #: sessionmail's carrier switch: `drop` writes to the local maildirs, with no postfix.
 CARRIER_VAR = "SESSIONMAIL_SENDMAIL"
+#: sessionmail's settings file, as sessionmail names it (<kit root>/mail/settings/mail.json;
+#: the kit root is named once, in ears.home). Its `sendmail` key is what the launchd services
+#: send by; the variable above reaches only this shell's children. Shown, never read here.
+MAIL_SETTINGS = f"~/{Path(_VOICE_SETTINGS).parts[0]}/mail/settings/mail.json"
+#: The heard box on a mail-drop host: FLAT, and made by sessionmail's own verb, never by hand.
+HEARD = "heard"
+SETUP_BOX = f"message setup --box {HEARD}"
 
 
 def _service_path() -> str:
@@ -1292,57 +1301,144 @@ def _message_lines(runs: tuple[str, Path] | None = None) -> list[str]:
             f"Install sessionmail. {redo}"]
 
 
-def mail_checks(dry_run: bool = False, runs: tuple[str, Path] | None = None) -> list[str]:
-    """What ears-mail needs to page anyone, checked and said. Never configures the host's
-    mail: not postfix, not sessionmail's carrier.
-    ears-mail and the mouth's notices send by sessionmail's `message`, which carries a mail
-    through postfix, or through the mail drop on a Mac with no postfix
-    (SESSIONMAIL_SENDMAIL=drop). The heard box must sit NESTED under a store dir (the one
-    carrying .tm-store): sessionmail reads a flat ~/.mail/agents/heard as a seat's own box
-    and refuses to subscribe to it. Made only when exactly one store dir is found, then
-    routed with vmailbox-gen when it is on PATH; otherwise the exact commands are printed.
-    RUNS: the hand-made mailer left running (label, plist), whose PATH `message` is checked
-    on instead of ours (_message_lines)."""
-    out = _message_lines(runs)
-    carrier = os.environ.get(CARRIER_VAR, "").strip()
-    version = _postconf("mail_version")          # postfix's own tool: None or "" is no postfix
-    if carrier == "drop":
-        out.append(f"carrier mail drop ({CARRIER_VAR}=drop, read by sessionmail): no postfix "
-                   "needed. Under it a heard turn's From is not qualified yet, so the pager "
-                   "reads it as plain mail until sessionmail qualifies From")
-    elif carrier:
-        out.append(f"carrier {CARRIER_VAR}={carrier} (sessionmail's to read; not checked here)")
-    if carrier:
-        # sessionmail reads the carrier from the environment alone, and launchd
-        # gives the services none of this shell's. Said, never copied into a plist.
-        out.append(("WARNING: " if not version else "")
-                   + f"the launchd services will not see {CARRIER_VAR} from your shell; "
-                   + ("with no postfix they deliver nothing until sessionmail reads the carrier "
-                      "from its settings (asked of sessionmail). Not configured here"
-                      if not version else "they send by postfix"))
-    if not version:
-        if not carrier:
-            out.append(f"WARNING: no postfix: message send needs {CARRIER_VAR}=drop (read by "
-                       "sessionmail), and the launchd services do not see it from your shell: with "
-                       "no postfix they deliver nothing until sessionmail reads the carrier from "
-                       "its settings (asked of sessionmail). Not configured here")
-    else:
-        maps = _postconf("virtual_mailbox_maps")
-        if not maps:
-            out.append("WARNING: postfix has no virtual_mailbox_maps: heard+<device>@<host> "
-                       "reaches no maildir by postfix, so no agent is paged. Set up this host's "
-                       "agent mail (sessionmail) first")
+def _setup_env(runs: tuple[str, Path] | None = None) -> dict[str, str]:
+    """The environment the mailer that RUNS has, not this shell's: launchd gives a service
+    only its plist's. Ours: the services' PATH and HOME. A hand-made mailer: its plist's
+    PATH, HOME and SESSIONMAIL_SENDMAIL, when it sets them."""
+    env = {"PATH": _service_path(), "HOME": str(Path.home())}
+    if runs is not None:
+        penv = _plist_env(runs[1]) or {}
+        env.update({k: v for k, v in penv.items() if k in ("PATH", "HOME", CARRIER_VAR)})
+    return env
+
+
+def _message_setup(argv: list[str], runs: tuple[str, Path] | None = None
+                   ) -> tuple[int, str, str] | None:
+    """`message setup ARGV`, run as the services would: (exit, stdout, stderr), or None when
+    there is no `message` or it could not start. Its checks read only; `--dry-run` applies
+    nothing. Its exit is not read for the answer (4 is common: a step left, such as notmuch
+    not installed): its rows are."""
+    msg = _message_bin()
+    if not msg:
+        return None
+    try:
+        r = subprocess.run([msg, "setup", *argv], capture_output=True, text=True, timeout=60,
+                           env=_setup_env(runs), stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.returncode, r.stdout, r.stderr
+
+
+_SETUP_ROW = re.compile(r"^  (\S+)\s+(DONE|TODO|BLOCKED|MANUAL)\s+(.*)$")
+_APPLIED_ROW = re.compile(r"^  (\S+)\s+(.*)$")
+
+
+def _setup_rows(text: str) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
+    """`message setup`'s printed plan, {step: (state, what)}, and what it applied,
+    {step: line}. A continuation line (a step's long reason) is not a row. This reads
+    sessionmail's human-readable text: a stated fallback. sessionmail keeps its `carrier`
+    row stable as a contract until it offers a machine-readable carrier query."""
+    plan: dict[str, tuple[str, str]] = {}
+    applied: dict[str, str] = {}
+    block = None
+    for line in text.splitlines():
+        if not line.startswith("  "):
+            block = line if line in ("steps:", "applying:") else None
+            continue
+        if block == "steps:" and (m := _SETUP_ROW.match(line)):
+            plan[m[1]] = (m[2], m[3])
+        elif block == "applying:" and (m := _APPLIED_ROW.match(line)):
+            applied[m[1]] = m[2]
+    return plan, applied
+
+
+def sendmail_in_effect(runs: tuple[str, Path] | None = None) -> tuple[str, str, tuple | None]:
+    """(kind, said, got): what the launchd services send by, in sessionmail's own words, from
+    `message setup --box heard --dry-run` in their environment (sessionmail 0.2.0 and later).
+    KIND: "drop", "mta", "mta-broken" (an MTA named that is not an executable file),
+    "refused" (setup refuses: its words in SAID) or "unknown". GOT: that run, reused for the
+    heard box. The rule is sessionmail's and is never re-derived here."""
+    got = _message_setup(["--box", HEARD, "--dry-run"], runs)
+    if got is None:
+        return "unknown", "sessionmail's `message` could not be run", None
+    code, out, err = got
+    if code == 2 and "REFUSED" in err:
+        return "refused", err.strip().splitlines()[-1], got
+    state, what = _setup_rows(out)[0].get("carrier", ("", ""))
+    if what.startswith("the mail drop"):
+        return "drop", what, got
+    if state == "DONE" and what.startswith("the MTA at"):
+        return "mta", what, got
+    if state == "MANUAL":
+        return "mta-broken", what, got
+    return "unknown", ("its `message` has no `setup` verb, or printed no carrier row "
+                       f"(exit {code})"), got
+
+
+def _heard_drop(dry_run: bool, got: tuple[int, str, str] | None,
+                runs: tuple[str, Path] | None) -> list[str]:
+    """The heard box on a mail-drop host: FLAT, made by `message setup --box heard`, which is
+    idempotent. A heard box already NESTED under a store dir is used as it is. GOT: the dry
+    run sendmail_in_effect already made. DRY_RUN makes nothing. A failure is a WARNING
+    naming the command, and install goes on."""
+    lost = ("Run it by hand: the mail drop never makes a box, so until the heard box exists "
+            "each heard turn is refused and nothing is delivered")
+    plan = _setup_rows(got[1])[0] if got else {}
+    state, what = plan.get(f"box:{HEARD}", ("", ""))
+    out: list[str] = []
+    agents = _mail_agents()           # a fleet host on the drop keeps its nested box: no second one
+    nested = [d / HEARD for d in sorted(agents.glob("*")) if (d / ".tm-store").is_file()
+              and (d / HEARD / "new").is_dir()] if agents.is_dir() else []
+    if nested:
+        out.append(f"heard  box present: {nested[0]}")
+    elif state == "DONE":
+        out.append(f"heard  box present: {what}")
+    elif state == "TODO" and dry_run:
+        out.append(f"heard  would make the heard box: `{SETUP_BOX}` ({what})")
+        also = [f"{k} ({w})" for k, (s, w) in plan.items() if s == "TODO" and k != f"box:{HEARD}"]
+        if also:
+            out.append("mail   `message setup` would also, as its plan has it: " + "; ".join(also))
+    elif state == "TODO":
+        ran = _message_setup(["--box", HEARD], runs)
+        applied = _setup_rows(ran[1])[1] if ran else {}
+        made = applied.get(f"box:{HEARD}", "")
+        if made.startswith("made "):
+            out.append(f"heard  box {made} (by `{SETUP_BOX}`)")
         else:
-            out.append(f"postfix present (virtual_mailbox_maps: {maps}); not changed")
+            why = made or (ran[2].strip().splitlines()[-1] if ran and ran[2].strip() else
+                           f"exit {ran[0]}" if ran else "it could not be run")
+            out.append(f"WARNING: heard box NOT made: `{SETUP_BOX}`: {why}. {lost}")
+        also = [f"{k} {line}" for k, line in applied.items() if k != f"box:{HEARD}"]
+        if also:
+            out.append("mail   `message setup` also did, as its plan has it: " + "; ".join(also))
+    else:
+        out.append(f"WARNING: heard box NOT made: `{SETUP_BOX}`: "
+                   f"{what or 'no heard row in its plan'}. {lost}")
+    out.append("heard  an agent hears heard turns only once it subscribes to heard+<device> "
+               "(heard+macbook for the built-in mic; ears-mail.py device_slug names the rest)")
+    return out
+
+
+def _heard_mta(dry_run: bool) -> list[str]:
+    """The heard box on an MTA host (the fleet's layout): NESTED under the one store dir
+    carrying .tm-store, then routed with vmailbox-gen, which writes postfix's maps."""
+    out: list[str] = []
+    maps = _postconf("virtual_mailbox_maps")
+    if not maps:
+        out.append("WARNING: postfix has no virtual_mailbox_maps: heard+<device>@<host> "
+                   "reaches no maildir by postfix, so no agent is paged. Set up this host's "
+                   "agent mail (sessionmail) first")
+    else:
+        out.append(f"postfix present (virtual_mailbox_maps: {maps}); not changed")
     agents = _mail_agents()
     stores = sorted(d for d in agents.glob("*") if (d / ".tm-store").is_file()) if agents.is_dir() else []
-    have = [d / "heard" for d in stores if (d / "heard" / "new").is_dir()]
-    flat = agents / "heard"
+    have = [d / HEARD for d in stores if (d / HEARD / "new").is_dir()]
+    flat = agents / HEARD
     gen = _vmailbox_gen_cmd()
     if have:
         out.append(f"heard  box present: {have[0]}")
     elif len(stores) == 1:
-        box = stores[0] / "heard"
+        box = stores[0] / HEARD
         if dry_run:
             out.append(f"heard  would make {box}/{{new,cur,tmp}}, then route it: {gen}")
         else:
@@ -1370,6 +1466,54 @@ def mail_checks(dry_run: bool = False, runs: tuple[str, Path] | None = None) -> 
                "`message subscription add heard+macbook` (the built-in mic; heard+airpods for "
                "AirPods; ears-mail.py device_slug names the rest)")
     return out
+
+
+def mail_checks(dry_run: bool = False, runs: tuple[str, Path] | None = None) -> list[str]:
+    """What ears-mail needs to page anyone, checked and said. It configures nothing but the
+    heard box on a mail-drop host: not postfix, not sessionmail's `sendmail` setting.
+    ears-mail and the mouth's notices send by sessionmail's `message`. What carries a mail is
+    sessionmail's to resolve (0.2.0 and later: SESSIONMAIL_SENDMAIL, else the `sendmail` key
+    in MAIL_SETTINGS, else its mail drop, the default; postfix is opt-in). It is asked, never
+    re-derived (sendmail_in_effect), in launchd's environment: the services get none of this
+    shell's. Postfix being installed does not choose it, and macOS ships postconf, so postfix
+    is checked only when sessionmail says an MTA carries the mail.
+    Mail drop: no postfix check. The drop never makes a box, so the heard box is made FLAT
+    by `message setup --box heard` (_heard_drop): sessionmail's first-run setup, every row
+    it applied printed. An MTA: postfix's maps and the heard box NESTED under the one store
+    dir carrying .tm-store, the fleet's layout (_heard_mta). An answer that cannot be read
+    is its own state, never a guessed MTA: a WARNING, no box, neither branch's checks, and
+    the install goes on. Every line says sessionmail's own words for where the carrier
+    came from (the default, the template, the settings file, the variable).
+    No line cites the fire log. One that does must say that its exit 0 proves only that the
+    heard box got the turn, nothing about an agent.
+    RUNS: the hand-made mailer left running (label, plist), whose PATH `message` is checked
+    on instead of ours (_message_lines), and in whose environment sessionmail is asked."""
+    out = _message_lines(runs)
+    shell = os.environ.get(CARRIER_VAR, "").strip()
+    kind, said, got = sendmail_in_effect(runs)
+    if shell:
+        out.append(f"the launchd services will not see {CARRIER_VAR}={shell} from your shell: "
+                   f"they go by the `sendmail` key in sessionmail's settings file "
+                   f"({MAIL_SETTINGS}), as sessionmail says next. Not configured here")
+    if kind == "drop":
+        out.append(f"sendmail {said.split(';')[0]} for the launchd services (sessionmail's own "
+                   "answer): no postfix needed, and none is checked. Postfix is opt-in: the services "
+                   f"send by it only when the `sendmail` key in {MAIL_SETTINGS} names it")
+        return out + _heard_drop(dry_run, got, runs)
+    if kind == "refused":
+        out.append(f"WARNING: sendmail REFUSED: sessionmail refuses its settings, so nothing "
+                   f"sends until they are fixed: {said}. Not configured here")
+        return out
+    if kind == "mta":
+        out.append(f"sendmail {said} for the launchd services (sessionmail's own answer)")
+    elif kind == "mta-broken":
+        out.append(f"WARNING: sendmail BROKEN for the launchd services: {said}")
+    else:
+        out.append(f"WARNING: sendmail UNKNOWN: what carries the launchd services' mail could "
+                   f"not be read from `message setup --dry-run` (sessionmail 0.2.0 or later): "
+                   f"{said}. No heard box is made and nothing is checked; install goes on")
+        return out
+    return out + _heard_mta(dry_run)
 
 
 def wake_checks(agent: str | None, dry_run: bool = False) -> list[str]:

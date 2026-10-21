@@ -8,6 +8,8 @@ import http.server
 import json
 import os
 import plistlib
+import pwd
+import re
 import shlex
 import subprocess
 import sys
@@ -19,6 +21,7 @@ import pytest
 from ears import operator_config, services, wake
 from ears.home import SETTINGS
 from test_services_label_move import OURS_ENV, ours_plist, print_out
+from tests import setup_fence
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -259,33 +262,324 @@ def test_message_is_looked_for_on_the_services_path(fence, monkeypatch, tmp_path
     assert str(local) in services.spec("mail")["EnvironmentVariables"]["PATH"].split(":")
 
 
-def test_no_postfix_and_no_drop_names_the_drop(fence, monkeypatch):
-    monkeypatch.setattr(services, "_postconf", lambda p: None)
+# --- the mail check asks sessionmail what carries the mail (sessionmail 0.2.0 `message setup`) ---
+# Canned from sessionmail 0.2.0's own `message setup` run in a sandbox (temp settings home).
+# No test here runs a real one (tests/setup_fence.py): each answer is a fake or a temp stub.
+PLAN = """message setup: the plan, printed whole before anything is applied
+privileged steps (sudo):
+  none
+steps:
+  mail-root        {root}
+  box:ada          TODO     make /H/.mail/agents/ada/{{cur,new,tmp}} (0700)
+  box:heard        {heard}
+  maps             DONE     the carrier is the mail drop: it reads the maps per send; none are written
+  notmuch-profile  TODO     write /H/.config/notmuch/sessionkit/config (database.path=/H/.mail)
+  notmuch-hook     BLOCKED  install notmuch: 'notmuch' is not found ($SESSIONMAIL_NOTMUCH, else PATH)
+  carrier          {carrier}
+note: nothing here runs `notmuch new`
+"""
+DROP = "DONE     the mail drop (the default); no suffix is needed"
+MTA = "DONE     the MTA at /usr/sbin/sendmail (from ~/.sessionkit/mail/settings/mail.json)"
+BROKEN = ('MANUAL   write "sendmail": "drop" in ~/.sessionkit/mail/settings/mail.json (or set '
+          'SESSIONMAIL_SENDMAIL=drop): the MTA at /nonexistent/sendmail (from '
+          '~/.sessionkit/mail/settings/mail.json) is not an executable file, so `message send` '
+          'refuses with no MTA')
+TODO_BOX = "TODO     make /H/.mail/agents/heard/{cur,new,tmp} (0700)"
+DONE_BOX = "DONE     /H/.mail/agents/heard"
+APPLIED = ("applying:\n  mail-root        made /H/.mail/agents (0700)\n"
+           "  box:ada          made /H/.mail/agents/ada\n  box:heard        made /H/.mail/agents/heard\n"
+           "  notmuch-profile  wrote /H/.config/notmuch/sessionkit/config (database.path=/H/.mail)\n"
+           "message setup: done what it can; 1 step(s) left for you: notmuch-hook (BLOCKED)\n")
+FALSE = ("until sessionmail", "not qualified", "plain mail", "needs SESSIONMAIL_SENDMAIL=drop",
+         "send by postfix", "deliver nothing", "signed under postfix", '"carrier":')
+REAL_SETUP = services._message_setup        # before any test's patch: the stub tests run it
+LIVE = Path(pwd.getpwuid(os.getuid()).pw_dir)
+_SESSION_BOX = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def _live_mail() -> dict:
+    """What a real `message setup` would change under the LIVE home (from pwd, never $HOME):
+    the agents root's boxes (session boxes aside: live seats birth those at any moment), the
+    flat heard box, and every file under ~/.config/notmuch and the notmuch hook dir, with
+    its mtime. Read only."""
+    def tree(d: Path):
+        return {str(p): p.lstat().st_mtime_ns for p in d.rglob("*")} if d.is_dir() else None
+    agents = LIVE / ".mail/agents"
+    return {"agents": sorted(n for n in os.listdir(agents) if not _SESSION_BOX.fullmatch(n))
+            if agents.is_dir() else None,
+            "heard": (agents / "heard").exists(),
+            "notmuch": tree(LIVE / ".config/notmuch"),
+            "hooks": tree(LIVE / ".mail/.notmuch/hooks")}
+
+
+def _setup(monkeypatch, carrier=DROP, heard=TODO_BOX, apply=APPLIED, refused=None):
+    calls = []
+
+    def fake(argv, runs=None):
+        calls.append(list(argv))
+        if refused:
+            return 2, "", f"message setup: REFUSED - {refused}. Nothing was applied.\n"
+        plan = PLAN.format(root="TODO     make /H/.mail/agents (0700)", heard=heard, carrier=carrier)
+        if "--dry-run" in argv:
+            return 4, plan + "dry run: nothing applied (4 step(s) TODO)\n", ""
+        return 4, plan + apply, ""
+    monkeypatch.setattr(services, "_message_setup", fake)
+    return calls
+
+
+def test_drop_host_makes_the_flat_heard_box_by_setup_and_checks_no_postfix(fence, monkeypatch):
+    calls = _setup(monkeypatch)
+    monkeypatch.setattr(services, "_postconf", lambda p: pytest.fail("postconf asked on a drop host"))
+    out = services.mail_checks()
+    assert calls == [["--box", "heard", "--dry-run"], ["--box", "heard"]]
+    drop = [l for l in out if l.startswith("sendmail the mail drop")]
+    assert len(drop) == 1 and "no postfix needed" in drop[0]
+    assert "Postfix is opt-in" in drop[0] and "`sendmail` key" in drop[0]
+    assert "heard  box made /H/.mail/agents/heard (by `message setup --box heard`)" in out
+    assert any(l.startswith("mail   `message setup` also did") and "notmuch-profile" in l for l in out)
+    assert not any("postfix" in l and "no postfix needed" not in l for l in out)
+    assert not any(".tm-store" in l or "vmailbox-gen" in l or "FLAT" in l for l in out)
+    assert any(l.startswith("heard  an agent hears heard turns only once it subscribes") for l in out)
+    assert not any("message subscription add" in l for l in out)     # not how a stranger subscribes
+    assert not any(f in l for l in out for f in FALSE)
+    assert fence["calls"]["vmailbox"] == 0
+
+
+def test_drop_host_box_present(fence, monkeypatch):
+    calls = _setup(monkeypatch, heard=DONE_BOX)
+    out = services.mail_checks()
+    assert calls == [["--box", "heard", "--dry-run"]]                  # idempotent: nothing applied
+    assert "heard  box present: /H/.mail/agents/heard" in out
+
+
+def test_drop_host_dry_run_makes_nothing_and_says_would_make(fence, monkeypatch):
+    calls = _setup(monkeypatch)
     out = services.mail_checks(dry_run=True)
-    warn = [l for l in out if "no postfix" in l]
-    assert len(warn) == 1 and warn[0].startswith("WARNING:")
-    assert "SESSIONMAIL_SENDMAIL=drop" in warn[0] and "sessionmail" in warn[0]
-    assert "launchd services" in warn[0]                       # rca-001 N4, said
-    assert not any("postfix present" in l for l in out)
+    assert calls == [["--box", "heard", "--dry-run"]]
+    assert any(l.startswith("heard  would make the heard box: `message setup --box heard`") for l in out)
+    assert any(l.startswith("mail   `message setup` would also") for l in out)
+    assert not (fence["home"] / ".mail").exists()
 
 
-def test_drop_is_said_and_the_launchd_gap_too(fence, monkeypatch):
-    monkeypatch.setattr(services, "_postconf", lambda p: None)
-    monkeypatch.setenv("SESSIONMAIL_SENDMAIL", "drop")
+def test_drop_host_setup_failing_warns_names_the_command_and_goes_on(fence, monkeypatch):
+    _setup(monkeypatch, apply="applying:\n  box:heard        FAILED: disk full\n")
+    out = services.mail_checks()
+    warn = [l for l in out if l.startswith("WARNING: heard box NOT made")]
+    assert len(warn) == 1 and "`message setup --box heard`" in warn[0] and "refused" in warn[0]
+    assert "disk full" in warn[0]
+    assert out[-1].startswith("heard  an agent hears")                   # the install goes on
+
+
+def test_drop_host_setup_that_cannot_run_warns(fence, monkeypatch):
+    calls = _setup(monkeypatch)
+    dry = services._message_setup
+    monkeypatch.setattr(services, "_message_setup",
+                        lambda argv, runs=None: dry(argv) if "--dry-run" in argv else None)
+    warn = [l for l in services.mail_checks() if l.startswith("WARNING: heard box NOT made")]
+    assert len(warn) == 1 and "it could not be run" in warn[0] and calls == [["--box", "heard", "--dry-run"]]
+
+
+def test_drop_host_heard_blocked_warns(fence, monkeypatch):
+    calls = _setup(monkeypatch, heard="BLOCKED  /H/.mail/agents/heard is there and is not a directory")
+    out = services.mail_checks()
+    assert any(l.startswith("WARNING: heard box NOT made") and "not a directory" in l for l in out)
+    assert calls == [["--box", "heard", "--dry-run"]]                  # nothing applied over it
+
+
+def test_drop_host_configures_nothing_beyond_the_box(fence, monkeypatch):
+    """RULING C: on a drop host install asks setup for the heard box and nothing else (no
+    --write-maps, no other box), and sets no carrier, in this process or a plist."""
+    calls = _setup(monkeypatch)
+    services.mail_checks()
+    assert calls == [["--box", "heard", "--dry-run"], ["--box", "heard"]]
+    assert "SESSIONMAIL_SENDMAIL" not in os.environ
+    assert not (fence["home"] / ".sessionkit").exists()                # no settings key written
+    for name in ("mail", "mouth", "keeper"):
+        env = services.spec(name)["EnvironmentVariables"]
+        assert "SESSIONMAIL_SENDMAIL" not in env and "MAGICDNS_SUFFIX" not in env
+
+
+def test_mta_host_keeps_the_postfix_checks_and_the_store_dir_box(fence, monkeypatch):
+    calls = _setup(monkeypatch, carrier=MTA)
     out = services.mail_checks(dry_run=True)
-    assert any(l.startswith("carrier mail drop") and "no postfix needed" in l
-               and "plain mail" in l for l in out)             # EARS-381 R1, said
-    gap = [l for l in out if "will not see SESSIONMAIL_SENDMAIL" in l]
-    assert len(gap) == 1 and gap[0].startswith("WARNING:") and "deliver nothing" in gap[0]
-    assert not any("needs SESSIONMAIL_SENDMAIL=drop" in l for l in out)
-
-
-def test_drop_with_postfix_says_the_services_send_by_postfix(fence, monkeypatch):
-    monkeypatch.setenv("SESSIONMAIL_SENDMAIL", "drop")
-    out = services.mail_checks(dry_run=True)
-    gap = [l for l in out if "will not see SESSIONMAIL_SENDMAIL" in l]
-    assert len(gap) == 1 and not gap[0].startswith("WARNING") and "send by postfix" in gap[0]
+    assert calls == [["--box", "heard", "--dry-run"]]                  # no box made by setup here
+    assert any(l.startswith("sendmail the MTA at /usr/sbin/sendmail") for l in out)
     assert any(l.startswith("postfix present") for l in out)
+    assert any(".tm-store" in l for l in out)                          # the fleet's nested box
+    assert not any(f in l for l in out for f in FALSE)
+
+
+def test_mta_host_install_takes_the_mta_branch_and_makes_nothing(fence, monkeypatch):
+    """A fleet host's settings name postfix (`sendmail`: an MTA). A real install there, not a
+    dry run, with no store dir: setup is only ever asked with --dry-run, no box is made, no
+    map is rebuilt, and the live home's mail and notmuch files are untouched."""
+    before = _live_mail()
+    calls = _setup(monkeypatch, carrier=MTA)
+    out = services.mail_checks()
+    assert calls == [["--box", "heard", "--dry-run"]]
+    assert any(l.startswith("sendmail the MTA at") for l in out)
+    assert any(l.startswith("WARNING: heard box MISSING, not made") for l in out)
+    assert fence["calls"]["vmailbox"] == 0
+    agents = fence["home"] / ".mail/agents"
+    assert not agents.exists() or not any(agents.rglob("*"))
+    assert _live_mail() == before
+
+
+def test_mta_named_but_broken_is_a_warning(fence, monkeypatch):
+    _setup(monkeypatch, carrier=BROKEN)
+    out = services.mail_checks(dry_run=True)
+    assert any(l.startswith("WARNING: sendmail BROKEN") and "not an executable file" in l for l in out)
+
+
+def test_refused_settings_are_said_and_nothing_is_made(fence, monkeypatch):
+    calls = _setup(monkeypatch, refused='"sendmail": "nonsense" in ~/.sessionkit/mail/settings/mail.json is not a carrier')
+    out = services.mail_checks()
+    assert calls == [["--box", "heard", "--dry-run"]]
+    assert any(l.startswith("WARNING: sendmail REFUSED") and "is not a carrier" in l for l in out)
+    assert not any(l.startswith("heard") or "postfix" in l for l in out)
+
+
+UNREAD = [None,                                                     # no `message`, or it would not start
+          (2, "", "Error: No such command 'setup'."),                # an older `message`
+          (4, "steps:\n  carrier          SOMETHING  new\n", ""),   # a row this cannot read
+          (0, "", "")]                                                # nothing printed
+
+
+@pytest.mark.parametrize("dry", [True, False])
+@pytest.mark.parametrize("got", UNREAD)
+def test_an_unreadable_answer_is_its_own_state_never_a_guessed_mta(fence, monkeypatch, got, dry):
+    """Unknown is not an MTA: a WARNING naming `message setup --dry-run`, no box, neither the
+    drop's lines nor the postfix checks, and the install goes on."""
+    calls = []
+    monkeypatch.setattr(services, "_message_setup", lambda argv, runs=None: calls.append(argv) or got)
+    monkeypatch.setattr(services, "_postconf", lambda p: pytest.fail("postconf asked on an unknown carrier"))
+    store = _store(fence["home"])
+    out = services.mail_checks(dry_run=dry)
+    warn = [l for l in out if l.startswith("WARNING: sendmail UNKNOWN")]
+    assert len(warn) == 1 and "could not be read" in warn[0] and "`message setup --dry-run`" in warn[0]
+    assert "install goes on" in warn[0]
+    assert calls == [["--box", "heard", "--dry-run"]]                  # asked once; nothing applied
+    assert not any(l.startswith(("heard", "postfix", "sendmail the", "mail ")) for l in out)
+    assert not (store / "heard").exists() and fence["calls"]["vmailbox"] == 0
+    assert not any(f in l for l in out for f in FALSE)
+
+
+def test_an_unknown_carrier_install_goes_on(fence, capsys, monkeypatch):
+    monkeypatch.setattr(services, "_message_setup", lambda argv, runs=None: None)
+    assert services.install(["mail"], dry_run=True) == 0
+    assert "WARNING: sendmail UNKNOWN" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("row,source", [
+    ("DONE     the mail drop (the default); no suffix is needed", "(the default)"),
+    ("DONE     the mail drop (from ~/.sessionkit/mail/settings/mail.json); no suffix is needed",
+     "(from ~/.sessionkit/mail/settings/mail.json)"),
+    ("DONE     the mail drop (the default, from ~/.sessionkit/mail/settings/mail.template.json); "
+     "no suffix is needed", "(the default, from ~/.sessionkit/mail/settings/mail.template.json)"),
+    ("DONE     the mail drop (from $SESSIONMAIL_SENDMAIL); no suffix is needed",
+     "(from $SESSIONMAIL_SENDMAIL)"),
+])
+def test_the_drop_line_says_sessionmails_own_source(fence, monkeypatch, row, source):
+    """Never a fixed "(the default)": a key set to "drop" reads as the settings file's."""
+    _setup(monkeypatch, carrier=row, heard=DONE_BOX)
+    drop = [l for l in services.mail_checks(dry_run=True) if l.startswith("sendmail ")]
+    assert drop == [l for l in drop if l.startswith(f"sendmail the mail drop {source} for the launchd")]
+    assert len(drop) == 1
+    if source != "(the default)":
+        assert "(the default)" not in drop[0]
+
+
+def test_the_shell_variable_is_said_never_used(fence, monkeypatch):
+    _setup(monkeypatch)
+    monkeypatch.setenv("SESSIONMAIL_SENDMAIL", "/opt/x/sendmail")
+    out = services.mail_checks(dry_run=True)
+    gap = [l for l in out if "will not see SESSIONMAIL_SENDMAIL=/opt/x/sendmail" in l]
+    assert len(gap) == 1 and "`sendmail` key" in gap[0] and "~/.sessionkit/mail/settings/mail.json" in gap[0]
+    assert not gap[0].startswith("WARNING") and "the default" not in gap[0]
+
+
+@pytest.mark.parametrize("carrier", [DROP, MTA, BROKEN, None])
+@pytest.mark.parametrize("shell", ["", "drop", "/opt/x/sendmail"])
+def test_no_false_line_on_any_branch(fence, monkeypatch, carrier, shell):
+    if carrier is None:
+        _setup(monkeypatch, refused="it is not a carrier")
+    else:
+        _setup(monkeypatch, carrier=carrier)
+    if shell:
+        monkeypatch.setenv("SESSIONMAIL_SENDMAIL", shell)
+    for dry in (True, False):
+        out = services.mail_checks(dry_run=dry)
+        assert not any(f in l for l in out for f in FALSE), out
+
+
+def test_setup_runs_in_launchds_environment_not_this_shells(fence, monkeypatch):
+    monkeypatch.setenv("SESSIONMAIL_SENDMAIL", "drop")
+    env = services._setup_env()
+    assert "SESSIONMAIL_SENDMAIL" not in env and set(env) == {"PATH", "HOME"}
+    assert env["PATH"] == services._service_path()
+
+
+def test_setup_runs_in_a_hand_made_mailers_environment(fence, tmp_path):
+    plist = tmp_path / "hand.plist"
+    plist.write_bytes(plistlib.dumps({"EnvironmentVariables": {
+        "PATH": "/x/bin", "HOME": "/x", "SESSIONMAIL_SENDMAIL": "drop", "OTHER": "no"}}))
+    env = services._setup_env(("dev.sessionvoice.ears-mail", plist))
+    assert env == {"PATH": "/x/bin", "HOME": "/x", "SESSIONMAIL_SENDMAIL": "drop"}
+
+
+def _stub_message(fence, carrier=DROP, heard=TODO_BOX) -> Path:
+    """The fence's `message`, now a stub of sessionmail's: it logs its argv and environment
+    and prints a canned plan. It lives in the test's temp dir, so the setup fence lets it run."""
+    d = fence["tmp"]
+    (d / "plan.txt").write_text(PLAN.format(root="DONE     /H/.mail/agents", heard=heard, carrier=carrier))
+    (d / "applied.txt").write_text(APPLIED)
+    stub = Path(services.MESSAGE)
+    stub.write_text('#!/bin/sh\nd=$(dirname "$0")\necho "$*" >> "$d/argv.log"\nenv > "$d/env.log"\n'
+                    'cat "$d/plan.txt"\ncase " $* " in *" --dry-run "*) ;; *) cat "$d/applied.txt" ;; esac\n'
+                    'exit 4\n')
+    stub.chmod(0o755)
+    return d
+
+
+def test_the_real_message_setup_call_runs_a_stub_in_the_services_env(fence, monkeypatch):
+    """_message_setup itself, unpatched, against a stub `message`: the argv, the exit 4 that
+    is not read as failure, and launchd's environment (no shell SESSIONMAIL_SENDMAIL)."""
+    before = _live_mail()
+    monkeypatch.setattr(services, "_message_setup", REAL_SETUP)
+    monkeypatch.setenv("SESSIONMAIL_SENDMAIL", "/opt/x/sendmail")
+    d = _stub_message(fence)
+    out = services.mail_checks()
+    assert (d / "argv.log").read_text().splitlines() == ["setup --box heard --dry-run", "setup --box heard"]
+    env = dict(l.split("=", 1) for l in (d / "env.log").read_text().splitlines() if "=" in l)
+    assert "SESSIONMAIL_SENDMAIL" not in env and env["HOME"] == str(fence["home"])
+    assert env["PATH"] == services._service_path()
+    assert any(l.startswith("sendmail the mail drop") for l in out)
+    assert "heard  box made /H/.mail/agents/heard (by `message setup --box heard`)" in out
+    assert _live_mail() == before
+
+
+def test_the_setup_fence_refuses_a_real_message_setup():
+    with pytest.raises(setup_fence.RealMessageSetup):
+        subprocess.run(["/nonexistent/bin/message", "setup", "--dry-run"], capture_output=True)
+    with pytest.raises(setup_fence.RealMessageSetup):
+        subprocess.run(["message", "setup", "--box", "heard"], capture_output=True)   # a bare name too
+
+
+def test_setup_rows_parse_sessionmails_own_output():
+    plan, applied = services._setup_rows(PLAN.format(root="DONE     /H", heard=TODO_BOX, carrier=DROP) + APPLIED)
+    assert plan["carrier"] == ("DONE", "the mail drop (the default); no suffix is needed")
+    assert plan["box:heard"][0] == "TODO" and applied["box:heard"] == "made /H/.mail/agents/heard"
+    assert "note:" not in plan and "applying:" not in plan
+
+
+def test_drop_host_with_a_nested_heard_box_makes_no_second_one(fence, monkeypatch):
+    calls = _setup(monkeypatch)
+    store = fence["home"] / ".mail/agents/store"
+    (store / "heard/new").mkdir(parents=True); (store / ".tm-store").write_text("")
+    out = services.mail_checks()
+    assert calls == [["--box", "heard", "--dry-run"]]
+    assert f"heard  box present: {store / 'heard'}" in out
+    assert not any(".tm-store" in l for l in out)
 
 
 def test_the_mail_check_configures_nothing(fence, monkeypatch):

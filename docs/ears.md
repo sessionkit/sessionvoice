@@ -82,13 +82,23 @@ woken by mail. Code: `src/ears/`, `keeper/`, `bin/`.
   returned; a failed send is a fire-log row with `exit` and `err`, plus one
   `ears-mail: ERROR: send to <seat> failed, exit <code>: <why>` line on
   stderr (the launchd log), and the keeper keeps running. Under `--to seats` it is one send per seat, so one
-  dead box does not silence the rest. Under `SESSIONMAIL_SENDMAIL=drop` (a
-  Mac with no postfix) a heard turn's From is not qualified, so the pager
-  reads it as plain mail until sessionmail's file drop puts the host in
-  the sender address. The launch agents do not see a carrier set in your
-  shell: with no postfix they deliver nothing until sessionmail lets the
-  carrier be set in its settings file. It is what pages a subscribed agent: a heard
-  line on its own pages nobody; only a reader of the log (a waiter, the
+  dead box does not silence the rest. With no `sendmail` key in
+  sessionmail's settings file (`~/.sessionkit/mail/settings/mail.json`)
+  and no `SESSIONMAIL_SENDMAIL`, sessionmail (0.2.0 and later) delivers
+  by its mail drop: it writes each mail straight into your own mailbox,
+  as you, with no mail server. That is how the launch agents deliver on
+  a Mac with no postfix. The drop never makes a mailbox, so the `heard`
+  box must exist first: `message setup --box heard` makes it. A turn
+  mailed to a box that is not there is refused, nothing is delivered,
+  and the turn is lost. The drop puts the host in the keeper's bare
+  From, and the pager carries an unsigned heard turn as a call, not as
+  plain mail. A fire-log row with `exit 0` proves only that the turn
+  reached the `heard` box; it says nothing about any agent. To send by
+  postfix instead, set `"sendmail": "/usr/sbin/sendmail"` in that file:
+  the launch agents do not see a `SESSIONMAIL_SENDMAIL` set in your
+  shell. The turn mail is what pages a subscribed agent: an agent hears
+  a heard turn only once it subscribes to `heard+<device>`. A heard line
+  on its own pages nobody; only a reader of the log (a waiter, the
   hook) sees it. It mails turns heard on the room's mic only. A call's
   turns (source `call`, or a BlackHole input, the call tap), the mouth's
   echo and empty turns are skipped.
