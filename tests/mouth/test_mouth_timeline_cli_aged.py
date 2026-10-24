@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tests import child_pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 CLI_TESTS = Path(__file__).resolve().parent / "test_mouth_timeline_cli.py"
@@ -29,14 +31,15 @@ THE_FOUR = (
 )
 
 
-def run_aged(args, cwd, age=AGE_S) -> subprocess.CompletedProcess:
-    """pytest ARGS in a child, with the aged_clock plugin rewinding collection."""
+def run_aged(args, cwd, tmp_path, age=AGE_S) -> subprocess.CompletedProcess:
+    """pytest ARGS in a child, with the aged_clock plugin rewinding collection, in its own
+    basetemp under ``tmp_path`` (tests/child_pytest.py, EARS-436)."""
     env = {**os.environ, "MOUTH_AGED_CLOCK_S": str(age),
            "PYTHONPATH": os.pathsep.join(
                [str(FIXTURES), *filter(None, [os.environ.get("PYTHONPATH")])])}
     return subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "aged_clock", "-p", "no:cacheprovider",
-         "-q", "-rA", *args],
+         "-q", "-rA", child_pytest.basetemp(tmp_path), *args],
         cwd=cwd, env=env, capture_output=True, text=True, timeout=600)
 
 
@@ -56,14 +59,14 @@ def test_the_plugin_rewinds_collection_and_leaves_the_run_true(tmp_path):
         "    child = float(subprocess.check_output(\n"
         "        [sys.executable, '-c', 'import time; print(time.time())']))\n"
         "    assert abs(child - time.time()) < 30\n")
-    p = run_aged([str(probe)], cwd=tmp_path)
+    p = run_aged([str(probe)], cwd=tmp_path, tmp_path=tmp_path)
     assert p.returncode == 0, p.stdout + p.stderr
     assert "2 passed" in p.stdout, p.stdout
     assert f"aged_clock: collection read time.time {AGE_S} s behind" in p.stdout
 
 
-def test_every_timeline_cli_test_passes_520_s_after_collection():
-    p = run_aged([str(CLI_TESTS)], cwd=ROOT)
+def test_every_timeline_cli_test_passes_520_s_after_collection(tmp_path):
+    p = run_aged([str(CLI_TESTS)], cwd=ROOT, tmp_path=tmp_path)
     out = p.stdout + p.stderr
     assert f"aged_clock: collection read time.time {AGE_S} s behind" in p.stdout, out
     assert p.returncode == 0, out

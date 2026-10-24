@@ -186,7 +186,7 @@ def test_dry_run_step_4_says_what_it_would_build_and_write(sx, capsys, monkeypat
 
 def test_dry_run_of_a_bare_install_runs_the_speech_step_first(sx, capsys):
     _store(sx["home"])
-    assert services.main(["install", "--dry-run"]) == 0
+    assert services.main(["install", "--no-agent", "--dry-run"]) == 0   # EARS-421: else REFUSED, rc 2
     out = capsys.readouterr().out
     assert out.index("speech step 4") < out.index("final would be set")
     assert "(not probed: it is the speech server this install loads)" in out

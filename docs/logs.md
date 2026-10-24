@@ -202,7 +202,7 @@ later (`src/ears/listen/loop.py:380-383`).
 <!-- markdownlint-disable MD013 -->
 
 ```json
-{"ts": "2030-01-07T08:00:00.402+11:00", "seq": 4, "kind": "partial", "text": "hello there", "source": "file", "device": "synthetic", "session": "s-doc", "agent": "doc", "final": false, "t0": 0.33, "t1": 1.86, "v": 1}
+{"ts": "2030-12-08T08:00:00.402+11:00", "seq": 4, "kind": "partial", "text": "hello there", "source": "file", "device": "synthetic", "session": "s-doc", "agent": "doc", "final": false, "t0": 0.33, "t1": 1.86, "v": 1}
 ```
 
 <!-- markdownlint-enable MD013 -->
@@ -248,7 +248,7 @@ What the user said, once the detector decided they had finished
 <!-- markdownlint-disable MD013 -->
 
 ```json
-{"ts": "2030-01-07T08:00:00.402+11:00", "seq": 6, "kind": "turn", "text": "hello there", "source": "file", "device": "synthetic", "session": "s-doc", "agent": "doc", "final": true, "detector": "vad-silence", "t0": 0.33, "t1": 1.51, "v": 1}
+{"ts": "2030-12-08T08:00:00.402+11:00", "seq": 6, "kind": "turn", "text": "hello there", "source": "file", "device": "synthetic", "session": "s-doc", "agent": "doc", "final": true, "detector": "vad-silence", "t0": 0.33, "t1": 1.51, "v": 1}
 ```
 
 <!-- markdownlint-enable MD013 -->
@@ -261,7 +261,7 @@ depending on it. The names are listed in [Events](#events).
 <!-- markdownlint-disable MD013 -->
 
 ```json
-{"ts": "2030-01-07T08:00:00.402+11:00", "seq": 5, "kind": "event", "event": "heartbeat", "source": "file", "device": "synthetic", "session": "s-doc", "agent": "doc", "period": 2.0, "stream_s": 2.01, "peak": 4000, "rms": 1994.7, "rms_dbfs": -24.3, "v": 1}
+{"ts": "2030-12-08T08:00:00.402+11:00", "seq": 5, "kind": "event", "event": "heartbeat", "source": "file", "device": "synthetic", "session": "s-doc", "agent": "doc", "period": 2.0, "stream_s": 2.01, "peak": 4000, "rms": 1994.7, "rms_dbfs": -24.3, "v": 1}
 ```
 
 <!-- markdownlint-enable MD013 -->
@@ -274,7 +274,10 @@ Written at the line's first audio frame, like a partial
 
 - `text`, `utt` (the line's id), `final: false`, `source: "mouth"`.
 - The line's own fields, on both `saying` and `said`
-  (`player.py:205-221`): `voice`, `backend`, `backend_asked`, `pan`,
+  (`player.py:205-224`): `voice`, `backend`, `backend_asked`, `pan`,
+  `device_from` (the rung that chose the device: `mail`, `call`, `env`,
+  `settings` or `default`, as in [mouth.md](mouth.md); none on a
+  `mouth say` line whose caller named the device),
   `requested_ts`, `mail_id`, `file`, `start`, `end`, `hold`, `interest`,
   `resume_of`, `again_of` (a say-again replay: the utt it replays),
   `expires_t`, `volume`, `volume_from`, `in_reply_to` and `call_id`.
@@ -285,7 +288,7 @@ Written at the line's first audio frame, like a partial
 <!-- markdownlint-disable MD013 -->
 
 ```json
-{"ts": "2030-01-07T08:00:00.555+11:00", "seq": 13, "kind": "saying", "text": "Hello Alice.", "source": "mouth", "device": "null", "session": "s-doc", "agent": "carol", "final": false, "utt": "8fa303b0e002", "voice": "af_sky", "backend": "silence", "requested_ts": "2030-01-07T08:00:00.446+11:00", "mail_id": "<1893963600499517000.8fa303b0e002@host.mouth>", "volume": 100, "volume_from": "builtin", "gen_s": 0.0, "v": 1}
+{"ts": "2030-12-08T08:00:00.555+11:00", "seq": 13, "kind": "saying", "text": "Hello Alice.", "source": "mouth", "device": "null", "session": "s-doc", "agent": "carol", "final": false, "utt": "8fa303b0e002", "voice": "af_sky", "backend": "silence", "requested_ts": "2030-12-08T08:00:00.446+11:00", "mail_id": "<1922907600499517000.8fa303b0e002@host.mouth>", "volume": 100, "volume_from": "builtin", "gen_s": 0.0, "v": 1}
 ```
 
 <!-- markdownlint-enable MD013 -->
@@ -324,7 +327,7 @@ cut, where and why.
 <!-- markdownlint-disable MD013 -->
 
 ```json
-{"ts": "2030-01-07T08:00:01.298+11:00", "seq": 14, "kind": "said", "source": "mouth", "device": "null", "session": "s-doc", "agent": "carol", "final": true, "utt": "8fa303b0e002", "voice": "af_sky", "backend": "silence", "requested_ts": "2030-01-07T08:00:00.446+11:00", "mail_id": "<1893963600499517000.8fa303b0e002@host.mouth>", "volume": 100, "volume_from": "builtin", "played_s": 0.733, "dur_s": 0.733, "cut": false, "text_played_est": "Hello Alice.", "underrun_s": 0.0, "underruns": 0, "device_gaps": 0, "device_gap_s": 0.0, "device_gap_max_s": 0.0, "reason": "done", "v": 1}
+{"ts": "2030-12-08T08:00:01.298+11:00", "seq": 14, "kind": "said", "source": "mouth", "device": "null", "session": "s-doc", "agent": "carol", "final": true, "utt": "8fa303b0e002", "voice": "af_sky", "backend": "silence", "requested_ts": "2030-12-08T08:00:00.446+11:00", "mail_id": "<1922907600499517000.8fa303b0e002@host.mouth>", "volume": 100, "volume_from": "builtin", "played_s": 0.733, "dur_s": 0.733, "cut": false, "text_played_est": "Hello Alice.", "underrun_s": 0.0, "underruns": 0, "device_gaps": 0, "device_gap_s": 0.0, "device_gap_max_s": 0.0, "reason": "done", "v": 1}
 ```
 
 <!-- markdownlint-enable MD013 -->
@@ -592,7 +595,14 @@ Paths are master's. `EARS_LOG_DIR` moves `~/Library/Logs/ears`, for
   launch agent, as stdout and stderr (`src/ears/services.py:717`, or
   `launchd/dev.sessionkit.voice.ears-mail.plist.in:84`). It shows a start banner,
   one JSON line per mail sent, and one `{"skip": WHY, "seq": N}` line per
-  turn it did not mail (`skip()` in `keeper/ears-mail.py`). A say-again
+  turn it did not mail (`skip()` in `keeper/ears-mail.py`). `--to device`
+  skips a call turn for one of two reasons: `{"skip": "call", "seq",
+  "source"}` when `--calls off` is set (or the turn's source is another
+  non-mic one, with no `call:N` device), and `{"skip": "call-bot", "seq",
+  "call": N}` when no `call-ears.sock` leg names call `N`'s bot (a hung-up
+  call the mailer never saw live, a web leg, a leg with no agent), with
+  nothing mailed. A mailed call turn is an ordinary sent line whose `to` is
+  `calls+<bot>-<N>` and whose `rule` is null. A say-again
   adds one line on stderr: `{"again": "replayed", "seq", "seat",
   "utt", "mouth"}` when `mouth again` exited 0 (`mouth` is what it
   printed), `{"again": "dry run", ..., "cmd"}` under `--dry-run`, or the
@@ -605,9 +615,9 @@ Paths are master's. `EARS_LOG_DIR` moves `~/Library/Logs/ears`, for
   `deliver()` in `keeper/ears-mail.py`, given as `--fire-log`
   (`spec("mail")` in `src/ears/services.py`). It shows one line per mail
   sent: `at`, `seq`, `to`, `rule`, `subject`, `exit`, `id`, and `err` if it
-  failed. A `rule` entry `<seat>@<host>=again` is a say-again the mouth
-  replayed: it woke nobody. One the mouth could not replay is written
-  `=call` instead.
+  failed. A call-box mail is a row To `calls+<bot>-<N>` with a null `rule`. A
+  `rule` entry `<seat>@<host>=again` is a say-again the mouth replayed:
+  it woke nobody. One the mouth could not replay is written `=call` instead.
 - **`ears-mouth.log`** in `~/Library/Logs/ears/`. Writer: the `mouth mail`
   launch agent, as stdout and stderr (`src/ears/services.py:717`). The
   player runs inside it and prints its records there: `kind: barge`

@@ -10,7 +10,7 @@ import os
 import subprocess
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -441,9 +441,9 @@ def test_chunk_boundaries_lose_no_line(d, h, monkeypatch):
 
 def test_a_call_across_midnight_reads_yesterdays_file(d, h):
     log = Log(h)
-    first = log.turn(10.0, day="2030-10-03")
-    log.line(20.0, day="2030-10-03")
-    log.turn(100.0, day="2030-10-04")
+    first = log.turn(10.0, day="2030-06-09")    # an older file, then the newer: names sort as days
+    log.line(20.0, day="2030-06-09")
+    log.turn(100.0, day="2030-12-08")
     out = doc(d, h, at=200.0)
     assert out["call"]["id"] == f"window:local:{first['seq']}" and len(past(out)) == 3
     only_today = doc(d, h, at=200.0, max_files=1)
@@ -472,9 +472,9 @@ def test_the_current_call_stops_reading_at_its_gap(d, h, monkeypatch):
 
 def test_an_old_call_is_found_files_back(d, h):
     log = Log(h)
-    first = log.turn(10.0, day="2030-09-30")
-    for day in ("2030-10-01", "2030-10-02", "2030-10-03"):
-        log.turn(1000.0, day=day)
+    first = log.turn(10.0, day="2030-06-09")
+    for k in (1, 2, 3):                          # three newer files: it is found 3 files back
+        log.turn(1000.0, day=(date(2030, 6, 9) + timedelta(days=k)).isoformat())
     out = doc(d, h, at=2000.0, call=f"window:local:{first['seq']}")
     assert [r["seq"] for r in past(out)] == [first["seq"]] and out["call"]["open"] is False
 

@@ -337,7 +337,10 @@ def check(item: dict, now: Optional[float] = None, directory: Optional[Path] = N
         _, start_t, end_t, _, _ = _look_floor(directory, now, sources=ears)
         if floor(directory, now, sources=ears) == "speaking":
             asked = item.get("requested_t")
-            if asked is not None and start_t is not None and float(asked) < start_t:
+            # an opener its sender held is old news once the user starts again; a line
+            # held only by the room default (ROOM_HOLD) is not an opener, so it waits
+            if asked is not None and start_t is not None and float(asked) < start_t \
+                    and item.get("hold_from") != ROOM:
                 return "stale"
             return "wait"
         if exp_s is not None:
@@ -394,6 +397,38 @@ def resume_answer_words(settings: Optional[dict] = None) -> int:
     except (TypeError, ValueError):
         return RESUME_ANSWER_WORDS
     return n if n >= 1 else RESUME_ANSWER_WORDS
+
+
+#: A line on a ROOM device (any device that is not ``call`` or ``call:<N>``) that
+#: asks no hold waits for the end of the user's turn, as ``--hold turn-end`` does:
+#: a seat that forgets the flag never talks over the user. ``--now``, ``--hold none``
+#: (``X-Mouth-When: now``) and a played file (``mouth play``) still play at once.
+#: Off: ``room_hold: false`` in the mouth's settings, or $MOUTH_ROOM_HOLD=off.
+ROOM_HOLD = True
+#: The ``hold_from`` of a line held by :data:`ROOM_HOLD`, not by its sender.
+ROOM = "room"
+#: ``say(hold=...)`` / ``mouth say --hold none``: no hold, even on a room device.
+#: It rides the mail as ``X-Mouth-When: now``, the word a call line already reads.
+NO_HOLD = "none"
+
+
+def room_hold(settings: Optional[dict] = None) -> tuple:
+    """Whether a room line that asks no hold is held ``turn-end``, and the layer
+    that said so: ``(on, "env"|"settings"|"default")``. The line's own ask (its
+    ``--hold``, ``--now``, ``X-Mouth-When``) is the layer above all of these
+    and is read by ``box.read``.
+
+    $MOUTH_ROOM_HOLD (``off``, ``0``, ``no``, ``false`` turn it off; any other
+    non-empty value is on), else ``room_hold`` (true or false) in the mouth's
+    settings, else :data:`ROOM_HOLD`. An empty env or a non-boolean setting is
+    as if unset."""
+    env = envnames.get("MOUTH_ROOM_HOLD")
+    if env is not None and env.strip():
+        return env.strip().lower() not in _OFF, "env"
+    v = _settings(settings).get("room_hold")
+    if isinstance(v, bool):
+        return v, "settings"
+    return ROOM_HOLD, "default"
 
 
 def resume_answer_question(settings: Optional[dict] = None) -> bool:
@@ -729,7 +764,8 @@ RESUME_S = 20.0   # a cut line's unplayed rest waits this long for the user's tu
 # - a list of names, ``["alice"]``: a partial cuts only once the speaker
 #   side-car (ears ``speakers/``) has named it as one of them. ``other``,
 #   ``silent`` and ``mixed`` never cut, and nor does a stop word in them.
-#   ``[]`` lets nobody cut.
+#   ``unheard`` (too little audio to score: a quiet voice) is nobody's name
+#   and counts as an unnamed one does, below. ``[]`` lets nobody cut.
 # - per place, ``{"room": ["alice"], "call": "anyone"}``: ``room`` is every
 #   output that is not a call; a place left out is ``anyone``.
 #
@@ -738,6 +774,9 @@ RESUME_S = 20.0   # a cut line's unplayed rest waits this long for the user's tu
 # one nobody is naming (the side-car is down, or it does not hear that
 # source: today it labels the room mic only, never a call). It cuts as if the
 # setting were ``anyone``, so a dead side-car cannot take the user's barge-in away.
+# A partial the side-car labels ``unheard`` is the same case, told at once: it
+# counts as if ``anyone`` without the wait, so a quiet voice cannot take the
+# user's barge-in away either. Its trace entry keeps ``speaker: unheard``.
 #
 # The default when the key is absent: when
 # ``session operator`` names an operator, it is ``{"room": [<mailbox>]}``, the
@@ -750,6 +789,7 @@ RESUME_S = 20.0   # a cut line's unplayed rest waits this long for the user's tu
 # ``anyone``, as before. The key present, with ANY value, is explicit and wins,
 # ``"anyone"`` included: that is how a configured user keeps today's behaviour.
 ANYONE = "anyone"
+UNHEARD = "unheard"   # the side-car's label for a partial it could not score
 LABEL_WAIT_S = 2.0
 _SPEAKERS_TAIL = 128 * 1024
 
@@ -763,21 +803,48 @@ def _who_list(v) -> Optional[frozenset]:
     return None
 
 
-def barge_in(device: Optional[str] = None, settings: Optional[dict] = None) -> Optional[frozenset]:
-    """The names that may cut a line on ``device``, or None for anyone."""
+def _barge_in_value(settings: Optional[dict]) -> tuple:
+    """``(value, by)``: the raw ``barge_in`` and where it came from, ``setting``
+    (the key present, any value), ``operator`` (absent, the operator's mailbox)
+    or ``builtin`` (absent, unconfigured: anyone)."""
     if settings is None:
         from . import voices
         settings = voices.settings()
     s = settings or {}
     if "barge_in" in s:
-        v = s["barge_in"]                            # explicit wins, any value, "anyone" too
-    else:
-        mb = operator_config.current().mailbox       # settings-only field, never `operator`
-        v = {"room": [mb]} if mb else ANYONE         # room only: a call is left out, so anyone
+        return s["barge_in"], "setting"              # explicit wins, any value, "anyone" too
+    mb = operator_config.current().mailbox           # settings-only field, never `operator`
+    if mb:
+        return {"room": [mb]}, "operator"            # room only: a call is left out, so anyone
+    return ANYONE, "builtin"
+
+
+def _barge_in_place(v, device: Optional[str]) -> Optional[frozenset]:
     if isinstance(v, dict):
         d = str(device or "")
         v = v.get("call" if d == "call" or d.startswith("call:") else "room", ANYONE)
     return _who_list(v)
+
+
+def barge_in(device: Optional[str] = None, settings: Optional[dict] = None) -> Optional[frozenset]:
+    """The names that may cut a line on ``device``, or None for anyone."""
+    return _barge_in_place(_barge_in_value(settings)[0], device)
+
+
+def barge_in_shown(settings: Optional[dict] = None) -> dict:
+    """Who may cut a line in each place, JSON-safe: ``{"room": {"who": ...,
+    "from": ..., "by": ...}, "call": {...}}``. ``who`` is ``"anyone"`` or the
+    sorted names (``[]``: nobody); ``from``/``by`` are ``user``/``setting``
+    (the ``barge_in`` key), ``default``/``operator`` (the operator's mailbox)
+    or ``default``/``builtin`` (unconfigured). The same answer `barge_in`
+    gives; ``mouth status`` and ``mouth barge`` print it."""
+    v, by = _barge_in_value(settings)
+    out: dict = {}
+    for place, device in (("room", None), ("call", "call")):
+        who = _barge_in_place(v, device)
+        out[place] = {"who": ANYONE if who is None else sorted(who),
+                      "from": "user" if by == "setting" else "default", "by": by}
+    return out
 
 
 LABEL_LATE_S = 1.0   # after the user's turn ends: the slack for the poll that sees a partial's wait run out
@@ -1009,13 +1076,16 @@ def barge_status(d: Optional[Path] = None, now: Optional[float] = None) -> dict:
     `barge_policy`, every value with its ``from`` and ``by``, JSON-safe (the
     ignore set itself is left out; ``ignore_from`` names the list), and the
     ``override`` (``mouth barge``, `bargeswitch.shown`: its values, ``until``
-    and ``remaining_s``, ``by``; None when there is none). ``mouth barge``
+    and ``remaining_s``, ``by``; None when there is none), and ``barge_in``,
+    who may cut in each place (`barge_in_shown`). ``mouth barge``
     with no argument prints the same."""
     from . import bargeswitch
     from .paths import mouth_dir
 
     out = {k: v for k, v in barge_policy(d=d, now=now).items() if k != "ignore"}
     out["override"] = bargeswitch.shown(mouth_dir() if d is None else d, now)
+    from . import voices
+    out["barge_in"] = barge_in_shown(voices.settings(d) if d is not None else None)
     return out
 
 
@@ -1249,7 +1319,7 @@ def barge(since_t: float, line_text: str, directory: Optional[Path] = None,
                     if trace is not None:
                         trace.append(_weighed(p, text, need, len(novel), skip="unnamed"))
                     continue                         # not named yet: wait for it
-            elif name not in who:
+            elif name != UNHEARD and name not in who:  # unheard: as if anyone
                 if trace is not None:
                     trace.append(_weighed(p, text, need, len(novel), skip="speaker", speaker=name))
                 continue                             # named, and not one who may cut
@@ -1373,6 +1443,6 @@ def speaking_over(device: Optional[str], directory: Optional[Path] = None,
             if pt is not None and now - pt < label_wait_s():
                 continue                         # not named yet: wait for it
             return p
-        if name in who:
+        if name in who or name == UNHEARD:       # unheard: as if anyone, as in `barge`
             return p
     return None

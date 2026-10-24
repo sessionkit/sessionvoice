@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from tests import _scanlist
+from tests import _scanlist, child_pytest
 
 FAKE = "\n".join([
     "# a comment, then a blank line",
@@ -187,7 +187,7 @@ def test_a_red_guard_prints_row_names_only(tmp_path):
     env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(_scanlist.__file__).rsplit("/tests/", 1)[0],
            _scanlist.ENV: str(listfile)}
     p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                        str(tmp_path / "test_guard.py")],
+                        child_pytest.basetemp(tmp_path), str(tmp_path / "test_guard.py")],
                        capture_output=True, text=True, env=env, cwd=tmp_path, timeout=60)
     out = p.stdout + p.stderr
     assert "1 failed" in out, out
@@ -302,7 +302,7 @@ def test_the_terminal_summary_counts_the_skips(tmp_path, listfile, listed):
     if listed:
         env[_scanlist.ENV] = str(listfile)
     p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                        str(tmp_path / "test_guards.py")],
+                        child_pytest.basetemp(tmp_path), str(tmp_path / "test_guards.py")],
                        capture_output=True, text=True, env=env, cwd=tmp_path, timeout=60)
     if listed:
         assert "2 passed, 1 skipped" in p.stdout, p.stdout

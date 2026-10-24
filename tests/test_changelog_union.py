@@ -27,7 +27,14 @@ Two kinds of test pin that:
   keeps both versions of the pair and writes the unchanged bullet between
   them twice.
 
-What the guard does NOT catch (measured with git 2.56, see
+A second guard reads the release headings: each ``## [x.y.z]`` version has
+exactly one. Union wrote a version's heading twice when EARS-418 dated the
+``## [0.2.1]`` line while other branches added ``[Unreleased]`` bullets just
+above it: the merge kept the old heading and the dated one (``REHEAD`` below
+replays that merge). Editing an existing line under union duplicates it
+whenever another branch touches an adjacent hunk.
+
+What the bullet guard does NOT catch (measured with git 2.56, see
 ``test_guard_blind_spots``): git keeps a line two sides share out of the
 conflict, so a bullet's unchanged first line is written once. When one
 bullet is edited on both sides, union keeps both versions, but they differ,
@@ -78,6 +85,29 @@ def duplicated_bullets(text: str) -> list[str]:
         m = BULLET.match(line)
         if m:
             seen[" ".join(m.group(1).split())] += 1
+    return sorted(k for k, n in seen.items() if n > 1)
+
+
+VERSION_HEADING = re.compile(r"^## \[(\d+\.\d+\.\d+)\]")
+
+
+def duplicated_versions(text: str) -> list[str]:
+    """Versions whose ``## [x.y.z]`` release heading appears more than once.
+
+    A dated and an undated heading of one version count as the same version.
+    Fenced code is skipped, as in :func:`duplicated_bullets`.
+    """
+    seen: Counter[str] = Counter()
+    in_fence = False
+    for line in text.splitlines():
+        if FENCE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = VERSION_HEADING.match(line)
+        if m:
+            seen[m.group(1)] += 1
     return sorted(k for k, n in seen.items() if n > 1)
 
 
@@ -221,6 +251,33 @@ def test_replay_is_clean_with_union(replay_repo, union_file, task, ours, theirs)
 
 def test_guard_passes_on_master():
     assert duplicated_bullets((ROOT / CHANGELOG).read_text()) == []
+
+
+def test_each_version_has_one_release_heading():
+    assert duplicated_versions((ROOT / CHANGELOG).read_text()) == []
+
+
+def test_version_guard_catches_a_heading_union_kept_twice():
+    text = BASE.replace("## [0.1.0]\n", "## [0.1.0]\n## [0.1.0] - 2030-06-09\n\n## [0.0.9]\n")
+    assert duplicated_versions(text) == ["0.1.0"]
+    assert duplicated_versions(BASE) == []
+    assert duplicated_versions("```\n## [0.1.0]\n```\n## [0.1.0]\n") == []   # fenced: not a heading
+
+
+# (the master the heading edit landed on, the EARS-418 branch that dated ## [0.2.1])
+REHEAD = ("465b6ca", "9afbb94")
+
+
+def test_version_guard_catches_the_real_0_2_1_duplicate(replay_repo, union_file):
+    """The merge that wrote ``## [0.2.1]`` twice, replayed: clean under union, and
+    the guard is what sees it."""
+    missing = [c for c in REHEAD if git(replay_repo, "cat-file", "-e", f"{c}^{{commit}}",
+                                       check=False).returncode]
+    if missing:
+        pytest.skip(f"the 0.2.1 replay needs {', '.join(missing)} (a shallow clone?)")
+    code, conflicted, text = merge(replay_repo, *REHEAD, union_file)
+    assert code == 0 and CHANGELOG not in conflicted
+    assert duplicated_versions(text) == ["0.2.1"]
 
 
 BASE = """\

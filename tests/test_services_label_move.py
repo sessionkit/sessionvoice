@@ -116,7 +116,7 @@ def test_the_labels_are_ours_now():
     assert services._old_label("keeper") == PREV + "keeper"
     assert services._old_labels("speech") == ["com.sessionvoice.mlx-audio"]
     # every old label a host may hold: each service under both old prefixes, speech's own
-    assert {l for n in services.ALL for l in services._old_labels(n)} == {
+    assert {l for n in services.jobs(services.ALL) for l in services._old_labels(n)} == {
         p + n for p in (PREV, OLD) for n in ("stt", "mouth", "keeper", "mail", "speakers")} | {
         "com.sessionvoice.mlx-audio"}
     assert services._labels("call") == [PREV + "call", OLD + "call"]

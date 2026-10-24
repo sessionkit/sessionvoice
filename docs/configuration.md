@@ -76,9 +76,10 @@ The variables that win over a key of `ears.json`, each on its own:
 | `EARS_RECORD` | `record` | `1`, `true`, `on` or `0`, `false`, `off`. A capture's `--record` or `--no-record` wins over both. |
 | `EARS_RECORD_DAYS` | `record_days` | A whole number of days, 0 or more. |
 | `EARS_RECORD_NOTICE`, `EARS_RECORD_SPOKEN_NOTICE` | `record_notice`, `record_spoken_notice` | Read by the call bot; the ears only report them (`ears recording status`). |
+| `EARS_HEARD_PARTIALS_ONLY` | `heard_partials_only` | The heard hook's partials-only mode: `1`, `on`, `true`, `yes` or `0`, `off`, `false`, `no`. The hook's `--partials-only` or `--no-partials-only` wins over both ([ears.md][heard-hook]). |
 
 `EARS_STT_URL` and `EARS_STT_MODEL` are different: `ears services install`
-reads them once, to write `final` into `ears.json`. Ten of the ears'
+reads them once, to write `final` into `ears.json`. Thirteen of the ears'
 variables had a `VOICEMODE_` name before, which is still read
 ([ears.md][ears-old]).
 
@@ -95,6 +96,8 @@ variables had a `VOICEMODE_` name before, which is still read
 | `speech` | `dev.sessionkit.voice.mlx-audio` | the speech server on `127.0.0.1:8890` |
 | `stt` | `dev.sessionkit.voice.ears-stt` | Apple's speech on `127.0.0.1:2023`, with `--apple` or `--only stt` |
 | `speakers` | `dev.sessionkit.voice.ears-speakers` | the speakers side-car, with `--only speakers` only |
+| `sounds` | `dev.sessionkit.voice.ears-sounds`, `dev.sessionkit.voice.mouth-sounds` | the ears sounds and the mouth sounds, two agents, with `--only sounds` only |
+| `talk` | `dev.sessionkit.voice.talk` | `talk serve` on `127.0.0.1:8780`, with `--only talk` only |
 
 How install tells its own plist from a hand render of a `launchd/` template,
 which carries the same label: every plist install writes has
@@ -147,6 +150,12 @@ a seat called by name.
   side-car names nobody), `EARS_MAIL_FROM` (the box, `heard` by default),
   `EARS_MAIL_DOMAIN` (the host part of the address) and `EARS_MAIL_MESSAGE`
   (the `message` command it sends with).
+- **Delta-call turns:** with `--calls on` (the default) each finished turn
+  of a Delta call is mailed To `calls+<bot>-<N>`, From `ears`
+  (`--calls-from`), instead of `heard+<device>`. `EARS_CALL_SOCKS` names
+  the bots' `call-ears.sock` legs, else they are found in sessionphone's
+  root and each `~/.<agent>/delta-chat`. See "The call-box mail" in
+  [ears.md](ears.md).
 
 ## Ears sounds
 
@@ -160,6 +169,12 @@ a seat called by name.
 - **Its log:** `~/Library/Logs/ears/ears-sounds.jsonl`, or
   `EARS_SOUNDS_LOG`.
 - **The heard log it follows:** the home's, or `EARS_SOUNDS_HEARD_DIR`.
+- **As a launch agent:** `ears services install --only sounds` runs it as
+  `dev.sessionkit.voice.ears-sounds`, beside the mouth sounds, on the
+  agents' Python. The plist passes the settings file and the log above, and
+  `--stop-file ~/.sessionkit/voice/STOP-ears-sounds`: create that file and
+  it exits and stays down until the next install. Its output goes to
+  `ears-sounds.log` beside the other agents' logs.
 
 ## The mouth
 
@@ -190,6 +205,7 @@ The variables most often set:
 | `MOUTH_KOKORO_URL`, `MOUTH_KOKORO_MODEL` | The speech server and its model. Each wins over its half of `tts`. |
 | `MOUTH_BARGE_WORDS` | The words that cut a line, when `barge_words` is unset. The setting wins over it. |
 | `MOUTH_RESUME_ANSWER_WORDS`, `MOUTH_RESUME_ANSWER_QUESTION` | Used when `resume_answer_words` or `resume_answer_question` is unset. The setting wins. |
+| `MOUTH_ROOM_HOLD` | `off` plays a room line that asks no hold at once, as before; `on` holds it for the end of your turn. Wins over `room_hold`. |
 | `MOUTH_LOG_DIR` | Where the mouth writes its heard-log lines, in place of the home's. |
 | `MOUTH_SESSION_BIN` | The `session` command. Set to `""`, the layers above the file are off. |
 | `MOUTH_SENDMAIL`, `MOUTH_NOTICE` | How the mouth mails its notices; `MOUTH_NOTICE=off` sends none. |
@@ -208,6 +224,13 @@ an agent taking your words.
   script, and `keeper/defaults/mouth-sounds.json` shows the shape.
 - **Its log:** `~/Library/Logs/ears/mouth-sounds.jsonl`, or
   `MOUTH_SOUNDS_LOG`.
+- **As a launch agent:** `ears services install --only sounds` runs it as
+  `dev.sessionkit.voice.mouth-sounds`. The plist sets `MOUTH_SOUNDS_SETTINGS`
+  and `MOUTH_SOUNDS_LOG` to the paths above and `MOUTH_SOUNDS_STOP` to
+  `~/.sessionkit/voice/STOP-mouth-sounds`. `MOUTH_SOUNDS_FIRED` and
+  `MOUTH_SOUNDS_CANNED` stay in the keeper's run folder (`EARS_RUN`, else
+  `~/.cache/ears/run`): `mid-turn.fired` and `auto-opener.utts`, where the
+  scripts that write them put them.
 
 ## Talk
 
@@ -216,6 +239,9 @@ variable: `TALK_PERSON`, `TALK_ALLOW_HOSTS`, `TALK_UNIX_SOCKET`,
 `TALK_SETTINGS_URL`, `TALK_CALL_URL` and `TALK_SMART_TURN_DIR`. The table
 is in [talk.md][talk-settings].
 
+- **As a service:** `ears services install --only talk` (opt-in) runs it
+  as `dev.sessionkit.voice.talk` on `127.0.0.1:8780`, its log
+  `~/Library/Logs/ears/talk.log`.
 - **Its token:** `<home>/talk/token`, mode 0600, made by the first
   `talk serve`.
 - **Its socket,** in socket mode: `<home>/talk/talk.sock` by default.
@@ -268,6 +294,7 @@ part follows the family's settings layers today:
 [log-files]: logs.md#the-log-files
 [models]: models.md
 [ears-old]: ears.md#old-environment-names
+[heard-hook]: ears.md#the-heard-hook
 [mouth-old]: mouth.md#old-environment-names
 [talk-settings]: talk.md#settings
 [speakers]: ../speakers/README.md

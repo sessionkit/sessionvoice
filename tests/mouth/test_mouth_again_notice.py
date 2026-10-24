@@ -79,7 +79,7 @@ def rig(tmp_path, monkeypatch):
     return SimpleNamespace(d=d, logs=logs, audio=aud, agents=agents)
 
 
-def keep_line(root: Path, utt: str = UTT, day: str = "2030-10-16", *,
+def keep_line(root: Path, utt: str = UTT, day: str = "2030-12-08", *,
               make_wav: bool = True, **meta) -> Path:
     """A kept line as audio.keep leaves it: <day>/<utt>.wav and <utt>.json."""
     folder = root / day

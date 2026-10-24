@@ -1,11 +1,13 @@
 """ears services - the launch agents a bare install needs, written and loaded by one verb.
 
-    ears services install [--only stt,speech,mouth,keeper,mail,speakers] [--apple] [--agent NAME] [--notify ADDR] [--dry-run]
+    ears services install [--only stt,speech,mouth,keeper,mail,speakers,sounds,talk] [--apple] [--agent NAME | --no-agent] [--notify ADDR] [--dry-run] [--no-prefetch]
     ears services status
+    ears services weights [--json]
     ears services uninstall [--only ...]
 
-Six services, each a macOS launch agent labelled dev.sessionkit.voice.ears-<name>, but speech,
-which is dev.sessionkit.voice.mlx-audio:
+Eight services, each a macOS launch agent labelled dev.sessionkit.voice.ears-<name>, but speech,
+which is dev.sessionkit.voice.mlx-audio, sounds, which is two agents under their own labels, and
+talk, which is dev.sessionkit.voice.talk:
 
 - stt    `ears serve 2023`: Apple speech as an OpenAI-compatible URL, on the helper that
          `ears install --apple` builds (macOS 27). Not the default engine, so install
@@ -30,9 +32,11 @@ which is dev.sessionkit.voice.mlx-audio:
          as its child, `keeper/call-ears`: an ear per live Delta call (needs the Delta
          package's bot). The room mic is off while a call is live.
 - mail   `keeper/ears-mail.py --to device`: mails every finished turn To and From
-         heard+<device>@<host>, which is what PAGES an agent. The keeper alone
-         writes the heard line and wakes nobody, so "a heard line appears" is no proof of a
-         working install: "you speak, and the agent WAKES and answers" is. A hand-made
+         heard+<device>@<host>, which is what PAGES an agent, and each finished turn of
+         a Delta call To that call's box, calls+<bot>-<N>@<host> (`--calls off` stops
+         it). The keeper alone writes the heard line and wakes nobody, so "a heard
+         line appears" is no proof of a working install: "you speak, and the agent
+         WAKES and answers" is. A hand-made
          mailer (the shipped template, rendered by hand: see "Whose plist" below) already on
          the host is left alone and ours is skipped: never two mailers (each turn would be
          mailed twice). Its PATH is what the `message` check reads then, never ours.
@@ -44,6 +48,32 @@ which is dev.sessionkit.voice.mlx-audio:
          the package, so an upgrade keeps the references. A hand-made sidecar already on the
          host (the template rendered by hand, or an interim follow-capture job) is left alone
          and ours is skipped: never two sidecars (each line would be labelled twice).
+- sounds two watchers, each its own agent: dev.sessionkit.voice.ears-sounds runs
+         `keeper/ears-sounds.py` (a sound on a turn, a partial, an event: the heard log) and
+         dev.sessionkit.voice.mouth-sounds runs `keeper/mouth-sounds.py` (a sound as a line
+         lands in the mouth, a mid-turn wake, a scoop). OPT-IN: only `--only sounds`
+         installs them, never a bare install: they are indicators that play into the user's
+         ears, which the user switches on, not part of hearing or speaking. Both run on the
+         agents' python (numpy and sounddevice are base dependencies) from the checkout's
+         keeper/ or the wheel's ears/_keeper/ (with held_stream.py, which ears-sounds.py
+         imports from beside itself). Their settings are ears-sounds.json and mouth-sounds.json
+         in the settings folder, reread live; their sound logs ears-sounds.jsonl and
+         mouth-sounds.jsonl beside the agents' logs; their STOP files ~/.sessionkit/voice/
+         STOP-ears-sounds and STOP-mouth-sounds (each exits 0 on its STOP and stays down). The
+         mid-turn marker and the opener's canned lines stay in the keeper's RUN dir
+         (EARS_RUN, else ~/.cache/ears/run), where their writers put them. A hand render of
+         either (the template, or one under an old name, HAND) is left alone and ours skipped:
+         never two (each sound would play twice).
+- talk   `talk serve --host 127.0.0.1 --port 8780`: the live view in a browser (src/talk,
+         docs/talk.md), as launchd/dev.sessionkit.voice.talk.plist.in runs it. OPT-IN: only
+         `--only talk` installs it, never a bare install: it is a web page the user chooses to
+         serve (a listening port, and a pairing per browser), not part of hearing or speaking.
+         It runs the INSTALLED talk console script, found beside the agents' python (or in
+         sys.prefix's bin), never the first `talk` on PATH: macOS ships an unrelated
+         /usr/bin/talk. None there: install refuses. The port is talk's default (talk has no
+         port setting). A hand render (the template, or one under an old name,
+         dev.sessionvoice.talk or dev.voicemode.talk: HAND) is left alone and ours skipped:
+         never two (they would fight over the port).
 
 Before anything is written, install checks what the services need and says so (--dry-run
 lists the same checks, changing nothing):
@@ -59,8 +89,16 @@ lists the same checks, changing nothing):
   REFUSES), and the diarizer model (fetched here, the one download; the job never fetches);
 - a new ``final`` engine answers one short clip (else whisper :2022, said so);
 - --agent NAME: the wake seat (`ears wake add NAME`) and the keeper's notices (EARS_NOTIFY)
-  go to the installing agent; --notify ADDR sends the notices elsewhere. Without --agent
-  nobody is woken and the notices are log-only: install says so.
+  go to the installing agent; --notify ADDR sends the notices elsewhere. An install with
+  mail in it and no --agent REFUSES (exit 2, nothing written; a --dry-run says REFUSED,
+  goes on listing and exits 2 too) when the wake file names no seat: nobody would be
+  woken when you speak. The refusal prints both forms, --agent NAME and --no-agent, and
+  `ears wake add NAME`; with $TM_AGENT_ADDRESS set it suggests that address's local part
+  as NAME (a suggestion: never installed on it). --no-agent installs anyway, and install
+  warns that NOBODY is woken and the notices are log-only. A wake file that already names
+  a seat (a re-run, the upgrade path) is not refused: install says which seat it wakes.
+  --only without mail (speakers, speech, mouth, keeper) wakes nobody either way and is
+  never refused for it.
 
 Whose plist: ONE label per job, whoever installs it, and install tells its own plist from a
 hand render by CONTENT, never by name. The hand templates in launchd/ render to the same
@@ -111,9 +149,9 @@ only once they have gone. One that will not go within BOOT_WAIT_S stops that ser
 FAILED, and ours is not loaded beside it. `status` names a legacy job still on the host;
 `uninstall` leaves them, as it leaves every hand-made job.
 
-Hand renders of the jobs install does not run (ears-sounds, mouth-sounds, talk) under their old
-names, dev.sessionvoice.* and dev.voicemode.* (HAND_RENAMED), are never touched: nothing would
-replace the job. `status` names each one and the template to re-render it from.
+Every shipped template is a job install runs now. The old hand names of the sounds and talk
+(dev.sessionvoice.*, dev.voicemode.*) are HAND: install skips ours beside one, and `status`
+names it.
 
 The room and the calls were once two agents, ears-room and ears-call, now
 merged into the keeper. `call` and
@@ -145,7 +183,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import envnames, speech        # the speech server on :8890: found, or ours
+from . import envnames, maildir, speech   # speech: the server on :8890, found or ours
 from .home import SETTINGS as _VOICE_SETTINGS   # <kit root>/voice/settings
 
 ROOT = Path(__file__).resolve().parents[2]          # the package checkout (src/ears/ -> root)
@@ -159,10 +197,22 @@ PREFIX = "dev.sessionkit.voice.ears-"
 # speech.OLD_LABELS
 OLD_PREFIXES = ("com.sessionvoice.ears-", "com.voicemode.ears-")
 BOOT_WAIT_S = 10.0          # how long a load waits for the job it replaces (old label or new) to go
-ALL = ("stt", "speech", "mouth", "keeper", "mail", "speakers")
-# what a bare install loads; stt only with --apple, speakers only by --only. speech first: the
-# server the mouth and the ears ride is loading before they start
+ALL = ("stt", "speech", "mouth", "keeper", "mail", "speakers", "sounds", "talk")
+# what a bare install loads; stt only with --apple, speakers, sounds and talk only by --only.
+# speech first: the server the mouth and the ears ride is loading before they start. Not talk:
+# it is a web page a user chooses to serve (a listening port, a pairing per browser), and
+# nothing in hearing or speaking needs it
 DEFAULT = ("speech", "mouth", "keeper", "mail")
+#: a service that is more than one launch agent: sounds is the ears' sounds and the mouth's
+#: sounds, two watchers, each its own job under its own label (JOB_LABELS). `--only sounds`
+#: names both; every per-label step (install, uninstall, status) runs on the jobs (jobs()).
+#: Not in DEFAULT: sounds are an indicator a user switches on, not part of hearing and
+#: speaking, and they play into the user's ears
+GROUPS = {"sounds": ("ears-sounds", "mouth-sounds")}
+#: the jobs whose label is not PREFIX + name: the sounds' and talk's templates' own labels
+JOB_LABELS = {"ears-sounds": "dev.sessionkit.voice.ears-sounds",
+              "mouth-sounds": "dev.sessionkit.voice.mouth-sounds",
+              "talk": "dev.sessionkit.voice.talk"}
 #: how install knows its own plist: this EnvironmentVariables entry, which spec() writes into
 #: every plist install makes and no hand template carries. The hand templates in launchd/ now
 #: render to install's own labels (dev.sessionkit.voice.ears-keeper, -mail, -speakers), so the
@@ -175,7 +225,11 @@ MARKER = ("SESSIONKIT_INSTALLED_BY", "ears services install")
 # interim follow-capture job
 HAND = {"mail": ("dev.sessionvoice.ears-mail",),
         "speakers": ("com.failmode.ears-speakers", "com.failmode.speaker-sidecar"),
-        "keeper": ("com.failmode.ears-keeper",)}
+        "keeper": ("com.failmode.ears-keeper",),
+        # the sounds' and talk's template names before the two label renames
+        "ears-sounds": ("dev.sessionvoice.ears-sounds", "dev.voicemode.ears-sounds"),
+        "mouth-sounds": ("dev.sessionvoice.mouth-sounds", "dev.voicemode.mouth-sounds"),
+        "talk": ("dev.sessionvoice.talk", "dev.voicemode.talk")}
 HAND_MAILS = HAND["mail"]
 HAND_MAIL = HAND_MAILS[0]           # the hand-rendered mailer under its name before the label rename
 HAND_SPEAKERS = HAND["speakers"]
@@ -185,17 +239,6 @@ HAND_SPEAKERS = HAND["speakers"]
 # one (no template here ever made them)
 LEGACY = {"mail": ("dev.voicemode.ears-mail",),
           "mouth": ("dev.voicemode.mouth-mail", "com.failmode.mouth-mail")}
-# hand renders of the jobs install does NOT run (the sounds, talk), under their old names, and
-# the template each is rendered from now. Install never touches them (nothing would replace the
-# job); `status` names each one it finds, and the CHANGELOG says to boot it out and re-render
-HAND_RENAMED = {
-    "dev.sessionvoice.ears-sounds": "dev.sessionkit.voice.ears-sounds",
-    "dev.sessionvoice.mouth-sounds": "dev.sessionkit.voice.mouth-sounds",
-    "dev.sessionvoice.talk": "dev.sessionkit.voice.talk",
-    "dev.voicemode.ears-sounds": "dev.sessionkit.voice.ears-sounds",
-    "dev.voicemode.mouth-sounds": "dev.sessionkit.voice.mouth-sounds",
-    "dev.voicemode.talk": "dev.sessionkit.voice.talk",
-}
 #: launchd's PATH for a job whose plist names none
 LAUNCHD_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 SIDECAR = "speaker-sidecar2.py"        # the side-car's script: what a stray hand-started one runs
@@ -213,6 +256,16 @@ class NoMailer(NoKeeper):
 class NoSpeakers(NoKeeper):
     """No speakers/NAME (run.sh, the side-car, enrol's scripts) to point the speakers agent
     at: install refuses, writes no plist."""
+
+
+class NoSounds(NoKeeper):
+    """No keeper/NAME for a sounds agent (ears-sounds.py, mouth-sounds.py, or held_stream.py,
+    which ears-sounds.py imports from beside itself): install refuses, writes no plist."""
+
+
+class NoTalk(NoKeeper):
+    """No installed talk console script beside the agents' python: install refuses, writes no
+    plist (never the first `talk` on PATH, which on macOS is /usr/bin/talk)."""
 
 
 class NoSchema(NoKeeper):
@@ -264,6 +317,59 @@ def mail_script() -> Path:
     """The ears-mail.py the mail agent runs, found as keeper_script() finds the keeper (it is
     stdlib only and imports nothing beside it). Neither: NoMailer, and install refuses."""
     return _keeper_file("ears-mail.py", NoMailer)
+
+
+#: what each sounds job runs: its script, and what that script imports from beside itself
+SOUNDS_FILES = {"ears-sounds": ("ears-sounds.py", "held_stream.py"), "mouth-sounds": ("mouth-sounds.py",)}
+
+
+def sounds_script(job: str) -> Path:
+    """The watcher the sounds job JOB runs (keeper/ears-sounds.py, keeper/mouth-sounds.py),
+    found as keeper_script() finds the keeper: the checkout's keeper/, else the wheel's
+    ears/_keeper/ copy. Each file it imports from beside itself must be there too (ears-sounds:
+    held_stream.py), or the job dies on import. Any one missing: NoSounds, and install refuses."""
+    script, *beside = SOUNDS_FILES[job]
+    found = _keeper_file(script, NoSounds)
+    for name in beside:
+        if not (found.parent / name).is_file():
+            raise NoSounds(f"no {name} beside {found}: {script} imports it from there. Reinstall "
+                           "sessionvoice from a wheel that ships ears/_keeper/, or run `ears services "
+                           "install` from a git checkout (uv run ears ...)")
+    return found
+
+
+def talk_bin() -> Path:
+    """The talk console script the talk job runs: the one installed beside the agents' python
+    (_py(): in the kit's venv, its bin/), else sys.prefix's bin/. Never the first `talk` on
+    PATH: launchd does not search PATH, and macOS ships an unrelated /usr/bin/talk. A file
+    there that is not talk's own entry point (it imports talk.cli) is not it either. None:
+    NoTalk, and install refuses."""
+    seen = []
+    for d in dict.fromkeys((Path(_py()).parent, Path(sys.prefix) / "bin")):
+        cand = d / "talk"
+        seen.append(str(cand))
+        try:
+            head = cand.read_bytes()[:4096] if cand.is_file() and os.access(cand, os.X_OK) else b""
+        except OSError:
+            head = b""
+        if b"talk.cli" in head:
+            return cand
+    raise NoTalk(f"no installed talk console script at {' or '.join(seen)}. Reinstall sessionvoice "
+                 "(it ships `talk`), or run `ears services install` from the python it is installed beside")
+
+
+def _talk_port() -> int:
+    """The port the talk job serves: talk's own default (talk.server.PORT, the template's 8780).
+    talk has no port setting."""
+    from talk.server import PORT
+    return PORT
+
+
+def voice_dir() -> Path:
+    """The kit's folder for the voice package, ~/.sessionkit/voice (the settings folder's
+    parent). The sounds agents' STOP files sit here, never beside a script in the package."""
+    from .home import settings_dir
+    return settings_dir().parent
 
 
 def schema_files() -> list[Path]:
@@ -329,12 +435,16 @@ SPEECH_WEIGHTS = (
 )
 
 
-def hf_cache() -> Path:
+#: the variables huggingface_hub reads its hub cache from (hf_cache)
+HF_CACHE_VARS = ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE", "HF_HOME", "XDG_CACHE_HOME")
+
+
+def hf_cache(environ=None) -> Path:
     """The Hugging Face hub cache, by huggingface_hub's own rule (its constants.py), with no
     import: HF_HUB_CACHE, else HUGGINGFACE_HUB_CACHE, else <HF_HOME>/hub, where HF_HOME is
     $XDG_CACHE_HOME/huggingface when unset, and XDG_CACHE_HOME is ~/.cache. An empty variable
-    counts as unset."""
-    env = os.environ.get
+    counts as unset. ENVIRON: the variables to read (default: this process's)."""
+    env = (os.environ if environ is None else environ).get
     hub = env("HF_HUB_CACHE") or env("HUGGINGFACE_HUB_CACHE")
     if not hub:
         home = env("HF_HOME") or os.path.join(env("XDG_CACHE_HOME") or os.path.join("~", ".cache"),
@@ -343,39 +453,199 @@ def hf_cache() -> Path:
     return Path(os.path.expandvars(os.path.expanduser(hub)))
 
 
-def weight_state(repo: str, expected: str, cache: Path) -> tuple[str, str | None]:
-    """(state, the cached sha) of REPO in CACHE: what refs/main points at, against EXPECTED.
-    State is "match", "differs" or "not cached". Read from the filesystem only: no
-    huggingface_hub, no network, so it cannot fetch or hang on a missing cache. A refs/main
-    naming EXPECTED whose snapshot directory is absent is "not cached": nothing is there to load."""
-    folder = cache / ("models--" + repo.replace("/", "--"))
+# What each weight's pinned size covers, beside SPEECH_WEIGHTS and in its order: (use, the first
+# 12 hex of the sha it was measured at, bytes, files, the allow patterns summed). The size is the
+# sum of the files those patterns select (huggingface_hub's fnmatchcase) at that sha, read from the
+# HF metadata API, https://huggingface.co/api/models/<repo>/tree/<sha>?recursive=true, never by
+# fetching weights. stt and tts are what mlx-audio 0.5.8's server fetches, DEFAULT_ALLOW_PATTERNS
+# (mlx_audio/utils.py). The voices repo is never fetched that way: the server takes one
+# voices/<voice>.safetensors per voice asked for (kokoro/pipeline.py load_single_voice) and lists
+# voices/*.safetensors (server.py /v1/audio/voices), so its size is every voice pack, and never the
+# voices/<voice>.pt beside each one, which the server does not fetch. A test holds
+# each size to its sha: bump a sha in SPEECH_WEIGHTS and you re-measure its size here with it.
+MLX_AUDIO_ALLOW_PATTERNS = ("*.json", "*.safetensors", "*.py", "*.model", "*.tiktoken", "*.txt",
+                            "*.jinja", "*.jsonl", "*.yaml", "*.npz", "*.pth")
+VOICE_PACK_PATTERNS = ("voices/*.safetensors",)
+SPEECH_WEIGHT_SIZES = (
+    ("stt", "ed2b7e8c15f9", 2_508_940_517, 4, MLX_AUDIO_ALLOW_PATTERNS),
+    ("tts", "a71e4d38b236", 355_322_783, 56, MLX_AUDIO_ALLOW_PATTERNS),
+    ("voices", "e02c9eada7ce", 28_206_306, 54, VOICE_PACK_PATTERNS),
+)
+WEIGHTS_SCHEMA = "ears.weights/1"
+# A download in progress keeps writing its blobs/<etag>.<8hex>.incomplete (hf_xet 1.7.0 writes it
+# in byte order, a term at a time); one untouched for longer than this is a download that died.
+WEIGHTS_FRESH_S = 120
+_REF_MAX = 40        # refs/main is a file anyone can write: read and shown at most this long
+
+
+def _weight_folder(cache: Path, repo: str) -> Path:
+    return cache / ("models--" + repo.replace("/", "--"))
+
+
+def _cached_ref(folder: Path) -> str | None:
+    """What refs/main holds, stripped and cut to _REF_MAX, or None (absent, empty, unreadable)."""
     try:
-        ref = (folder / "refs" / "main").read_text(errors="replace").strip()
-    except OSError:                  # no cache, no repo, no refs/main, or not readable
-        return "not cached", None
+        with open(folder / "refs" / "main", "rb") as f:
+            raw = f.read(256)
+    except OSError:                  # no cache, no repo, no refs/main, refs not a dir, unreadable
+        return None
+    ref = raw.decode("utf-8", "replace").strip()[:_REF_MAX]
+    return ref or None
+
+
+def _blobs_on_disk(folder: Path, now: float) -> tuple[int, bool, bool]:
+    """(bytes, any .incomplete, any FRESH .incomplete) in FOLDER/blobs. A complete blob may be a
+    symlink into huggingface_hub's shared store (<cache>/blobs/<2hex>/<xet hash>), so its size is
+    read through the link; a dangling link counts nothing."""
+    done, partial, fresh = 0, False, False
+    try:
+        entries = list(os.scandir(folder / "blobs"))
+    except OSError:
+        return 0, False, False
+    for e in entries:
+        try:
+            if e.name.endswith(".incomplete"):
+                st = e.stat(follow_symlinks=False)
+                partial = True
+                fresh = fresh or now - st.st_mtime <= WEIGHTS_FRESH_S
+            else:
+                st = e.stat()
+                if not e.is_file():
+                    continue
+        except OSError:              # gone between the listing and the stat, or dangling
+            continue
+        done += st.st_size
+    return done, partial, fresh
+
+
+def _packs(folder: Path, ref: str | None) -> int:
+    """The voice packs that snapshots/<ref>/voices holds (each a link to a blob that is there)."""
     if not ref:
-        return "not cached", None
-    if ref != expected:
-        return "differs", ref
-    return ("match", ref) if (folder / "snapshots" / ref).is_dir() else ("not cached", ref)
+        return 0
+    try:
+        return sum(1 for p in (folder / "snapshots" / ref / "voices").glob("*.safetensors")
+                   if p.is_file())
+    except OSError:
+        return 0
 
 
-def weights_status(cache: Path | None = None) -> list[str]:
-    """The ``weight`` rows of ``ears services status``: one header naming the cache and the limit,
-    then one row for each of SPEECH_WEIGHTS (weight_state)."""
-    cache = hf_cache() if cache is None else cache
-    rows = [f"{'weight':6s} the speech server's weights in the HF cache {cache}, read-only. A drift "
-            f"report, not a pin: the server fetches `main` at first use"]
-    for repo, expected in SPEECH_WEIGHTS:
-        state, got = weight_state(repo, expected, cache)
-        if state == "match":
-            said = f"match ({expected[:12]})"
-        elif state == "differs":
-            said = f"DIFFERS: main is {got[:40]!r} in the cache, expected {expected[:12]}"
-        else:
-            said = f"not cached (expected {expected[:12]}; fetched from main at first use)"
-        rows.append(f"{'weight':6s} {repo}: {said}")
+def _read_weight(repo: str, expected: str, use: str, total: int | None, cache: Path,
+                 now: float) -> tuple[dict, bool, int]:
+    """(the weight_reading entry, a stale .incomplete is there, voice packs in the snapshot)."""
+    folder = _weight_folder(cache, repo)
+    ref = _cached_ref(folder)
+    drift = ref is not None and ref != expected
+    total = None if drift else total
+    done, partial, fresh = _blobs_on_disk(folder, now)
+    if fresh:
+        state = "downloading"
+    elif (ref and (folder / "snapshots" / ref).is_dir() and not partial
+          and (total is None or done >= total)):
+        state = "cached"
+    else:
+        state = "missing"
+    entry = {"repo": repo, "use": use, "state": state, "bytes_done": done, "bytes_total": total,
+             "expected": expected, "cached_ref": ref, "drift": drift}
+    return entry, partial and not fresh, _packs(folder, ref) if use == "voices" else 0
+
+
+def weight_reading(repo: str, expected: str, use: str, total: int | None, cache: Path,
+                   now: float | None = None) -> dict:
+    """One weight's entry of ``ears services weights --json`` (schema ears.weights/1): its state
+    (downloading, cached or missing, decided in that order), bytes on disk, the pinned TOTAL
+    (None when refs/main names another commit) and the drift flag. Filesystem only: no
+    huggingface_hub, no network, no launchctl, so it cannot fetch or hang, and it writes nothing."""
+    import time
+    return _read_weight(repo, expected, use, total, cache, time.time() if now is None else now)[0]
+
+
+def _readings(cache: Path, now: float | None) -> list[tuple[dict, bool, int]]:
+    import time
+    now = time.time() if now is None else now
+    return [_read_weight(repo, sha, use, size, cache, now)
+            for (repo, sha), (use, _, size, _, _) in zip(SPEECH_WEIGHTS, SPEECH_WEIGHT_SIZES)]
+
+
+def _rollup(cache: Path, weights: list[dict]) -> dict:
+    states = [w["state"] for w in weights]
+    totals = [w["bytes_total"] for w in weights]
+    return {"schema": WEIGHTS_SCHEMA, "cache": str(cache),
+            "state": ("downloading" if "downloading" in states
+                      else "cached" if all(s == "cached" for s in states) else "missing"),
+            "bytes_done": sum(w["bytes_done"] for w in weights),
+            "bytes_total": None if None in totals else sum(totals),
+            "weights": weights}
+
+
+def weights_reading(cache: Path | None = None, now: float | None = None) -> dict:
+    """The whole of ``ears services weights --json``: every SPEECH_WEIGHTS entry, in its order,
+    and the rollup (downloading if any is, else cached if all are, else missing). CACHE: the hub
+    cache to read (default: the one the speech server reads, speech_hf_cache, so the reading
+    answers whether its first call will fetch, whatever this shell's HF_* say)."""
+    cache = speech_hf_cache() if cache is None else cache
+    return _rollup(cache, [w for w, _, _ in _readings(cache, now)])
+
+
+def _size(n: int) -> str:
+    """Bytes for a person, decimal: 412 MB, 2.5 GB, 1.6 MB, 522 KB."""
+    for unit, f in (("GB", 10**9), ("MB", 10**6), ("KB", 10**3)):
+        if n >= f:
+            v = n / f
+            return f"{v:.1f} {unit}" if v < 10 else f"{v:.0f} {unit}"
+    return f"{n} B"
+
+
+def _weight_said(w: dict, stale: bool, packs: int) -> str:
+    """The words after `weight <repo>: ` for one weight_reading entry."""
+    done, total, sha = w["bytes_done"], w["bytes_total"], w["expected"][:12]
+    of = f"{_size(done)} of {_size(total)}" if total is not None else f"{_size(done)} so far"
+    if w["state"] == "downloading":
+        said = f"downloading {of}" if total is not None else f"downloading, {of}"
+    elif w["state"] == "cached":
+        said = f"cached, {_size(done)}" + ("" if w["drift"] else f" ({sha})")
+    elif stale:
+        said = f"not cached: a download stopped at {of} (expected {sha}; fetched from main at first use)"
+    elif packs:
+        files = next(n for u, _, _, n, _ in SPEECH_WEIGHT_SIZES if u == w["use"])
+        said = (f"{packs} of {files} packs ({of}); the rest fetch at first use of each voice; "
+                f"`ears services install` fetches them all")
+    elif w["use"] == "voices":
+        files = next(n for u, _, _, n, _ in SPEECH_WEIGHT_SIZES if u == w["use"])
+        every = f", {_size(total)} for all {files}" if total is not None else ""
+        said = f"not cached (expected {sha}; the first use of each voice fetches its pack from main{every})"
+    else:
+        about = f"about {_size(total)}" if total is not None else "it"
+        said = f"not cached (expected {sha}; the first use fetches {about} from main)"
+    if w["drift"]:
+        said += f"; DIFFERS: main is {w['cached_ref']!r} in the cache, expected {sha}"
+    return said
+
+
+def weights_status(cache: Path | None = None, now: float | None = None) -> list[str]:
+    """The ``weight`` rows of ``ears services status`` and ``ears services weights``: one header
+    naming the cache, the total and the limit, then one row for each of SPEECH_WEIGHTS, from the
+    same reading as weights_reading, of the same cache (default: speech_hf_cache)."""
+    cache = speech_hf_cache() if cache is None else cache
+    readings = _readings(cache, now)
+    r = _rollup(cache, [w for w, _, _ in readings])
+    total = f", {_size(r['bytes_total'])} in all" if r["bytes_total"] is not None else ""
+    rows = [f"{'weight':6s} the speech server's weights in the HF cache {cache}{total}, read-only. "
+            f"A drift report, not a pin: the server fetches `main` at first use"]
+    for w, stale, packs in readings:
+        rows.append(f"{'weight':6s} {w['repo']}: {_weight_said(w, stale, packs)}")
     return rows
+
+
+def weights(as_json: bool = False) -> int:
+    """``ears services weights [--json]``: the reader, alone. Exits 0 whenever it could read;
+    a missing cache is a state, not an error."""
+    if as_json:
+        import json
+        print(json.dumps(weights_reading(), separators=(",", ":")))
+    else:
+        for row in weights_status():
+            print(row)
+    return 0
 
 
 def _offline_env() -> dict:
@@ -608,17 +878,37 @@ def _speech_port() -> int:
     return int(os.environ.get("EARS_SPEECH_PORT") or speech.PORT)
 
 
+def jobs(names) -> list[str]:
+    """NAMES with each GROUPS service (sounds) replaced by its jobs, in order, once each: what
+    install, uninstall and status step through, one launch agent each."""
+    return list(dict.fromkeys(j for n in names for j in GROUPS.get(n, (n,))))
+
+
+def _service(job: str) -> str:
+    """The --only name that installs JOB: the GROUPS service it is a job of (ears-sounds,
+    mouth-sounds: sounds), else JOB itself. Every `ears services install --only ...` hint names
+    this, never a job --only refuses."""
+    return next((g for g, js in GROUPS.items() if job in js), job)
+
+
 def _label(name: str) -> str:
-    """A service's launchd label: dev.sessionkit.voice.ears-NAME, but the speech server's is its
-    own, speech.LABEL (dev.sessionkit.voice.mlx-audio). Never a ...ears-speech."""
+    """A job's launchd label: dev.sessionkit.voice.ears-NAME, but the speech server's is its
+    own, speech.LABEL (dev.sessionkit.voice.mlx-audio), never a ...ears-speech, and the sounds
+    jobs' and talk's are their templates' (JOB_LABELS: dev.sessionkit.voice.ears-sounds,
+    -.mouth-sounds, -.talk)."""
+    if name in JOB_LABELS:
+        return JOB_LABELS[name]
     return speech.LABEL if name == "speech" else PREFIX + name
 
 
 def _old_labels(name: str) -> list[str]:
     """Every label NAME's install-made agent carried before, newest first: one per OLD_PREFIXES
-    (com.sessionvoice.ears-NAME, com.voicemode.ears-NAME), and speech's speech.OLD_LABELS."""
+    (com.sessionvoice.ears-NAME, com.voicemode.ears-NAME), and speech's speech.OLD_LABELS. The
+    sounds jobs and talk have none: install never made them before (their hand names are HAND)."""
     if name == "speech":
         return list(speech.OLD_LABELS)
+    if name in JOB_LABELS:
+        return []
     return [p + name for p in OLD_PREFIXES]
 
 
@@ -795,6 +1085,163 @@ def speech_step(names, dry_run: bool = False) -> tuple[bool, bool]:
         return False, False
     print(f"WARNING: speech SKIPPED: {why}; the mouth falls back to `say` until :8890 serves")
     return True, False
+
+
+# The install-time prefetch (docs/models.md): the three SPEECH_WEIGHTS fetched once by install, so
+# the first call does not wait on them. The fetch is the server's own call, run on the speech
+# server's python: snapshot_download(repo, revision="main", allow_patterns=<the weight's patterns in
+# SPEECH_WEIGHT_SIZES>), so the cache holds what the server looks for and refs/main is written.
+# Progress is the reader's, polled every PREFETCH_POLL_S while the fetch runs.
+PREFETCH_POLL_S = 5
+PREFETCH_ENV = "EARS_NO_PREFETCH"
+_PREFETCH_PY = ("import sys\n"
+                "from huggingface_hub import snapshot_download\n"
+                "snapshot_download(sys.argv[1], revision='main', allow_patterns=sys.argv[2:])\n")
+
+
+def speech_hf_cache() -> Path:
+    """The Hugging Face cache the speech SERVER reads, which is where the prefetch fetches to:
+    hf_cache() over the HF_* its plist (spec) carries, never this shell's. launchd gives the job
+    none of this shell's environment, and the plist sets none today, so it is ~/.cache/huggingface/hub
+    under its HOME; an HF_* the plist ever sets wins, by huggingface_hub's own order. The reader
+    (weights_reading, weights_status) reads it too, so status and the weights verb report it."""
+    return hf_cache(_speech_hf_env())
+
+
+def _speech_hf_env() -> dict:
+    """The HF_CACHE_VARS the speech server runs with: those its plist (spec) carries, and no
+    other (launchd passes it none of this shell's)."""
+    plist = spec("speech")["EnvironmentVariables"]
+    return {k: plist[k] for k in HF_CACHE_VARS if k in plist}
+
+
+def _prefetch_sh(argv, out, cache: Path) -> subprocess.Popen:
+    """Start one weight's fetch (network) into CACHE, the hub cache (HF_HUB_CACHE, which wins
+    over every other name): a seam, as _speech_sh, so `make test` fetches nothing. Returns the
+    running process; its stdout and stderr go to OUT, a file. Never HF_HUB_OFFLINE, and no
+    progress bars: install prints its own progress, from the reader. The HF_CACHE_VARS are the
+    server's (_speech_hf_env), not this shell's, so what huggingface_hub keeps beside the hub
+    cache under HF_HOME (the xet cache) goes where the server's would, not under this shell's."""
+    env = {k: v for k, v in os.environ.items() if k != "HF_HUB_OFFLINE" and k not in HF_CACHE_VARS}
+    env.update(_speech_hf_env())
+    env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    env["HF_HUB_CACHE"] = str(cache)
+    return subprocess.Popen([str(a) for a in argv], stdin=subprocess.DEVNULL, stdout=out,
+                            stderr=subprocess.STDOUT, env=env)
+
+
+def prefetch_off(flag: bool = False) -> str | None:
+    """Why install does not prefetch: --no-prefetch, or EARS_NO_PREFETCH set to 1, true or on.
+    None: it prefetches."""
+    if flag:
+        return "--no-prefetch"
+    raw = os.environ.get(PREFETCH_ENV, "").strip()
+    return f"{PREFETCH_ENV}={raw}" if raw.lower() in ("1", "true", "on") else None
+
+
+def _of(n: int, total: int | None) -> str:
+    return f"{_size(n)} of {_size(total)}" if total is not None else f"{_size(n)} so far"
+
+
+def _left(ws: list[dict]) -> str:
+    """What is still to fetch for the weights WS, for a person: 'about 2.9 GB', or 'about 2.5 GB
+    and the rest of <repo>' when a weight's total is unknown (refs/main moved)."""
+    known = sum(w["bytes_total"] - min(w["bytes_done"], w["bytes_total"])
+                for w in ws if w["bytes_total"] is not None)
+    unknown = [w["repo"] for w in ws if w["bytes_total"] is None]
+    if not unknown:
+        return f"about {_size(known)}"
+    rest = f"all of {', '.join(unknown)} (size unknown: main moved from the measured commit)"
+    return f"about {_size(known)} and {rest}" if known else rest
+
+
+def _fetch_one(w: dict, patterns, plan: list[str], tty: bool, cache: Path) -> str | None:
+    """Fetch weight W into CACHE through _prefetch_sh, printing the reader's N of M (of CACHE)
+    for the PLAN's repos while it runs. None when it fetched; else why not, in a few words."""
+    import tempfile
+    argv = [speech_py(), "-c", _PREFETCH_PY, w["repo"], *patterns]
+    with tempfile.TemporaryFile("w+") as out:
+        try:
+            proc = _prefetch_sh(argv, out, cache)
+        except OSError as e:
+            return f"could not start {speech_py()}: {e}"
+        said = None
+        try:
+            while True:
+                try:
+                    rc = proc.wait(timeout=PREFETCH_POLL_S)
+                    break
+                except subprocess.TimeoutExpired:
+                    ws = [x for x in weights_reading(cache)["weights"] if x["repo"] in plan]
+                    totals = [x["bytes_total"] for x in ws]
+                    line = (f"{'speech':6s} weights: fetching {w['repo']}: "
+                            f"{_of(sum(x['bytes_done'] for x in ws), None if None in totals else sum(totals))}")
+                    if line != said:
+                        print("\r" + line + "\x1b[K" if tty else line, end="" if tty else "\n", flush=True)
+                        said = line
+        except KeyboardInterrupt:
+            proc.kill()
+            proc.wait()
+            rc = "interrupted"
+        finally:
+            if tty and said:
+                print()
+        if rc == 0:
+            return None
+        if rc == "interrupted":
+            return "interrupted (Ctrl-C)"
+        out.seek(0)
+        lines = [l.strip() for l in out.read().splitlines() if l.strip()]
+        return f"exit {rc}" + (f": {lines[-1][:200]}" if lines else "")
+
+
+def prefetch(dry_run: bool = False, off: str | None = None) -> None:
+    """The install-time prefetch of the speech server's three weights (docs/models.md). It
+    prints the size first (from the reader), skips and names the weights already cached, and
+    fetches the rest one at a time through _prefetch_sh, printing N of M from the reader while
+    it runs. OFF (prefetch_off) skips it and says what the first call will fetch; a dry run
+    prints the size and the plan and fetches nothing. A failed fetch never fails the install:
+    it says why, how much, and that the first call fetches it. A final reader pass follows.
+    Every pass reads, and the fetch writes, the cache the server reads (speech_hf_cache)."""
+    cache = speech_hf_cache()
+    ws = weights_reading(cache)["weights"]
+    patterns = {repo: pats for (repo, _), (_, _, _, _, pats) in zip(SPEECH_WEIGHTS, SPEECH_WEIGHT_SIZES)}
+    have = [w for w in ws if w["state"] == "cached"]
+    todo = [w for w in ws if w["state"] != "cached"]
+    head = f"{'speech':6s} weights:"
+    for w in have:
+        print(f"{head} {w['repo']} cached ({_size(w['bytes_done'])}), skipped")
+    if not todo:
+        print(f"{head} all {len(ws)} cached in {cache}; nothing to fetch")
+        return
+    names = ", ".join(w["repo"] for w in todo)
+    left = _left(todo)
+    if off:
+        print(f"{head} prefetch skipped ({off}): the first call will fetch {left} ({names}), "
+              f"and wait for it")
+        return
+    if dry_run:
+        print(f"{head} would fetch {left} into {cache}: {names} (snapshot_download, revision main, "
+              "the server's own patterns; network). Nothing fetched")
+        return
+    print(f"{head} fetching {left} into {cache}: {names} (network; --no-prefetch skips this)",
+          flush=True)
+    if hf_cache() != cache:
+        print(f"{head} the speech server's cache, not this shell's ({hf_cache()})")
+    plan = [w["repo"] for w in todo]
+    tty = sys.stdout.isatty()
+    for w in todo:
+        why = _fetch_one(w, patterns[w["repo"]], plan, tty, cache)
+        now = next(x for x in weights_reading(cache)["weights"] if x["repo"] == w["repo"])
+        if why is None:
+            print(f"{head} {w['repo']} fetched ({_of(now['bytes_done'], now['bytes_total'])})")
+        else:
+            print(f"WARNING: speech prefetch of {w['repo']} failed: {why}. The install goes on; "
+                  f"the first call will fetch {_left([now])} instead, and wait for it", flush=True)
+            if why.startswith("interrupted"):
+                break
+    for row in weights_status(cache):       # the final reader pass: what is cached now
+        print(row)
 
 
 DEFAULT_STT_URL = "http://127.0.0.1:8890/v1"                 # the speech server: found, or ours
@@ -984,16 +1431,28 @@ def spec(name: str, notify: str | None = None) -> dict:
         # the hand template's job (launchd/dev.sessionkit.voice.ears-speakers.plist.in), its run.sh
         # found in the checkout or the package, its data in the speakers home
         "speakers": lambda: ["/bin/bash", str(_speakers_file("run.sh"))],
+        # the sounds templates' jobs (launchd/dev.sessionkit.voice.{ears,mouth}-sounds.plist.in)
+        # on the agents' python, which has numpy and sounddevice (base dependencies); the script
+        # found in the checkout or the package. ears-sounds takes its STOP file only as a flag
+        "ears-sounds": lambda: [py, str(sounds_script("ears-sounds")),
+                                "--settings", str(_sounds_settings("ears-sounds")),
+                                "--sound-log", str(LOGS / "ears-sounds.jsonl"),
+                                "--stop-file", str(voice_dir() / "STOP-ears-sounds")],
+        "mouth-sounds": lambda: [py, str(sounds_script("mouth-sounds"))],
+        # the talk template's job (launchd/dev.sessionkit.voice.talk.plist.in): the installed
+        # console script, on loopback only
+        "talk": lambda: [str(talk_bin()), "serve", "--host", "127.0.0.1", "--port", str(_talk_port())],
         # mlx-audio's server on its own venv's python, on 127.0.0.1 only; its logs
         # beside the agents' (its --log-dir default is a relative "logs")
         "speech": lambda: [str(speech_py()), "-m", "mlx_audio.server", "--host", speech.HOST,
                            "--port", str(_speech_port()), "--log-dir", str(LOGS / "mlx-audio")],
     }[name]()
+    log = LOGS / (f"{name}.log" if name in JOB_LABELS else f"ears-{name}.log")   # the templates' names
     d = {"Label": _label(name), "ProgramArguments": args, "EnvironmentVariables": env,
          "WorkingDirectory": str(Path.home()), "RunAtLoad": True, "KeepAlive": True,
          "ThrottleInterval": 10,
-         "StandardOutPath": str(LOGS / f"ears-{name}.log"),
-         "StandardErrorPath": str(LOGS / f"ears-{name}.log")}
+         "StandardOutPath": str(log),
+         "StandardErrorPath": str(log)}
     if name == "keeper":
         # a keeper restart adopts the running captures, room and call alike: no gap
         d["AbandonProcessGroup"] = True
@@ -1014,6 +1473,26 @@ def spec(name: str, notify: str | None = None) -> dict:
         # refused reference reloads the model on every start, so not every 10 s
         d["KeepAlive"] = {"SuccessfulExit": False}
         d["ThrottleInterval"] = 30
+    if name == "mouth-sounds":
+        # mouth-sounds.py reads its paths from the environment only. Its settings, sound log
+        # and STOP file on the kit's paths (STOP beside the script would be in the package);
+        # the mid-turn marker and the opener's canned lines where their writers put them, the
+        # keeper's RUN dir (skills/ears/scripts/ears-mid-turn, ears-mouth-tail), so the
+        # watcher hears what they write
+        run = keeper_run()
+        env.update(MOUTH_SOUNDS_SETTINGS=str(_sounds_settings("mouth-sounds")),
+                   MOUTH_SOUNDS_LOG=str(LOGS / "mouth-sounds.jsonl"),
+                   MOUTH_SOUNDS_STOP=str(voice_dir() / "STOP-mouth-sounds"),
+                   MOUTH_SOUNDS_FIRED=str(run / "mid-turn.fired"),
+                   MOUTH_SOUNDS_CANNED=str(run / "auto-opener.utts"))
+        d["ThrottleInterval"] = 30            # the template's: it exits 3 after 20 failed sounds
+    if name in SOUNDS_FILES:
+        # each exits 0 when its STOP file appears, and must STAY down (the speakers' semantics);
+        # a failure exit (too many failed sounds in a row) restarts it fresh
+        d["KeepAlive"] = {"SuccessfulExit": False}
+    if name == "talk":
+        env.pop("EARS_PY")    # it runs on its console script's own python
+        env.update(HOME=str(Path.home()), PYTHONUNBUFFERED="1")   # the template's keys
     if name == "speech":
         env.pop("EARS_PY")    # it runs on speech_py(), never the ears' python
         env["PATH"] = env["PATH"].replace(bindir, str(speech_py().parent), 1)
@@ -1021,6 +1500,13 @@ def spec(name: str, notify: str | None = None) -> dict:
     return d
 
 
+
+
+def _sounds_settings(job: str) -> Path:
+    """JOB's settings file, ~/.sessionkit/voice/settings/JOB.json (ears-sounds.json,
+    mouth-sounds.json): reread live by the watcher, so a change needs no restart."""
+    from .home import settings_dir
+    return settings_dir() / f"{job}.json"
 
 
 def _launchctl(*a: str) -> subprocess.CompletedProcess:
@@ -1061,7 +1547,7 @@ def _bootstrap(uid: int, name: str, path: Path, wait_s: float | None = None, old
         o = stuck[0]
         raise OldStillLoaded(f"{o} is still loaded after {wait:g}s: "
                              f"{_label(name)} NOT loaded beside it (two would run). Boot it out "
-                             f"(launchctl bootout gui/{uid}/{o}), then `ears services install --only {name}`", o)
+                             f"(launchctl bootout gui/{uid}/{o}), then `ears services install --only {_service(name)}`", o)
     r = _launchctl("bootstrap", f"gui/{uid}", str(path))
     if r.returncode != 0:                      # one more go: the window can outlast print's answer
         time.sleep(1.0)
@@ -1437,13 +1923,19 @@ def _heard_mta(dry_run: bool) -> list[str]:
     gen = _vmailbox_gen_cmd()
     if have:
         out.append(f"heard  box present: {have[0]}")
+        loose = [d for d in (have[0], *(have[0] / s for s in maildir.SUBDIRS))
+                 if d.is_dir() and (d.stat().st_mode & 0o777) != maildir.DIR_MODE]
+        if loose and dry_run:
+            out.append(f"heard  would make {have[0]} and its new/cur/tmp 0700 (an agent box is private)")
+        elif loose:
+            maildir.private(have[0])
+            out.append(f"heard  box mode repaired: {have[0]} and its new/cur/tmp are 0700")
     elif len(stores) == 1:
         box = stores[0] / HEARD
         if dry_run:
             out.append(f"heard  would make {box}/{{new,cur,tmp}}, then route it: {gen}")
         else:
-            for sub in ("new", "cur", "tmp"):
-                (box / sub).mkdir(parents=True, exist_ok=True)
+            maildir.private(box)                    # 0700, as every agent box is
             out.append(f"heard  box made: {box}")
             ran = _vmailbox_gen()
             if ran is None:
@@ -1458,7 +1950,8 @@ def _heard_mta(dry_run: bool) -> list[str]:
         why = (f"{len(stores)} store dirs carry .tm-store ({', '.join(d.name for d in stores)}): "
                "which one is not mine to choose" if stores else f"no store dir under {agents} carries .tm-store")
         out.append(f"WARNING: heard box MISSING, not made: {why}. Make it by hand under the "
-                   f"store's dir, then route it: mkdir -p {agents}/<store>/heard/{{new,cur,tmp}} && {gen}")
+                   f"store's dir, 0700, then route it: "
+                   f"(umask 077 && mkdir -p {agents}/<store>/heard/{{new,cur,tmp}}) && {gen}")
     if flat.is_dir():
         out.append(f"WARNING: {flat} is a FLAT box: sessionmail will not subscribe to it (it reads it "
                    "as a seat's own). The heard box belongs under the store's dir")
@@ -1536,6 +2029,41 @@ def wake_checks(agent: str | None, dry_run: bool = False) -> list[str]:
         return [f"wake   no --agent; {wake.target()} already wakes {', '.join(have)}"]
     return [f"WARNING: no --agent NAME: NOBODY will be woken when you speak ({wake.target()} names "
             "no seat). Run `ears services install --agent NAME`, or `ears wake add NAME`"]
+
+
+def seat_hint() -> str | None:
+    """The seat this shell appears to be: $TM_AGENT_ADDRESS's local part, WHOLE (a wake seat
+    is the address's local part: dave, sessionmail+engineer). A hint for the refusal only:
+    install never takes it as --agent."""
+    addr = (os.environ.get("TM_AGENT_ADDRESS") or "").strip()
+    local = addr.split("@", 1)[0].strip()
+    return local or None
+
+
+def agent_refusal(names, agent: str | None, no_agent: bool) -> str | None:
+    """Why a bare install must not run, or None. Refused only when nobody would be
+    woken: the mail service (the one that wakes anyone) is installed, neither --agent NAME nor
+    --no-agent was given, and the wake file names no seat (the read wake_checks makes). A wake
+    file that already names a seat is a re-run, the kit's upgrade path: it wakes that seat."""
+    if "mail" not in names or agent or no_agent:
+        return None
+    from . import wake
+    try:
+        if wake.seats():
+            return None
+    except Exception:         # unreadable: it names nobody ears-mail could wake
+        pass
+    lines = [f"ears services install: REFUSED: no --agent NAME, and {wake.target()} names no seat: "
+             "the mail service would install, and NOBODY would be woken when you speak. Say who:",
+             "    ears services install --agent NAME   # NAME becomes the wake seat "
+             "(and gets the keeper's notices)",
+             "    ears services install --no-agent     # install anyway; nobody is woken until "
+             "`ears wake add NAME`"]
+    seat = seat_hint()
+    if seat:
+        lines.append(f"you appear to be seat {seat}: ears services install --agent {seat}")
+    lines.append("nothing was written")
+    return "\n".join(lines)
 
 
 def notify_to(agent: str | None, notify: str | None) -> str | None:
@@ -1759,7 +2287,7 @@ def _switch(label: str, name: str, loaded: bool = True) -> str:
         steps.append(f"launchctl bootout gui/{os.getuid()}/{label}")
     if path.exists():
         steps.append(f"move {path} out of {AGENTS}" + ("" if loaded else " (it is not loaded: nothing to boot out)"))
-    return f"To run ours instead: {', '.join(steps)}, then `ears services install --only {name}`"
+    return f"To run ours instead: {', '.join(steps)}, then `ears services install --only {_service(name)}`"
 
 
 def _legacy_line(listed: dict[str, str], name: str, label: str) -> str | None:
@@ -1770,7 +2298,7 @@ def _legacy_line(listed: dict[str, str], name: str, label: str) -> str | None:
     state = (f"running, pid {pid}" if pid and pid != "-" else "loaded, not running" if pid
              else "plist present")
     return (f"{'':6s} WARNING: {label} (LEGACY render): {state}; a stale render, "
-            f"`ears services install --only {name}` replaces it")
+            f"`ears services install --only {_service(name)}` replaces it")
 
 
 def _no_probe(names, speech_installs: bool = False) -> str | None:
@@ -1790,6 +2318,9 @@ def _no_probe(names, speech_installs: bool = False) -> str | None:
 #: why a hand-made one means ours is skipped, per service
 SKIP_WHY = {"mail": "ours would mail every turn twice",
             "speakers": "two sidecars would label every line twice",
+            "ears-sounds": "every ears sound would play twice",
+            "mouth-sounds": "every mouth sound would play twice",
+            "talk": "two would fight over talk's port",
             "keeper": "two keepers would fight over the room's capture"}
 
 
@@ -1819,9 +2350,13 @@ def _say_skipped(uid: int, dry_run: bool, name: str, hand: tuple[str, Path]) -> 
     print(_retire_ours_beside(uid, dry_run, name, hand[0], hand_loaded=loaded))
 
 
-def install(names, dry_run=False, agent=None, notify=None) -> int:
+def install(names, dry_run=False, agent=None, notify=None, no_prefetch=False) -> int:
+    names = jobs(names)       # sounds: its two agents
     for n, find in (("keeper", keeper_script), ("keeper", schema_files), ("mail", mail_script),
-                    ("speakers", lambda: _speakers_file("run.sh"))):
+                    ("speakers", lambda: _speakers_file("run.sh")),
+                    ("ears-sounds", lambda: sounds_script("ears-sounds")),
+                    ("mouth-sounds", lambda: sounds_script("mouth-sounds")),
+                    ("talk", talk_bin)):
         if n in names:        # before anything is written: never a plist that cannot start
             try:
                 find()
@@ -1920,6 +2455,9 @@ def install(names, dry_run=False, agent=None, notify=None) -> int:
             home.chmod(0o700)                   # voices are private; mkdir's mode is umask'd
         if n == "speech":     # its WorkingDirectory (speakers' reason)
             speech_home().mkdir(parents=True, exist_ok=True)
+        if n in SOUNDS_FILES:  # the settings folder (mouth-sounds writes its defaults there when
+            # mouth-sounds.json is absent, and fails without the folder) and the STOP files' one
+            _sounds_settings(n).parent.mkdir(parents=True, exist_ok=True)
         olds, lines = _move_old(uid, n, listed)  # off every old label of N, once
         for line in lines:
             print(line)
@@ -1936,6 +2474,8 @@ def install(names, dry_run=False, agent=None, notify=None) -> int:
             stuck = True
             continue
         print(f"{n:6s} {'loaded' if r.returncode == 0 else 'FAILED: ' + r.stderr.strip()}  {path}")
+    if speech_installs:       # its weights, so the first call does not wait on them: never fatal
+        prefetch(dry_run, prefetch_off(no_prefetch))
     if "mail" in names and not dry_run:
         print("proof  speak to the agent: it WAKES and answers. A heard line alone proves only the "
               "keeper; the mail is what pages it")
@@ -1948,6 +2488,7 @@ def uninstall(names, dry_run: bool = False) -> int:
     nothing: no launchctl call at all, no file removed. A temp HOME would not contain a real
     run: the bootout acts on the user's own launchd domain."""
     uid = os.getuid()
+    names = jobs(names)       # sounds: its two agents
     if "keeper" in names:
         names = list(names) + [o for o in OLD if o not in names]
     for n in names:
@@ -1989,13 +2530,36 @@ def _old_line(listed: dict[str, str], name: str, old: str, new: str) -> str:
     """The line status prints for NAME's install-made agent still under OLD, an old label."""
     state = "is still loaded" + (f" BESIDE {new}" if new in listed else "") if old in listed \
         else "plist present, not loaded"
-    return f"{'':6s} old label: {old} {state}; `ears services install --only {name}` moves it"
+    return f"{'':6s} old label: {old} {state}; `ears services install --only {_service(name)}` moves it"
+
+
+def keeper_run() -> Path:
+    """The keeper's RUN dir (ears-keeper.sh RUN): EARS_RUN, else ~/.cache/ears/run."""
+    return Path(os.path.expanduser(os.environ.get("EARS_RUN") or "~/.cache/ears/run"))
+
+
+def keeper_mode_line(run: Path | None = None) -> str | None:
+    """The status line under the keeper's row: which way it reads the inputs, from the
+    input-watch.mode file the keeper writes ("<keeper pid> <mode>"). input-watch, or
+    polling system_profiler and why (no Command Line Tools: it never runs the swiftc stub).
+    None when no live keeper wrote one: a mode left by a keeper that is gone is not told."""
+    try:
+        pid, mode = (Path(run or keeper_run()) / "input-watch.mode").read_text().strip().split(" ", 1)
+        if int(pid) <= 0:        # 0 or less would ask a process group, not the keeper
+            return None
+        os.kill(int(pid), 0)
+    except PermissionError:
+        pass                     # alive, another user's: still the keeper that wrote it
+    except (OSError, ValueError):
+        return None
+    mode = "".join(c for c in mode if c.isprintable())[:120]
+    return f"{'':6s} mode: {mode}"
 
 
 def status() -> int:
     listed = _listed(_launchctl("list").stdout.splitlines())
     old = [o for o in OLD if any(_there(listed, l) for l in _labels(o))]
-    for n in ALL + tuple(old):
+    for n in jobs(ALL) + old:
         if n == "speech":     # its row is who serves :8890, below: never a ...ears-speech
             continue
         new = _labels(n)[0]   # call, room: their newest old label
@@ -2017,6 +2581,10 @@ def status() -> int:
                                      "removes it)" if n in OLD else ""))
         for o in olds:
             print(_old_line(listed, n, o, new))
+        if n == "keeper":
+            line = keeper_mode_line()
+            if line:
+                print(line)
         if n not in OLD:
             hand = _hand_at(n)
             labels = ([hand[0]] if hand else []) + list(HAND.get(n, ()))
@@ -2033,14 +2601,6 @@ def status() -> int:
     for o in _old_labels("speech"):
         if _there(listed, o):
             print(_old_line(listed, "speech", o, _label("speech")))
-    # hand renders of the jobs install does not run, under an old name: named, never touched
-    for label, now in HAND_RENAMED.items():
-        if _there(listed, label):
-            pid = listed.get(label)
-            state = (f"running, pid {pid}" if pid and pid != "-" else "loaded, not running" if pid
-                     else "plist present")
-            print(f"{'hand':6s} {label} (old name): {state}; boot it out and render "
-                  f"launchd/{now}.plist.in in its place")
     # the weights that server fetches, against the expected shas: read-only, never fetched
     # and never a failure: drift is reported, status still exits 0
     for row in weights_status():
@@ -2055,16 +2615,27 @@ def status() -> int:
 def main(argv=None) -> int:
     import argparse
     p = argparse.ArgumentParser(prog="ears services", description=__doc__.split("\n")[0])
-    p.add_argument("verb", choices=["install", "uninstall", "status"])
-    p.add_argument("--only", default=None, help="comma list of: " + ",".join(ALL) + " (call, room: keeper)"
+    p.add_argument("verb", choices=["install", "uninstall", "status", "weights"])
+    p.add_argument("--only", default=None, help="comma list of: " + ",".join(ALL) + " (call, room: keeper;"
+                   + " sounds: " + " and ".join(GROUPS["sounds"]) + ")"
                    + " (default: install " + ",".join(DEFAULT) + "; uninstall all)")
     p.add_argument("--apple", action="store_true",
                    help="install the Apple stt server (:2023) too; needs `ears install --apple`")
-    p.add_argument("--agent", default=None, help="the installing agent: its wake seat (`ears wake add`) "
-                   "and the keeper's notices (EARS_NOTIFY). Without it nobody is woken")
+    who = p.add_mutually_exclusive_group()
+    who.add_argument("--agent", default=None, help="the installing agent: its wake seat (`ears wake add`) "
+                     "and the keeper's notices (EARS_NOTIFY). Installing mail needs it or --no-agent, "
+                     "unless the wake file already names a seat")
+    who.add_argument("--no-agent", action="store_true", help="install mail with no wake seat: nobody is "
+                     "woken when you speak until `ears wake add NAME` (install warns)")
     p.add_argument("--notify", default=None, help="where the keeper's notices go instead of --agent")
+    p.add_argument("--json", action="store_true", help="weights: one line of JSON, schema "
+                   + WEIGHTS_SCHEMA + " (docs/models.md)")
     p.add_argument("--dry-run", action="store_true", help="print the checks and the plists, change nothing "
-                   "(uninstall: the labels it would boot out and the plists it would delete)")
+                   "(install: also the size of the speech weights it would fetch, fetching nothing; "
+                   "uninstall: the labels it would boot out and the plists it would delete)")
+    p.add_argument("--no-prefetch", action="store_true", help="install: do not fetch the speech "
+                   "server's weights (about 2.9 GB) now; the first call fetches them, and waits. "
+                   f"{PREFETCH_ENV}=1 does the same")
     from .home import STRANDED_HELP, warn_stranded
     p.epilog = STRANDED_HELP
     warn_stranded("ears services")   # once per process: status and install alike
@@ -2079,10 +2650,20 @@ def main(argv=None) -> int:
     bad = [n for n in names if n not in ALL]
     if bad:
         p.error(f"unknown service {bad}; choose from {ALL}")
+    names = jobs(names)       # sounds: its two agents, each its own label
     if a.verb == "status":
         return status()
+    if a.verb == "weights":
+        return weights(a.json)
     if a.verb == "install":
-        return install(names, a.dry_run, agent=a.agent, notify=a.notify)
+        why = agent_refusal(names, a.agent, a.no_agent)
+        if why:               # before install(): nothing written, nothing fetched
+            print(why, file=sys.stderr)
+            if not a.dry_run:
+                return 2
+            install(names, True, agent=None, notify=a.notify, no_prefetch=a.no_prefetch)
+            return 2          # a dry run goes on listing, and exits 2 as install would
+        return install(names, a.dry_run, agent=a.agent, notify=a.notify, no_prefetch=a.no_prefetch)
     return uninstall(names, a.dry_run)
 
 

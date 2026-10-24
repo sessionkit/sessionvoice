@@ -42,7 +42,7 @@ em = _em()
 
 
 def ts(sec):
-    return f"2030-09-29T01:{int(sec // 60):02d}:{sec % 60:06.3f}+10:00"
+    return f"2030-06-09T01:{int(sec // 60):02d}:{sec % 60:06.3f}+10:00"
 
 
 def turn(sec, text, span=1.0, seq=None, **kw):
@@ -96,7 +96,7 @@ def run(records, conf=RULES):
     with tempfile.TemporaryDirectory() as d:
         logs = Path(d, "logs", "conversations")
         logs.mkdir(parents=True)
-        (logs / "heard_2030-09-29.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+        (logs / "heard_2030-06-09.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
         rf = Path(d, "wake.json")
         rf.write_text(json.dumps(conf))
         p = subprocess.run([sys.executable, str(SCRIPT), "--rules", str(rf), "--dry-run", "--once",
@@ -456,7 +456,7 @@ def live(tmp_path, monkeypatch, capsys, records, cmd, conf=RULES, args=()):
     """The keeper run on RECORDS, sending for real into a recorder: ([mail], [stderr JSON])."""
     logs = tmp_path / "logs" / "conversations"
     logs.mkdir(parents=True, exist_ok=True)
-    (logs / "heard_2030-09-29.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+    (logs / "heard_2030-06-09.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
     rf = tmp_path / "wake.json"
     rf.write_text(json.dumps(conf))
     sent = []
@@ -536,7 +536,7 @@ def test_dry_run_prints_the_command_and_runs_nothing(tmp_path):
     logs = tmp_path / "logs" / "conversations"
     logs.mkdir(parents=True)
     recs = VOICED + [turn(13, "Say again?", seq=5)]
-    (logs / "heard_2030-09-29.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+    (logs / "heard_2030-06-09.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
     rf = tmp_path / "wake.json"
     rf.write_text(json.dumps(RULES))
     p = subprocess.run([sys.executable, str(SCRIPT), "--rules", str(rf), "--dry-run", "--once",
@@ -574,7 +574,7 @@ def test_to_seats_dry_run_mails_no_turn_and_runs_nothing(tmp_path):
     recs = VOICED + [turn(13, "Say again?", seq=5)]
     logs = tmp_path / "logs" / "conversations"
     logs.mkdir(parents=True)
-    (logs / "heard_2030-09-29.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+    (logs / "heard_2030-06-09.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
     rf = tmp_path / "wake.json"
     rf.write_text(json.dumps(RULES))
     p = subprocess.run([sys.executable, str(SCRIPT), "--rules", str(rf), "--dry-run", "--once",

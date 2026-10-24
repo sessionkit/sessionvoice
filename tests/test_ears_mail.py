@@ -23,7 +23,7 @@ RULES = {
 
 
 def ts(sec):
-    return f"2030-09-29T01:00:{sec:06.3f}+10:00"
+    return f"2030-06-09T01:00:{sec:06.3f}+10:00"
 
 
 def turn(sec, text, span=2.0, seq=None, **kw):
@@ -43,7 +43,7 @@ def run(records, rules=RULES, seats=None, args=(), to="seats"):
     with tempfile.TemporaryDirectory() as d:
         logs = Path(d, "logs", "conversations")
         logs.mkdir(parents=True)
-        (logs / "heard_2030-09-29.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+        (logs / "heard_2030-06-09.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
         rf = Path(d, "wake.json")
         rf.write_text(json.dumps(rules))
         cmd = [sys.executable, str(SCRIPT), "--rules", str(rf), "--dry-run", "--once", "--from-start",
@@ -288,7 +288,7 @@ def test_seats_narrows_for_side_by_side():
 
 
 def test_seats_narrows_the_mail_not_the_names():
-    # Sun 2030-09-29, seq 59778: run with --seats ivy, "Hey Vera, ..." after
+    # Sun 2030-06-09, seq 59778: run with --seats ivy, "Hey Vera, ..." after
     # Ivy's line woke Ivy as a reply, because Vera's names were never loaded.
     m = run([saying(1, "ivy", "Done.", "u10"), said(3, "ivy", "u10"),
              turn(9, '"Hey Vera, can you install Grafana?"', span=1, seq=9)], seats="ivy")
@@ -342,7 +342,7 @@ def test_an_addressed_turn_is_nobody_elses_reply():
 
 def test_a_reply_has_a_window():
     m = run([saying(1, "ivy", "Done.", "u9"), said(3, "ivy", "u9"),
-             dict(turn(0, "Right.", span=1, seq=200), ts="2030-09-29T01:05:00.000+10:00")])
+             dict(turn(0, "Right.", span=1, seq=200), ts="2030-06-09T01:05:00.000+10:00")])
     assert m == []   # 4 minutes later is not an answer
 
 
@@ -350,7 +350,7 @@ KODI = "It's not in the library: the file sits in a folder Kodi doesn't scan. I'
 
 
 def test_a_leading_echo_is_cut_and_the_rest_answers_that_line():
-    # Sun 2030-09-29, seq 60043: on the MacBook speakers the mic heard
+    # Sun 2030-06-09, seq 60043: on the MacBook speakers the mic heard
     # Vera's line and joined his question to it; the keeper woke Ivy as a reply.
     m = run([saying(1, "ivy", "Yes, I hear you.", "p1"), said(3, "ivy", "p1"),
              saying(20, "vera", KODI, "c1"), said(28, "vera", "c1"),
@@ -439,7 +439,7 @@ def test_different_words_from_the_other_ear_are_mailed():
 
 
 # -- a film is playing: only a turn that names a seat wakes it -----------------
-# Replay Sun 2030-09-29 with two Ivy lines put in mid-film: the
+# Replay Sun 2030-06-09 with two Ivy lines put in mid-film: the
 # film's dialogue (60116) and "17." (60762) were mailed to Ivy as replies.
 
 class KodiStub:
@@ -853,7 +853,7 @@ def send_run(records, rules=RULES, to="seats", env=(), args=()):
     with tempfile.TemporaryDirectory() as d:
         logs = Path(d, "logs", "conversations")
         logs.mkdir(parents=True)
-        (logs / "heard_2030-09-29.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+        (logs / "heard_2030-06-09.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
         rf = Path(d, "wake.json")
         rf.write_text(json.dumps(rules))
         fire, calls = Path(d, "fire.jsonl"), Path(d, "calls.jsonl")
@@ -1068,3 +1068,462 @@ def test_a_sent_turn_writes_no_error_line_and_the_row_keeps_its_shape():
     rows, calls = send_run([turn(1, "Hey Ivy, check the build.", seq=1)])
     assert _errors(send_run.stderr) == [] and len(calls) == 1
     assert set(rows[0]) == {"at", "seq", "to", "rule", "subject", "exit", "id"}
+
+
+# -- a Delta call's turns: To its call box (EARS-431) --------------------------
+# A FINAL turn with source call and device call:N goes To calls+<bot>-<N>@<host>,
+# never to heard+; the bot is what the call's own leg (call-ears.sock) answers to a
+# probe. Each fake leg here is a thread on a unix socket that answers
+# {"agent", "profile", "calls"}; its reply can change mid-test (a hang-up).
+
+import socket as _socket
+import threading
+
+
+class Leg:
+    """A fake call-ears.sock. REPLY is what a probe gets (None: never answers; a
+    callable: REPLY(k) for the k-th probe)."""
+
+    def __init__(self, path, reply):
+        self.path, self.reply, self.probes = str(path), reply, 0
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        self.srv = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        self.srv.bind(self.path)
+        self.srv.listen(8)
+        if reply is not None:
+            threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self):
+        while True:
+            try:
+                c, _ = self.srv.accept()
+            except OSError:
+                return
+            try:
+                c.makefile("rb").readline()
+                self.probes += 1
+                r = self.reply(self.probes) if callable(self.reply) else self.reply
+                c.sendall((json.dumps(r) + "\n").encode())
+            except OSError:
+                pass
+            finally:
+                c.close()
+
+    def close(self):
+        self.srv.close()
+        if os.path.exists(self.path):
+            os.unlink(self.path)
+
+
+@pytest.fixture
+def legs():
+    """Make fake legs under one short temp dir (a unix socket path has ~104 bytes)."""
+    d = tempfile.mkdtemp(prefix="em-")
+    made = []
+
+    def make(rel, reply):
+        made.append(Leg(Path(d, rel), reply))
+        return made[-1]
+    make.dir = d
+    yield make
+    for x in made:
+        x.close()
+
+
+def call_rows(n=1317, seq=215130, text="Okay, please confirm the build.", **kw):
+    """A call's capture: a heartbeat, a partial, then its final turn."""
+    dev_ = f"call:{n}"
+    return [dict(ts=ts(0.5), kind="event", event="heartbeat", source="call", device=dev_, stream_s=1.0),
+            dict(ts=ts(1.0), kind="partial", source="call", device=dev_, text=text[:8]),
+            dict(turn(2.0, text, seq=seq), source="call", device=dev_, **kw)]
+
+
+def socks_env(monkeypatch, *legs_):
+    monkeypatch.setenv("EARS_CALL_SOCKS", ":".join(x.path for x in legs_))
+
+
+def skips(kind=None):
+    out = [json.loads(x) for x in run.stderr.splitlines() if x.startswith('{"skip"')]
+    return [s for s in out if kind is None or s["skip"] == kind]
+
+
+def render(mail, domain="host1", mid="<turn@test>"):
+    """The mail as `message send` would deliver it: build()'s To, subject and headers,
+    From the seat child_env names (Ears <LOCAL@DOMAIN>), the body as sent."""
+    em = em_module()
+    args = em.build(mail, "heard", domain)
+    lines = [f"From: {em.FROM_NAME} <{mail['from']}@{domain}>", f"To: {args[1]}",
+             f"Subject: {args[args.index('-s') + 1]}", f"Message-ID: {mid}"]
+    lines += [args[i + 1] for i, a in enumerate(args) if a == "--header"]
+    return "\n".join(lines) + "\n\n" + mail["body"]
+
+
+def test_call_turn_goes_to_its_call_box_and_the_mouth_files_it_heard(legs, monkeypatch, tmp_path, capsys):
+    """Test plan 1, the acceptance test: ONE mail To calls+ivy-1317, From ears, exactly
+    the four headers, the row as its JSON body; read by mouth.box it is _heard, filed
+    unspoken. It goes through deliver() (no Ears-Rule: REVIEW GAP 3)."""
+    leg = legs("ivy/call-ears.sock", {"agent": "ivy", "profile": "", "calls": [1317]})
+    socks_env(monkeypatch, leg)
+    rows = call_rows()
+    m = dev(rows)
+    assert len(m) == 1
+    assert who(m) == [(215130, ["calls+ivy-1317"], None)]
+    mail = m[0]["mail"]
+    assert mail["from"] == "ears"
+    assert mail["headers"] == {"Ears-Kind": "turn", "Ears-Seq": "215130",
+                               "Call-Id": "1317", "Call-Bot": "ivy"}
+    assert json.loads(mail["body"]) == rows[-1] and mail["body"].count("\n") == 1
+    assert mail["subject"] == "Okay, please confirm the build."
+    assert skips() == []
+    args = em_module().build(mail, "heard", "host1")
+    assert args[1] == "calls+ivy-1317@host1"
+    assert headers_of(args) == mail["headers"]          # exactly four, none dropped
+
+    from mouth import box
+    from tests import env_fence
+    from tests.mouth.maildir_put import put
+    d = tmp_path / "mouth"
+    monkeypatch.setenv("MOUTH_DIR", str(d))
+    monkeypatch.setenv("MOUTH_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv("MOUTH_DEVICE", "null")
+    monkeypatch.setenv("MOUTH_BACKEND", "silence")
+    for k in ("MOUTH_MAILBOX", "MOUTH_MAIL_LOG", "MOUTH_VOICE"):
+        env_fence.delenv(monkeypatch, k)
+    bx = box.ensure(box.box_dir(d))
+    put(bx, "turn", render(mail))
+    x = box.read(bx / "new" / "turn", d)
+    assert x["_heard"] is True and x["device"] == "call:1317"
+    assert box.Queue(d).lines(act=True) == []
+    out = [json.loads(l) for l in capsys.readouterr().out.splitlines() if l.startswith("{")]
+    assert {"skipped": "heard", "mail_id": "<turn@test>"} in out
+    assert not (bx / "new" / "turn").exists()
+
+
+def test_call_the_leg_is_probed_once_while_the_call_is_live(legs, monkeypatch):
+    leg = legs("ivy/call-ears.sock", {"agent": "ivy", "calls": [1317]})
+    socks_env(monkeypatch, leg)
+    dev(call_rows() + [dict(r, seq=r.get("seq") and r["seq"] + 1) for r in call_rows()[1:]])
+    assert leg.probes == 1           # the first row naming call:1317; the turns find it known
+
+
+def test_call_subject_carries_the_speaker_and_is_cut(legs, monkeypatch):
+    leg = legs("ivy/call-ears.sock", {"agent": "ivy", "calls": [1317]})
+    socks_env(monkeypatch, leg)
+    long = "Right, so here is the plan for the evening and it is a long one indeed."
+    m = dev(call_rows(text=long, speaker="theo"))
+    assert m[0]["mail"]["subject"] == ("theo: " + long)[:56].strip()
+    assert len(m[0]["mail"]["subject"]) <= 56
+    m = dev(call_rows(text="Say `rm` and $(this) too"))
+    assert m[0]["mail"]["subject"] == "Say 'rm' and $ (this) too"
+
+
+def test_call_a_profile_makes_the_bot_agent_dash_profile(legs, monkeypatch):
+    leg = legs("ivy/public/call-ears.sock", {"agent": " Ivy ", "profile": "public", "calls": [17]})
+    socks_env(monkeypatch, leg)
+    m = dev(call_rows(n=17))
+    assert who(m) == [(215130, ["calls+ivy-public-17"], None)]
+    assert m[0]["mail"]["headers"]["Call-Bot"] == "ivy-public"
+    from mouth import box
+    assert box.call_box(m[0]["mail"]["to"][0]) == ("ivy-public", 17)
+
+
+@pytest.mark.parametrize("reply", [
+    {"agent": "", "profile": "x", "calls": [1317]},          # no agent: names no bot
+    {"profile": "public", "calls": [1317]},
+    {"agent": "ivy", "calls": [99]},                          # the leg does not list N
+])
+def test_call_with_no_bot_is_skipped_and_never_mailed(legs, monkeypatch, reply):
+    leg = legs("ivy/call-ears.sock", reply)
+    socks_env(monkeypatch, leg)
+    assert dev(call_rows()) == []
+    assert [(s["seq"], s["call"]) for s in skips("call-bot")] == [(215130, 1317)]
+    assert skips("call") == []                           # not the old skip
+
+
+def test_call_no_leg_at_all_is_skipped(monkeypatch, tmp_path):
+    monkeypatch.setenv("EARS_CALL_SOCKS", str(tmp_path / "none.sock"))
+    assert dev(call_rows()) == []
+    assert [s["skip"] for s in skips()] == ["call-bot"]
+
+
+def test_call_a_web_leg_names_no_bot(legs, monkeypatch):
+    """sessionphone web's leg (<root>/web/call-ears.sock) is skipped: its server mails
+    its own calls' turns, and its agent would collide with the Delta bot's box."""
+    leg = legs("sp/web/call-ears.sock", {"agent": "ivy", "calls": [1317]})
+    socks_env(monkeypatch, leg)
+    monkeypatch.setenv("SESSIONPHONE_ROOT", os.path.join(legs.dir, "sp"))
+    assert dev(call_rows()) == []
+    assert [s["skip"] for s in skips()] == ["call-bot"]
+    assert leg.probes == 0
+
+
+def test_call_the_first_leg_in_sorted_order_wins(legs, monkeypatch):
+    """Two legs list one call: the first the search finds (sorted), as CallSource opens."""
+    home = Path(legs.dir)
+    legs(".bob/delta-chat/call-ears.sock", {"agent": "bob", "calls": [1317]})
+    legs(".alice/delta-chat/call-ears.sock", {"agent": "alice", "calls": [1317]})
+    for k in ("EARS_CALL_SOCKS", "VOICEMODE_CALL_EARS_SOCKS", "SESSIONPHONE_ROOT"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("HOME", str(home))
+    m = dev(call_rows())
+    assert who(m) == [(215130, ["calls+alice-1317"], None)]
+
+
+def test_call_learned_while_live_is_mailed_after_the_hang_up(legs, monkeypatch, tmp_path):
+    """Test plan 3: learned on the partial; the leg then lists nothing (hung up) and the
+    turn still goes to the learned box. A second process restores the map from --state."""
+    leg = legs("ivy/call-ears.sock", {"agent": "ivy", "calls": [1317]})
+    socks_env(monkeypatch, leg)
+    rows = call_rows()
+    leg.reply = {"agent": "ivy", "calls": [1317]}
+    em = em_module()
+    bots = em.CallBots(socks=lambda: [leg.path])
+    bots.saw(1317)
+    leg.reply = {"agent": "ivy", "calls": []}            # hung up
+    assert bots.bot(1317) == "ivy" and bots.state() == {"1317": "ivy"}
+
+    state = tmp_path / "state.json"
+    leg.reply = {"agent": "ivy", "calls": [1317]}
+    m = dev(rows[:2], args=("--state", str(state)))      # the live part: learned
+    assert m == [] and json.loads(state.read_text())["call_bots"] == {"1317": "ivy"}
+    leg.reply = {"agent": "ivy", "calls": []}
+    with tempfile.TemporaryDirectory() as d:             # a restart, after the hang-up
+        logs = Path(d, "logs", "conversations")
+        logs.mkdir(parents=True)
+        log = logs / "heard_2030-06-09.jsonl"
+        log.write_text("".join(json.dumps(r) + "\n" for r in rows[:2]))
+        st = json.loads(state.read_text())
+        st["offsets"] = {str(log): log.stat().st_size}
+        state.write_text(json.dumps(st))
+        with log.open("a") as f:
+            f.write(json.dumps(rows[2]) + "\n")
+        p = subprocess.run([sys.executable, str(SCRIPT), "--rules", "/nonexistent", "--dry-run",
+                            "--once", "--domain", "host1", "--state", str(state)],
+                           capture_output=True, text=True, timeout=30,
+                           env=dict(os.environ, VOICEMODE_BASE_DIR=d))
+        assert p.returncode == 0, p.stderr
+        m = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
+    assert who(m) == [(215130, ["calls+ivy-1317"], None)]
+
+
+def test_call_bots_keeps_the_newest(monkeypatch):
+    em = em_module()
+    saved = {str(n): f"b{n}" for n in range(em.CALL_BOTS_KEPT + 10)}
+    bots = em.CallBots(saved, socks=lambda: [])
+    assert len(bots.bots) == em.CALL_BOTS_KEPT and 9 not in bots.bots and 10 in bots.bots
+    replies = {"/a": {"agent": "new", "calls": [5000]}}
+    bots = em.CallBots(saved, socks=lambda: ["/a"], probe=replies.get)
+    bots.saw(5000)
+    assert list(bots.bots)[-1] == 5000 and len(bots.bots) == em.CALL_BOTS_KEPT
+    assert em.CallBots({"x": "a", "3": "", "4": None, "5": "ok"}, socks=lambda: []).bots == {5: "ok"}
+
+
+def test_call_a_leg_that_never_answers_does_not_stall_the_mail(legs, monkeypatch):
+    """REVIEW GAP 2: the probe has a short timeout. A dead leg (accepts, never answers)
+    costs about a second; the live leg after it still names the bot, and the room's
+    device mail still goes."""
+    import time as _time
+    dead = legs("a/call-ears.sock", None)
+    live = legs("b/call-ears.sock", {"agent": "ivy", "calls": [1317]})
+    socks_env(monkeypatch, dead, live)
+    em = em_module()
+    t = _time.monotonic()
+    assert em.probe(dead.path) == {}
+    assert _time.monotonic() - t < 3 * em.PROBE_TIMEOUT_S
+    t = _time.monotonic()
+    m = dev(call_rows() + [turn(9, "Hey Ivy, in the room", seq=9)])
+    assert _time.monotonic() - t < 15
+    assert who(m) == [(215130, ["calls+ivy-1317"], None), (9, ["heard+airpods"], "ivy@host1=call")]
+
+
+def test_call_turns_never_go_to_heard_and_mic_turns_are_unchanged(legs, monkeypatch):
+    """Test plan 4: a mic turn mails heard+<device> with no call headers; --calls off
+    restores skip: call; a call:N turn never goes to heard+."""
+    leg = legs("ivy/call-ears.sock", {"agent": "ivy", "calls": [1317]})
+    socks_env(monkeypatch, leg)
+    rows = call_rows() + [turn(9, "Hey Ivy, in the room", seq=9)]
+    m = dev(rows)
+    assert who(m) == [(215130, ["calls+ivy-1317"], None), (9, ["heard+airpods"], "ivy@host1=call")]
+    room = m[1]["mail"]["headers"]
+    assert not {"Call-Id", "Call-Bot"} & set(room) and room["Ears-Kind"] == "spoken"
+    m = dev(rows, args=("--calls", "off"))
+    assert who(m) == [(9, ["heard+airpods"], "ivy@host1=call")]
+    assert [(s["skip"], s["seq"]) for s in skips()] == [("call", 215130)]
+    assert leg.probes == 1                                 # off probes nothing
+    assert not [x for x in dev(rows) if any(t.startswith("heard+") for t in x["to"])
+                and x["seq"] == 215130]
+
+
+def test_call_from_is_configuration(legs, monkeypatch):
+    leg = legs("ivy/call-ears.sock", {"agent": "ivy", "calls": [1317]})
+    socks_env(monkeypatch, leg)
+    m = dev(call_rows(), args=("--calls-from", "calls-keeper"))
+    assert m[0]["mail"]["from"] == "calls-keeper"
+    assert em_module().child_env("calls-keeper", {})["EMAIL"] == "calls-keeper"
+
+
+def test_call_echo_of_the_mouth_is_not_mailed(legs, monkeypatch):
+    leg = legs("ivy/call-ears.sock", {"agent": "ivy", "calls": [1317]})
+    socks_env(monkeypatch, leg)
+    line = "The build is green and the branch is pushed."
+    rows = call_rows(text=line)
+    m = dev([saying(1.5, "ivy", line, "u1")] + rows)
+    assert m == []
+
+
+def test_call_seats_mail_is_unchanged(legs, monkeypatch):
+    """--to seats is the pre-genie mail: a call turn is mailed as before, and no leg is
+    probed; --calls changes nothing there."""
+    leg = legs("ivy/call-ears.sock", {"agent": "ivy", "calls": [1317]})
+    socks_env(monkeypatch, leg)
+    rows = call_rows(text="Hey Ivy, on the call") + [turn(9, "Hey Vera, in the room", seq=9)]
+    on, off = run(rows), run(rows, args=("--calls", "off"))
+    strip = lambda ms: [{k: v for k, v in x.items() if k != "at"} for x in ms]
+    assert strip(on) == strip(off)
+    assert who(on) == [(215130, ["ivy"], "ivy=call"), (9, ["vera"], "vera=call")]
+    assert leg.probes == 0
+
+
+def test_call_the_send_carries_the_four_headers_and_from_ears(legs, monkeypatch):
+    """For real against the fake `message`: From is the seat ears, display name Ears."""
+    leg = legs("ivy/call-ears.sock", {"agent": "ivy", "calls": [1317]})
+    socks_env(monkeypatch, leg)
+    rows, calls = send_run(call_rows(), to=None)
+    assert [(r["to"], r["exit"], r["rule"]) for r in rows] == [(["calls+ivy-1317"], 0, None)]
+    c = calls[0]
+    assert c["argv"][1] == "calls+ivy-1317@host1"
+    assert headers_of(c["argv"]) == {"Ears-Kind": "turn", "Ears-Seq": "215130",
+                                     "Call-Id": "1317", "Call-Bot": "ivy"}
+    assert c["env"]["EMAIL"] == c["env"]["TM_AGENT_ADDRESS"] == "ears"
+    assert c["env"]["SESSIONMAIL_FROM_NAME"] == "Ears"
+    assert json.loads(c["body"])["seq"] == 215130
+
+
+@pytest.mark.parametrize("calls", [5, "1317", {"1317": 1}, None, [True, "1317", 1317.0]])
+def test_call_a_bad_probe_reply_names_no_call_and_stops_no_mail(legs, monkeypatch, calls):
+    """A leg whose reply's calls is not a list of ints names no call: the turn is
+    skipped as call-bot, the keeper does not crash, and the room's device mail still
+    goes (a str is not read digit by digit, a bool is not a call id)."""
+    leg = legs("ivy/call-ears.sock", {"agent": "ivy", "calls": calls})
+    socks_env(monkeypatch, leg)
+    m = dev(call_rows() + [turn(9, "Hey Ivy, in the room", seq=9)])
+    assert who(m) == [(9, ["heard+airpods"], "ivy@host1=call")]
+    assert [(s["skip"], s["call"]) for s in skips("call-bot")] == [("call-bot", 1317)]
+
+
+def test_call_a_leg_that_trickles_and_never_ends_its_line_is_cut_off(legs):
+    """The probe's timeout is for the whole reply, not each read."""
+    import time as _time
+    leg = legs("t/call-ears.sock", None)
+    stop = threading.Event()
+
+    def trickle():
+        c, _ = leg.srv.accept()
+        while not stop.is_set():
+            try:
+                c.sendall(b" ")
+            except OSError:
+                break
+            _time.sleep(0.05)
+        c.close()
+    threading.Thread(target=trickle, daemon=True).start()
+    em = em_module()
+    got = []
+    t = _time.monotonic()
+    p = threading.Thread(target=lambda: got.append(em.probe(leg.path, timeout=0.5)), daemon=True)
+    p.start()
+    p.join(5)                       # a probe that never returns fails here, never hangs
+    stop.set()
+    assert not p.is_alive() and got == [{}]
+    assert _time.monotonic() - t < 2
+
+
+def raw_leg(legs, rel, data, hold=0.0):
+    """A leg that answers its first probe with the raw bytes DATA, then holds the
+    connection open HOLD seconds (so only the probe's own cap or deadline ends it)."""
+    import time as _time
+    leg = legs(rel, None)
+
+    def answer():
+        c, _ = leg.srv.accept()
+        try:
+            c.sendall(data)
+            _time.sleep(hold)
+        except OSError:
+            pass
+        c.close()
+    threading.Thread(target=answer, daemon=True).start()
+    return leg
+
+
+def test_call_a_reply_nested_thousands_deep_is_no_reply(legs):
+    """A reply under the 64 KiB cap that nests too deep for json raises
+    RecursionError, not ValueError: the probe gives {} and never crashes the keeper."""
+    leg = raw_leg(legs, "d/call-ears.sock", b"[" * 60000 + b"\n")
+    assert em_module().probe(leg.path, timeout=2) == {}
+
+
+def test_call_a_reply_over_the_cap_is_given_up_before_its_deadline(legs):
+    """A leg that pours bytes and never ends its line is cut off at PROBE_MAX_BYTES,
+    well inside a long timeout, not read on until the deadline."""
+    import time as _time
+    em = em_module()
+    leg = raw_leg(legs, "c/call-ears.sock", b" " * (4 * em.PROBE_MAX_BYTES), hold=10)
+    got, t = [], _time.monotonic()
+    p = threading.Thread(target=lambda: got.append(em.probe(leg.path, timeout=8)), daemon=True)
+    p.start()
+    p.join(10)
+    assert not p.is_alive() and got == [{}]
+    assert _time.monotonic() - t < 4
+
+
+@pytest.mark.parametrize("bad", [[1, 2], "x", 7])
+def test_call_a_bad_call_bots_in_state_is_ignored(bad, tmp_path):
+    """A --state whose call_bots is not a map starts empty, never crashes."""
+    em = em_module()
+    assert em.CallBots(bad, socks=lambda: []).bots == {}
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"offsets": {}, "call_bots": bad}))
+    m = dev([turn(1, "Hey Ivy, hello", seq=1)], args=("--state", str(state)))
+    assert who(m) == [(1, ["heard+airpods"], "ivy@host1=call")]
+
+
+def started(n=1317, at=0.1):
+    """A capture's first row on call:N (every heard row carries source and device)."""
+    return dict(ts=ts(at), kind="event", event="listen-started", source="call", device=f"call:{n}")
+
+
+def test_call_a_reused_call_id_goes_to_its_new_bot_not_the_kept_one():
+    """A call id is the bot's message id, so a second bot's later call can reuse one
+    that is kept after its hang-up. Its capture's listen-started forgets the kept bot
+    and probes afresh; if that probe misses, the turn probes again."""
+    em = em_module()
+    replies = {"/a": {"agent": "alice", "calls": [1317]}, "/b": {"agent": "bob", "calls": []}}
+    bots = em.CallBots(socks=lambda: ["/a", "/b"], probe=lambda p: replies[p])
+    bots.saw(1317, True)
+    assert bots.bot(1317) == "alice"
+    replies["/a"]["calls"], replies["/b"]["calls"] = [], [1317]      # alice hung up; bob's 1317
+    bots.saw(1317)                                                   # a later row: no probe
+    assert bots.bot(1317) == "alice"                                 # the hang-up is bridged
+    bots.saw(1317, True)                                             # bob's capture starts
+    assert bots.bot(1317) == "bob" and bots.state() == {"1317": "bob"}
+    replies["/b"]["calls"] = []                                      # its probe misses...
+    bots.saw(1317, True)
+    assert 1317 not in bots.bots
+    replies["/b"]["calls"] = [1317]
+    assert bots.bot(1317) == "bob"                                   # ...the turn probes again
+
+
+def test_call_a_second_capture_of_one_call_id_mails_its_own_bot(legs, monkeypatch):
+    """The whole script, ONE process: alice's call 1317, its hang-up, then bob's call
+    1317. Each leg answers its first probe one way and every later one the other, so
+    only the second capture's listen-started can learn bob."""
+    a = legs("a/call-ears.sock", lambda k: {"agent": "alice", "calls": [1317] if k == 1 else []})
+    b = legs("b/call-ears.sock", lambda k: {"agent": "bob", "calls": [] if k == 1 else [1317]})
+    socks_env(monkeypatch, a, b)
+    first = [started(at=0.1)] + call_rows(seq=1)
+    second = [started(at=10.1)] + [dict(r, ts=ts(10.5 + i)) for i, r in
+                                   enumerate(call_rows(seq=2, text="Bob here, on a new call."))]
+    m = dev(first + second)
+    assert who(m) == [(1, ["calls+alice-1317"], None), (2, ["calls+bob-1317"], None)]
+    assert (a.probes, b.probes) == (2, 2)                # once per capture, no more

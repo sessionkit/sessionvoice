@@ -161,10 +161,13 @@ def test_wait_returns_the_said_record(box):
     assert rec["kind"] == "said" and rec["reason"] == "done"
 
 
-def test_no_device_is_an_error_not_a_default(box, monkeypatch):
+def test_no_device_is_the_system_default_by_name(box, monkeypatch, tmp_path):
+    """EARS-368 changed this on purpose: it was ``test_no_device_is_an_error_not_a_default``.
+    The default is asked for BY NAME, and says so; nothing probes PortAudio here."""
     env_fence.delenv(monkeypatch, "MOUTH_DEVICE")
-    with pytest.raises(ValueError, match="no device"):
-        mouth.say("hi", backend="silence", spawn=False)
+    monkeypatch.setenv("MOUTH_SETTINGS", str(tmp_path / "none.json"))
+    item = mouth.say("hi", backend="silence", spawn=False)
+    assert (item["device"], item["device_from"]) == ("default", "default")
 
 
 # -- device names: exact, never a substring ------------------------------------

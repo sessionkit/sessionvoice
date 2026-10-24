@@ -9,11 +9,14 @@ It replaces nothing yet; converse still speaks.
 - ``say`` queues and returns; ONE resident player speaks, in playlist
   order, so stacked openers come for free. The queue is a maildir (box.py):
   a line is a mail in ``new/``, done is ``cur/`` with a flag.
-- It speaks to ONE named device, exact name: ``--device``, else
+- It speaks to ONE device, exact name, by ONE order (``resolve_device``) for
+  ``say``/``play``/``again`` and a mailed line alike: the asked device
+  (``--device``, a mail's ``X-Mouth-Device``, or its call), else
   ``$MOUTH_DEVICE``, else ``output`` in the host settings file
-  (``settings_device``); with none of them, ``say`` refuses the line. A named
-  device that is absent gets a ``said reason=device-absent``. Never the
-  default by accident: ``default`` plays only when one of the three says it.
+  (``settings_device``), else ``default``, the system default output. The
+  line's ``device_from`` names the rung that chose it. A device that is
+  absent at play, a ``default`` on a machine with no default output
+  included, gets a ``said reason=device-absent``; ``null`` plays nothing.
 - It writes ``saying`` (first audio frame) and ``said`` (end, with the cut
   point) into the heard log, on the ears' timeline, through ``heard.append``.
 - ``stop`` cuts within 50 ms; ``reason`` says why (``stop``, ``barge-in``).
@@ -106,15 +109,52 @@ def pan_value(pan) -> Optional[float]:
 
 
 def settings_device(d: Optional[Path] = None) -> Optional[str]:
-    """The host settings file's ``output``: ``say``'s device when
-    neither ``--device`` nor ``$MOUTH_DEVICE`` names one.
+    """The host settings file's ``output``: a line's device when
+    neither the line (``--device``, the mail) nor ``$MOUTH_DEVICE`` names one.
 
     The file is ``voices.settings_path(d)``. An absent file, an absent key, or
-    an empty or non-string value is unset: ``None``, so ``say`` still refuses.
-    The schema's documented ``default`` is never applied here; an ``output``
-    of ``"default"`` written in the file is honoured as written."""
+    an empty or non-string value is unset: ``None``, and ``resolve_device``
+    goes on to its last rung, the system default output. An ``output`` of
+    ``"default"`` or ``"null"`` written in the file is honoured as written."""
     out = _voices.settings(d).get("output")
     return out if isinstance(out, str) and out.strip() else None
+
+
+#: The rungs ``resolve_device`` names, first first: the line's ``device_from``.
+#: ``flag`` is ``--device`` (or ``say(device=)``); ``mail`` a mail's
+#: ``X-Mouth-Device`` (or its ``X-Mouth-Extra`` device); ``call`` a mail To a
+#: call's box.
+DEVICE_RUNGS = ("flag", "mail", "call", "env", "settings", "default")
+#: The rungs that ride a ``say`` line's mail (``X-Mouth-Extra``): the ones past the
+#: caller's own choice. A line its caller named (``flag``, ``env``) is the mail
+#: it was, byte for byte (tests/mouth/test_mouth_golden.py), and reads back from
+#: the box with no ``device_from``.
+DEVICE_RUNGS_RIDE = ("settings", "default")
+
+
+def resolve_device(asked: Optional[str] = None, asked_from: str = "flag",
+                   d: Optional[Path] = None) -> tuple[str, str]:
+    """ONE device order for every line, ``say``/``play``/``again`` and a
+    mailed line (``box.read``) alike: ``(device, rung)``.
+
+    ASKED (as ASKED_FROM says: ``flag``, ``mail`` or ``call``), else
+    ``$MOUTH_DEVICE`` (``env``), else ``output`` in the host settings file
+    (``settings``, ``settings_device``), else ``"default"`` (``default``): the
+    system default output, by NAME. Nothing asks PortAudio here: ``default`` is
+    resolved at play (``output.resolve``), and a machine with no default output
+    at all gets ``said reason=device-absent``, "no default output device".
+    ``null`` at any rung is honoured: it plays nothing."""
+    if asked_from not in DEVICE_RUNGS[:3]:
+        raise ValueError(f"mouth: a device is asked by {', '.join(DEVICE_RUNGS[:3])}")
+    if asked:
+        return asked, asked_from
+    env = envnames.get("MOUTH_DEVICE")
+    if env:
+        return env, "env"
+    out = settings_device(d)
+    if out:
+        return out, "settings"
+    return "default", "default"
 
 
 def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None,
@@ -170,10 +210,10 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
     is written, rather than ignored at play.
     """
     priority = _priority(priority)
-    from .hold import HOLDS
+    from .hold import HOLDS, NO_HOLD
 
-    if hold not in (None, *HOLDS):
-        raise ValueError("mouth: hold is " + " or ".join(HOLDS))
+    if hold not in (None, *HOLDS, NO_HOLD):
+        raise ValueError("mouth: hold is " + " or ".join((*HOLDS, NO_HOLD)))
     if expires_s is not None and expires_s <= 0:
         raise ValueError("mouth: expires is seconds from now, above 0")
     if interest not in (None, *INTERESTS):
@@ -200,11 +240,7 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
     from . import reply
 
     rid = reply.norm_id(in_reply_to) if in_reply_to is not None else None
-    device = device or envnames.get("MOUTH_DEVICE") or settings_device(d)
-    if not device:
-        raise ValueError("mouth: no device. Pass --device NAME, set MOUTH_DEVICE, or set "
-                         f"`output` in {_voices.settings_path(d)} ('null' plays nothing; 'default' "
-                         "is the system default, by name only)")
+    device, device_from = resolve_device(device, "flag", d)
     if not text.strip():
         raise ValueError("mouth: nothing to say")
     d = d or mouth_dir()
@@ -233,6 +269,8 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
         "speed": speed,
         "backend": backend or envnames.get("MOUTH_BACKEND") or "auto",
         "device": device,
+        # the rung that chose it, when it rides (a resume carries its own, as an extra)
+        **({"device_from": device_from} if device_from in DEVICE_RUNGS_RIDE else {}),
         "pan": pan_value(pan),
         "requested_t": now,
         "requested_ts": datetime.fromtimestamp(now).astimezone().isoformat(timespec="milliseconds"),
@@ -241,7 +279,8 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
         "log_dir": str(log_dir) if log_dir else envnames.get("MOUTH_LOG_DIR"),
         "wait": wait,
         "priority": priority,
-        "hold": hold,
+        # ``none``: the caller's own no-hold, past the room default, as the mail says it
+        "hold": "now" if hold == NO_HOLD else hold,
         "interest": interest,
         "expires_s": expires_s,
         "expires_t": (now + expires_s) if expires_s is not None else None,
@@ -285,7 +324,8 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
                                {k: item.get(k) for k in ("utt", "text", "voice", "device", "pan",
                                                          "priority", "hold", "expires_t",
                                                          "agent", "session",
-                                                         "requested_ts", "file", "mail_id")})
+                                                         "requested_ts", "file", "mail_id")}
+                               | {"device_from": item.get("device_from") or device_from})
         item["log_root"] = item.get("mail_id") or queued
     from .box import box_dir, drop
 
@@ -302,6 +342,7 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
                 _stop_file(d, {"t": time.time(), "reason": "interrupted", "flush": False, "utt": cur["utt"]})
         if spawn:
             ensure_player(d)
+        item.setdefault("device_from", device_from)   # the caller is told, whether it rode or not
         if not wait:
             return item
         done = d / "done" / f"{item['utt']}.json"
@@ -468,7 +509,7 @@ def again(utt: str, *, seq=None, heard_text: Optional[str] = None, volume=None,
     queued, so a replay that fails leaves the resume as it was. The returned
     item names them in ``replaced``.
 
-    The device is ``say()``'s own resolution, as for a new line. Raises
+    The device is ``say()``'s own resolution (``resolve_device``), as for a new line. Raises
     ValueError for an utt that is not a plain id, and for anything ``say()``
     refuses. Reads no caller's cascade: the caller is the keeper, never the
     line's seat.
@@ -571,7 +612,7 @@ def amend(utt: str, text: str, *, d: Optional[Path] = None) -> dict:
     d = d or mouth_dir()
     if not text.strip():
         raise ValueError("mouth: nothing to say; retract it instead")
-    from .box import Queue, drop, public
+    from .box import Queue, asked_no_hold, drop, public
 
     q = Queue(d)
     x = q.find(utt)
@@ -586,6 +627,10 @@ def amend(utt: str, text: str, *, d: Optional[Path] = None) -> dict:
     # A new mail that supersedes the line: it takes the line's place and utt.
     # If the player makes the old one audible first, this plays after it, as news.
     item = public(x)
+    # a taken line is playing.json's, public keys only: its mail in cur/ says it
+    unheld = x.get("_unheld") or (taken and asked_no_hold(x.get("box_file")))
+    if unheld and not item.get("hold"):
+        item["hold"] = "now"   # its sender's --hold none / X-Mouth-When: now rides the new mail
     target = item.pop("mail_id")
     item.pop("mail_from", None)
     if taken:

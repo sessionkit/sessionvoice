@@ -1,13 +1,14 @@
 ---
 name: ears
 description: >-
-  Ambient voice for any agent: hear the user through the shared ears (the
-  heard log) and speak through the shared mouth, with the etiquette of who
-  wakes when. Use when an agent should answer to its name in the room, keep
-  a listener armed across turns, know which wake rules to drop in a shop, on
-  a call, or while the user thinks aloud, and speak one line at a time on
-  the user's device.
-tokens: 101/2825/7583  # seed/body/extras - run `skill tokens` after edits
+  The kit's way to talk: speak with `mouth say` and listen with the ears
+  (`ears-arm`), the default over VoiceMode's converse, which is used only
+  when the user asks for converse by name. Use when the user asks the agent
+  to talk, speak, listen or use voice; when an agent should answer to its
+  name in the room, keep a listener armed across turns, or know which wake
+  rules to drop in a shop, on a call, or while the user thinks aloud; and to
+  speak one line at a time on the user's device.
+tokens: 134/3144/7574  # seed/body/extras - run `skill tokens` after edits
 ---
 
 # ears
@@ -21,6 +22,14 @@ tokens: 101/2825/7583  # seed/body/extras - run `skill tokens` after edits
 > that both write one log. Every agent in the room reads the same log;
 > nobody owns it. Converse is someone dialling in; the ears are being there.
 
+## Talking with the kit: mouth and ears by default
+
+**With the kit, an agent talks through the kit's own mouth and ears: it
+speaks with `mouth say` and listens by arming the ears with `ears-arm`. That
+is the default whenever the user asks it to talk, speak, listen or use voice,
+even on a host that also has VoiceMode's `converse` tool. It uses `converse`
+only when the user asks for converse by name.**
+
 ## Power moves
 
 `ears-arm` and `ears-count` are on PATH by bare name, through the plugin's
@@ -30,7 +39,9 @@ from `scripts/`.
 - `ears-arm <seat> [talk|alone|room] [names-regex] [--dry-run]`:
   arm the ONE waiter for your seat, in the right mode. Run it with the Bash
   tool's `run_in_background: true`, never a trailing `&`. It execs
-  `heard-first`; when it fires, read its output, then run it AGAIN (re-arm
+  the plugin's own `bin/heard-first`, found from where `ears-arm` sits, so
+  a plugin installed mid-session arms before a restart (by
+  `scripts/ears-arm`: the bare names wait for the restart); when it fires, read its output, then run it AGAIN (re-arm
   on every fire). The mode defaults to `talk`; the names regex defaults to
   your seat name. `--dry-run` prints the command and arms nothing.
 - `ears-count <seat>`: how many waiters are up for your seat, by
@@ -124,10 +135,14 @@ wakes.
 - **Riding along is a hook, not the waiter.** Every mic line reaches your
   session only if your launch directory's `.claude/settings.local.json`
   runs the heard hook on `PostToolUse` and `PostToolBatch`: with the ears
-  package, `ears heard hook || exit 1` (the `ears` command must be on the
-  hook's PATH, not just the Bash tool's; see `ears heard --help`). It takes
-  effect on your next tool call, with no restart. It prints `[heard ...]`
-  lines after each tool call. It has no sieve yet: every agent that has it
+  package, `ears heard hook || exit 1`, the canonical heard hook (the `ears`
+  command must be on the hook's PATH, not just the Bash tool's; see
+  `ears heard hook --help`). It takes effect on your next tool call, with no
+  restart. It prints `[heard ...]` lines after each tool call. If you also
+  get heard mail (`heard+<device>`), run it as
+  `ears heard hook --partials-only || exit 1` (or set
+  `EARS_HEARD_PARTIALS_ONLY=1`): finished turns reach you by mail, so the
+  hook then carries only the partial preview and the shown events. It has no sieve yet: every agent that has it
   sees every line. Waking stays `ears-arm`, so you can ride along on
   everything and wake only on your name. A debug view's "X's waiter read
   it" means the waiter scanned the line, not that it was delivered; "rode
@@ -135,10 +150,18 @@ wakes.
 
 ## Speaking: the rules that cost the user nothing
 
+- **Reply in the batch you are in.** When the user's turn wants an answer
+  and you have the right words, put `mouth say` in the tool batch you are
+  about to run, beside the other calls, not in a batch after them. Every
+  batch you finish first is silence the user sits through. A check can
+  run in the same batch: if it changes the answer, `mouth amend` the line
+  while it is queued, or say the correction next.
 - **One line in flight.** Three queued lines cut the user off; one
   repeated. If you must add, `mouth amend` the queued one.
-- **Hold to turn end.** `--hold turn-end` waits for the user's turn to
-  finish; a line spoken over them is a line they never hear.
+- **Hold to turn end.** A line on a room device waits for the user's turn
+  to finish by default (`--hold turn-end` says so explicitly); a line spoken
+  over them is a line they never hear. A line that must interrupt uses
+  `--now`. `--hold none` plays at once without cutting the line playing.
 - **A cut is on you.** The `said` record carries `cut: true` and a reason:
   `barge-in` (the user spoke over you: say it again, shorter),
   `device-lost` (their headset dropped), `device-absent` (you named a
@@ -184,5 +207,7 @@ re-arm catches up on what landed while it was down (no gaps). Your home is
   Delta Chat bot). `ears services status` shows what runs; `ears services
   uninstall` stops it. If the heard log stops growing, check
   `ears services status` first.
-- **Converse** (VoiceMode's `converse` tool) is the other way to talk: it
-  takes the conch and does not know about the ears or the mouth.
+- **Converse** (VoiceMode's `converse` tool): not the kit's way to talk. Use
+  it only when the user asks for converse by name; otherwise speak with
+  `mouth say` and listen with `ears-arm`. It takes the conch and does not
+  know about the ears or the mouth.

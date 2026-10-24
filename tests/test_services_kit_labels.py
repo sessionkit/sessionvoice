@@ -9,10 +9,9 @@ The old forms, by what install does with each:
 - LEGACY: a stale hand render (services.LEGACY: the dev.voicemode mailer and the old hand
   mouth players). Booted out, its plist moved aside, and ours loaded.
 - HAND: a hand render under a name the template carried before (services.HAND: the mailer's,
-  the keeper's and the side-car's old names). Left alone, ours skipped (and ours removed
-  when it was there first).
-- NAMED: a hand render of a job install does not run (the sounds, talk), under
-  dev.sessionvoice.* or dev.voicemode.*. Never touched; `status` names it.
+  the keeper's, the side-car's, the sounds' and talk's old names). Left alone, ours skipped
+  (and ours removed when it was there first). (The sounds and talk were NAMED, never touched,
+  until install ran them, EARS-429: every template is a job install runs now.)
 
 Each form is run through five cases: old only, new only, both, neither, and a re-run that is a
 no-op; plus a dry run that writes nothing. Then the rule that makes the shared labels safe:
@@ -47,11 +46,10 @@ MOVE = [(n, p + n) for p in services.OLD_PREFIXES for n in ("stt", "mouth", "kee
 LEGACY = [("mail", "dev.voicemode.ears-mail"), ("mouth", "dev.voicemode.mouth-mail"),
           ("mouth", "com.failmode.mouth-mail")]
 HAND = [("mail", "dev.sessionvoice.ears-mail"), ("speakers", "com.failmode.ears-speakers"),
-        ("speakers", "com.failmode.speaker-sidecar"), ("keeper", "com.failmode.ears-keeper")]
-NAMED = [(None, f"{p}.{j}") for p in ("dev.sessionvoice", "dev.voicemode")
-         for j in ("ears-sounds", "mouth-sounds", "talk")]
-FORMS = [("move", *f) for f in MOVE] + [("legacy", *f) for f in LEGACY] + \
-        [("hand", *f) for f in HAND] + [("named", *f) for f in NAMED]
+        ("speakers", "com.failmode.speaker-sidecar"), ("keeper", "com.failmode.ears-keeper")] + [
+    # the sounds' and talk's old hand names: HAND since install runs them (EARS-429)
+    (j, f"{p}.{j}") for p in ("dev.sessionvoice", "dev.voicemode") for j in ("ears-sounds", "mouth-sounds", "talk")]
+FORMS = [("move", *f) for f in MOVE] + [("legacy", *f) for f in LEGACY] + [("hand", *f) for f in HAND]
 CASES = ("old-only", "new-only", "both", "neither", "rerun")
 
 
@@ -60,11 +58,11 @@ def test_every_old_form_in_the_card_is_covered():
     classes are services' own tables."""
     labels = [f[2] for f in FORMS]
     assert len(labels) == len(set(labels))
-    assert {l for _, l in MOVE} == {l for n in (*services.ALL, *services.OLD)
+    assert {l for _, l in MOVE} == {l for n in (*services.jobs(services.ALL), *services.OLD)
                                     for l in services._old_labels(n)}
     assert {l for _, l in LEGACY} == {l for ls in services.LEGACY.values() for l in ls}
     assert {l for _, l in HAND} == {l for ls in services.HAND.values() for l in ls}
-    assert {l for _, l in NAMED} == set(services.HAND_RENAMED)
+    assert not hasattr(services, "HAND_RENAMED")    # no shipped template is a job install skips
     for form in ("com.sessionvoice.ears-", "com.sessionvoice.mlx-audio", "com.voicemode.ears-",
                  "dev.sessionvoice.", "dev.voicemode.", "com.failmode.ears-keeper",
                  "com.failmode.ears-speakers", "com.failmode.speaker-sidecar", "com.failmode.mouth-mail"):
@@ -72,7 +70,7 @@ def test_every_old_form_in_the_card_is_covered():
 
 
 def test_every_shipped_label_is_a_kit_label():
-    for n in services.ALL:
+    for n in services.jobs(services.ALL):
         assert services._label(n).startswith(NEW), n
     assert speech.LABEL == NEW + "mlx-audio"
     for t in sorted((REPO / "launchd").glob("*.plist.in")):
@@ -125,39 +123,29 @@ def _ours(n):
     return services.AGENTS / f"{services._label(n)}.plist"
 
 
-def _named_new(label):
-    return services.HAND_RENAMED[label]
-
-
 def _changing(fake, label):
     """The calls on LABEL that change launchd (print and list only look)."""
     return [c for c in fake.naming(label) if c[0] not in LOOK]
 
 
 def _setup(kit, cls, n, old, case):
-    """The host for CASE: OLD loaded with its plist and/or ours (or, for a NAMED form, a hand
-    render under the new name) loaded with its plist."""
+    """The host for CASE: OLD loaded with its plist and/or ours loaded with its plist."""
     loaded, new = set(), None
     if case in ("old-only", "both", "rerun"):
         _write_old(old)
         loaded.add(old)
     if case in ("new-only", "both"):
-        if cls == "named":
-            new = services.AGENTS / f"{_named_new(old)}.plist"
-            new.write_bytes(plistlib.dumps({"Label": _named_new(old), "ProgramArguments": ["/usr/bin/true"]}))
-            loaded.add(_named_new(old))
-        else:
-            new = ours_plist(_ours(n))
-            loaded.add(services._label(n))
-            if n == "speech":   # ours runs the server too: the never-two scan sees it
-                d = plistlib.loads(new.read_bytes())
-                d["ProgramArguments"] = ["/x/venv/bin/python", "-m", "mlx_audio.server"]
-                new.write_bytes(plistlib.dumps(d))
+        new = ours_plist(_ours(n))
+        loaded.add(services._label(n))
+        if n == "speech":   # ours runs the server too: the never-two scan sees it
+            d = plistlib.loads(new.read_bytes())
+            d["ProgramArguments"] = ["/x/venv/bin/python", "-m", "mlx_audio.server"]
+            new.write_bytes(plistlib.dumps(d))
     return kit["make"](loaded=loaded, linger=1), new
 
 
 def _install(n):
-    return services.install([n or "mouth"])
+    return services.install([n])
 
 
 # ---- the retire matrix: every old form x {old only, new only, both, neither, re-run} --------------
@@ -190,7 +178,7 @@ def test_retire_matrix(kit, capsys, cls, n, old, case):
             assert _ours(n).read_bytes() == ours_after_first
         case = "old-only"                    # and the host is as the first install left it
 
-    ours_loaded = n is not None and services._label(n) in fake.loaded
+    ours_loaded = services._label(n) in fake.loaded
     if cls == "move":
         if case in ("old-only", "both"):
             assert fake.verbs(old).count("bootout") == 1 and not old_plist.exists()
@@ -207,7 +195,7 @@ def test_retire_matrix(kit, capsys, cls, n, old, case):
         else:
             assert not asides and not _changing(fake, old)
         assert ours_loaded and services._ours(_ours(n))
-    elif cls == "hand":
+    else:                                    # hand
         if case in ("old-only", "both"):
             assert old in fake.loaded and old_plist.read_bytes() == old_body   # theirs, untouched
             assert not _changing(fake, old)
@@ -221,12 +209,6 @@ def test_retire_matrix(kit, capsys, cls, n, old, case):
         else:
             assert ours_loaded and services._ours(_ours(n))
             assert not _changing(fake, old)
-    else:                                    # named: never touched, whatever the case
-        assert not _changing(fake, old)
-        if old_body is not None:
-            assert old in fake.loaded and old_plist.read_bytes() == old_body
-        if new is not None:
-            assert new.exists() and _named_new(old) in fake.loaded and not _changing(fake, _named_new(old))
 
 
 @pytest.mark.parametrize("cls, n, old", FORMS, ids=[f[2] for f in FORMS])
@@ -235,7 +217,7 @@ def test_dry_run_writes_nothing(kit, capsys, cls, n, old):
     fake, _ = _setup(kit, cls, n, old, "both")
     before = {p.name: p.read_bytes() for p in services.AGENTS.iterdir()}
     loaded = set(fake.loaded)
-    services.install([n or "mouth"], dry_run=True)
+    services.install([n], dry_run=True)
     assert {p.name: p.read_bytes() for p in services.AGENTS.iterdir()} == before
     assert fake.loaded == loaded
     assert not [c for c in fake.calls if c[0] not in LOOK]
@@ -263,16 +245,14 @@ def test_status_names_every_old_form(kit, capsys, monkeypatch, cls, n, old):
         assert f"old label: {old} is still loaded" in line
     elif cls == "legacy":
         assert "(LEGACY render)" in line
-    elif cls == "hand":
+    else:                                    # hand
         assert "(hand-made)" in line and "install skips" in line
-    else:
-        assert "(old name)" in line and f"launchd/{_named_new(old)}.plist.in" in line
 
 
 # ---- whose plist: told by CONTENT, never by label ------------------------------------------------
 
 def test_every_plist_install_writes_carries_the_marker_in_its_environment():
-    for n in services.ALL:
+    for n in services.jobs(services.ALL):
         env = services.spec(n)["EnvironmentVariables"]
         assert env[services.MARKER[0]] == services.MARKER[1], n
     k, v = services.MARKER
@@ -543,7 +523,7 @@ def test_a_dormant_hand_plist_says_why_ours_is_skipped_and_the_way_out(kit, caps
         loaded.add(services._label(n))
     fake = kit["make"](loaded=loaded)
     way = (f"To run ours instead: move {plist} out of {services.AGENTS} (it is not loaded: nothing to boot "
-           f"out), then `ears services install --only {n}`")
+           f"out), then `ears services install --only {services._service(n)}`")
 
     services.install([n], dry_run=True)
     out = capsys.readouterr().out

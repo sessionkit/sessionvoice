@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 BIN = Path(__file__).resolve().parents[1] / "bin"
-T = datetime(2030, 1, 7, 8, 0).astimezone()
-DAY = "heard_2030-01-07.jsonl"
+T = datetime(2030, 6, 9, 8, 0).astimezone()
+DAY = "heard_2030-06-09.jsonl"
 
 
 def heard(tmp, recs):
@@ -69,7 +69,7 @@ def test_ears_turn_takes_the_fire_file_and_skips_the_mouth(tmp_path):
         {"ts": at(2), "seq": 22, "kind": "turn", "text": "Sure.", "source": "mic"},       # the mouth, heard back
         {"ts": at(3), "seq": 23, "kind": "turn", "text": "Ivy, one more thing.", "source": "mic"},
     ])
-    (logs / "speakers_2030-01-07.jsonl").write_text(
+    (logs / "speakers_2030-06-09.jsonl").write_text(
         json.dumps({"seq": 22, "speaker": "ivy"}) + "\n" + json.dumps({"seq": 23, "speaker": "theo"}) + "\n")
     fire = tmp_path / "fire.output"
     fire.write_text(json.dumps({"seq": 21, "ts": at(1), "kind": "partial", "rule": "first"}) + "\n\n[exited with code 0]\n")
@@ -132,7 +132,7 @@ def _echo_case(tmp, turn_text, turn_end, span, sidecar=None):
              "t0": 100.0, "t1": 100.0 + span}]
     logs = heard(tmp, recs)
     if sidecar is not None:
-        (logs / "speakers_2030-01-07.jsonl").write_text(json.dumps({"seq": 3, **sidecar}) + "\n")
+        (logs / "speakers_2030-06-09.jsonl").write_text(json.dumps({"seq": 3, **sidecar}) + "\n")
     state = tmp / "heard.state"
     state.write_text(json.dumps({"offsets": {str(logs / DAY): 0}}))
     p = run("heard-first", tmp, "--rule", "reply:vera", "--state", str(state), "--timeout", "3")

@@ -68,7 +68,7 @@ def test_a_bad_requested_is_treated_as_absent(d, capsys, value):
                           "X-Mouth-Requested": value})
     x = box.read(p, d)                                   # never raises
     assert x["requested_t"] == 1921356800.0, "falls back to the mail's own order"
-    assert x["requested_ts"].startswith(("2030-11-19", "2030-11-20"))
+    assert datetime.fromisoformat(x["requested_ts"]).timestamp() == 1921356800.0
     assert [r for r in logged(capsys) if r.get("bad_header") == "X-Mouth-Requested"] == [
         {"bad_header": "X-Mouth-Requested", "mail_id": "<r1@x>", "value": value, "as": "absent"}]
 

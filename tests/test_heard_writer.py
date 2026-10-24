@@ -23,8 +23,8 @@ def lines(path):
 
 
 def test_path_is_a_sibling_of_the_exchange_log(base):
-    assert heard.log_path(date(2030, 9, 26)) == (
-        base / "logs" / "conversations" / "heard_2030-09-26.jsonl")
+    assert heard.log_path(date(2030, 6, 9)) == (
+        base / "logs" / "conversations" / "heard_2030-06-09.jsonl")
 
 
 def test_one_line_per_record_seq_counts_from_one(base):

@@ -20,6 +20,17 @@ def test_schema_names_its_controls():
     assert [o["const"] for o in p["partials"]["anyOf"]] == ["final", "nemotron"] and p["partials"]["default"] == "final"
 
 
+def test_schema_has_the_heard_hooks_partials_only_switch():
+    """EARS-362: ears.json's heard_partials_only, which `ears heard hook` reads (heard.py
+    keeps the key's name itself; the file is additionalProperties: false)."""
+    from ears import heard
+    p = SCHEMA["properties"][heard.PARTIALS_ONLY_KEY]
+    assert p["type"] == "boolean" and p["default"] is False
+    assert p["title"] and "--partials-only" in p["description"]
+    assert heard.HEARD_PARTIALS_ONLY_ENV in p["description"]
+    assert SCHEMA["additionalProperties"] is False
+
+
 def test_a_seeded_file_is_a_preset(monkeypatch):
     from ears import services                     # what install writes must be one of the picker's choices
     monkeypatch.delenv("EARS_STT_URL", raising=False); monkeypatch.delenv("EARS_STT_MODEL", raising=False)

@@ -21,7 +21,8 @@ from ears.heard_wait import Waiter, main
 @pytest.fixture
 def base(tmp_path, monkeypatch):
     monkeypatch.setenv("VOICEMODE_BASE_DIR", str(tmp_path))
-    for v in ("VOICEMODE_HEARD_BUDGET", "VOICEMODE_HEARD_MAX_LINES"):
+    for v in (heard.HEARD_BUDGET_ENV, heard.HEARD_MAX_LINES_ENV, heard.HEARD_PARTIALS_ONLY_ENV,
+              *heard.HEARD_ENV_OLD.values()):
         monkeypatch.delenv(v, raising=False)
     return tmp_path
 
@@ -372,7 +373,7 @@ def test_cli_without_a_session_is_a_usage_error(base, capsys, monkeypatch):
 # --- who moved the cursor (EARS-148) ------------------------------------------
 
 def test_the_waiters_cursor_writes_name_it_as_a_tool_call(base, monkeypatch):
-    stamps = iter(f"2030-10-09T05:{m:02d}:00.000+11:00" for m in range(60))
+    stamps = iter(f"2030-12-08T05:{m:02d}:00.000+11:00" for m in range(60))
     monkeypatch.setattr(heard, "_now_iso", lambda: next(stamps))
     for v in (heard.HEARD_EVENT_ENV, heard.HEARD_CALLER_ENV, *heard.HEARD_ENV_OLD.values()):
         monkeypatch.delenv(v, raising=False)

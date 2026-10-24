@@ -26,7 +26,7 @@ def _wav(path, seconds, rate=16000):
 START = 1921356800.2
 
 
-def _call_dir(tmp_path, stem="caller-call", seconds=30, start=START, name="20300107-080000-chat12-msg1317"):
+def _call_dir(tmp_path, stem="caller-call", seconds=30, start=START, name="20300609-080000-chat12-msg1317"):
     """A Delta call dir as the bot leaves it: STEM.wav + STEM.json (caller-call since PHONE-127,
     mike-call before). Another stem in the same dir is added by calling again. NAME: a web
     call's dir is its bare id (EARS-316)."""
@@ -81,7 +81,7 @@ def test_call_clips_read_caller_call_else_mike_call(tmp_path, monkeypatch, stems
 
 
 @pytest.mark.parametrize("name,cid", [
-    ("20300107-080000-chat12-msg1317", "1317"),           # a Delta bot's call dir
+    ("20300609-080000-chat12-msg1317", "1317"),           # a Delta bot's call dir
     ("1921357125", "1921357125"),                         # a sessionphone web call's (EARS-316)
 ])
 def test_call_clips_read_the_call_id_from_a_delta_or_a_web_call_dir(tmp_path, monkeypatch, name, cid):
@@ -105,7 +105,7 @@ def test_call_clips_refuse_a_dir_with_no_call_id(tmp_path, name):
 
 
 def test_call_clips_with_no_recording_names_both_files(tmp_path):
-    call = tmp_path / "20300107-080000-chat12-msg1317"; call.mkdir()
+    call = tmp_path / "20300609-080000-chat12-msg1317"; call.mkdir()
     with pytest.raises(SystemExit) as e:
         ev.call_clips(call, tmp_path / "out", offset=0.3, limit=None)
     assert "caller-call.json" in str(e.value) and "mike-call.json" in str(e.value)

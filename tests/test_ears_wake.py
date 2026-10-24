@@ -23,7 +23,7 @@ EXAMPLE = REPO / "keeper" / "defaults" / "wake.example.json"
 
 
 def turn(seq, text):
-    return dict(ts=f"2030-09-29T01:00:{seq * 5:06.3f}+10:00", kind="turn", source="mic",
+    return dict(ts=f"2030-06-09T01:00:{5 * seq:06.3f}+10:00", kind="turn", source="mic",
                 device="airpods", text=text, t0=100.0, t1=102.0, seq=seq)
 
 
@@ -31,7 +31,7 @@ def ears_mail(tmp_path, rules, texts, to="device"):
     """(mails, stderr, returncode) for TEXTS as finished turns, --rules RULES."""
     logs = tmp_path / "logs" / "conversations"
     logs.mkdir(parents=True, exist_ok=True)
-    (logs / "heard_2030-09-29.jsonl").write_text(
+    (logs / "heard_2030-06-09.jsonl").write_text(
         "".join(json.dumps(turn(i + 1, t)) + "\n" for i, t in enumerate(texts)))
     p = subprocess.run([sys.executable, str(SCRIPT), "--rules", str(rules), "--dry-run", "--once",
                         "--from-start", "--domain", "host1", "--to", to],
@@ -67,6 +67,17 @@ def test_example_carries_three_placeholder_seats():
         "reviewer": {"names": "reviewer", "openers": "hey|hay"},
     }
     assert conf["defaults"] == json.loads(SHIPPED.read_text())["defaults"]
+
+
+def test_example_doc_reads_true_as_the_example_and_as_a_copied_wake_json():
+    """EARS-362: the example is meant to be copied to the live wake.json, _doc and all, so
+    _doc must not say "ears-mail never reads this copy" (false once copied). It names the
+    file ears-mail does read, and says the packaged example is not it."""
+    doc = json.loads(EXAMPLE.read_text())["_doc"]
+    assert "never reads this copy" not in doc and "this copy" not in doc
+    assert f"~/{SETTINGS}/wake.json" in doc
+    assert "never the example that ships in the package" in doc
+    assert "ears wake add" in doc
 
 
 # The text wake.example.json carries by design that the private scan list matches: the

@@ -72,6 +72,7 @@ from types import MappingProxyType
 from typing import Mapping, NamedTuple, Optional
 
 from ears import envnames, message_bin, operator_config
+from ears.maildir import private as _private_maildir
 
 from .paths import default_mouth_dir, mouth_dir
 from .voices import _pct, default_voice
@@ -119,8 +120,8 @@ def box_dir(d: Optional[Path] = None) -> Path:
 
 
 def ensure(bx: Path) -> Path:
-    for sub in ("tmp", "new", "cur"):
-        (bx / sub).mkdir(parents=True, exist_ok=True)
+    """BX as a maildir, the box and its tmp/new/cur 0700 (an existing 0755 one repaired)."""
+    _private_maildir(bx)
     return bx
 
 
@@ -194,7 +195,15 @@ def _subject(text: str) -> str:
 
 
 def drop(bx: Path, item: dict, *, supersedes: Optional[str] = None) -> Path:
-    """Write ITEM into BX/new as a mail: tmp/, then one rename. Sets ``item['mail_id']``."""
+    """Write ITEM into BX/new as a mail: tmp/, then one rename. Sets ``item['mail_id']``.
+
+    A hold the room default set (``hold_from: room``, ``_room_hold``) is the reader's,
+    never the line's: an amend re-drops the line it read, and writes it unheld, as
+    its sender asked, so the re-read decides again."""
+    given = item
+    if item.get("hold_from") == "room":
+        item = {k: v for k, v in item.items() if k != "hold_from"}
+        item["hold"] = None
     ensure(bx)
     host = _host()
     order = time.time_ns()
@@ -235,7 +244,7 @@ def drop(bx: Path, item: dict, *, supersedes: Optional[str] = None) -> Path:
     tmp.write_bytes(_minted(bx, bytes(m)))   # a local drop: the MAC line first
     dest = bx / "new" / name
     tmp.rename(dest)
-    item["mail_id"] = mid
+    item["mail_id"] = given["mail_id"] = mid
     return dest
 
 
@@ -771,7 +780,7 @@ def _trust(item: dict, msg, extras: dict, on_call, local: bool, rank: float,
 
     # the field that set each effect, as read() set it
     dev_src = ("x-mouth-extra" if "device" in extras else "x-mouth-device" if h("X-Mouth-Device")
-               else "to" if on_call else None)   # None: the player's own $MOUTH_DEVICE
+               else "to" if on_call else None)   # None: the player's own (env, settings, default)
     call = dev_src is not None and _is_call(item.get("device"))
     pri_src = ("x-mouth-extra" if "priority" in extras
                else "x-mouth-priority" if h("X-Mouth-Priority") else "importance")
@@ -907,6 +916,70 @@ def _own_voice(agent: Optional[str]) -> Optional[str]:
     return a if a in names else None
 
 
+def _device(item: dict, extras: dict, is_raw: bool, asked_from: str, d: Optional[Path]) -> None:
+    """The line's device by ``say()``'s own order, ONE function (``mouth.resolve_device``):
+    its ask (``X-Mouth-Device``, an extra's ``device``, or the call box it is To),
+    else the player's ``$MOUTH_DEVICE``, else the host settings ``output``, else the
+    system default output. Sets ``device`` and ``device_from``, the rung.
+
+    A raw line (``mouth say``) was resolved by ``say()``: its device is kept, with
+    the ``device_from`` it carries, which rides only past the caller's own choice
+    (``mouth.DEVICE_RUNGS_RIDE``); a line its caller named has none. A mail from
+    outside never names its own rung: one is set here."""
+    from . import DEVICE_RUNGS, resolve_device
+
+    asked = item.get("device") or None
+    said_from = item.get("device_from")
+    if is_raw and asked is not None:
+        item["device_from"] = said_from if said_from in DEVICE_RUNGS else None
+        return
+    if "device" in extras:
+        asked_from = "mail"
+    item["device"], item["device_from"] = resolve_device(asked, asked_from, d)
+
+
+def _room_hold(item: dict, when: str, extras: dict, d: Optional[Path]) -> None:
+    """A line on a ROOM device that asks no hold is held ``turn-end``
+    (``hold.ROOM_HOLD``), decided here, where its device is resolved (``_device``)
+    and its ``now`` is trusted (``_trust``). Sets ``hold_from: room``.
+
+    Left as it is: a line that holds already (its own ``turn-end``, or a call's);
+    a line on a call (``call``/``call:<N>``: calls keep their own default); a
+    ``now`` line (``--now``, a trusted ``X-Mouth-Priority: now``); a line whose
+    sender said no hold (``X-Mouth-When: now``, ``mouth say --hold none``: that one
+    sets ``_unheld``, or a ``hold`` in its extras); a played file (``mouth play``: a sound, never a
+    voice over the user). And every line when ``hold.room_hold`` is off."""
+    if item.get("hold_from") == "room":
+        del item["hold_from"]   # the box's word alone: never an extra's
+    if item.get("hold") == "turn-end" or _is_call(item.get("device")):
+        return
+    if when == "now":
+        item["_unheld"] = True   # the sender's own no-hold: an amend keeps it (mouth.amend)
+        return
+    if str(item.get("priority")).strip().lower() == "now" or "hold" in extras:
+        return
+    if item.get("file"):
+        return
+    from . import hold, voices
+
+    if hold.room_hold(voices.settings(d))[0]:
+        item["hold"], item["hold_from"] = "turn-end", hold.ROOM
+
+
+def asked_no_hold(path) -> bool:
+    """True if the mail at PATH asked no hold itself (``X-Mouth-When: now``, as
+    ``mouth say --hold none`` writes it): the ``_unheld`` that ``_room_hold`` sets,
+    read again from the mail. A line the player has TAKEN keeps only its public
+    keys in playing.json, so ``mouth.amend`` reads its mail in cur/ for it.
+    False if the mail has gone."""
+    try:
+        raw = Path(path).read_bytes()
+    except (OSError, TypeError):
+        return False
+    msg = email.message_from_bytes(raw, policy=email.policy.default)
+    return str(msg.get("X-Mouth-When") or "").strip().lower() == "now"
+
+
 def read(path: Path, d: Optional[Path] = None, *, sync: bool = True) -> Optional[dict]:
     """One mail in new/ as a line the player can speak (``_``-keys: the mail's own
     facts). None if it has gone meanwhile.
@@ -971,8 +1044,8 @@ def read(path: Path, d: Optional[Path] = None, *, sync: bool = True) -> Optional
         or default_voice(d)[0],
         "speed": _float(h("X-Mouth-Speed")),
         "backend": h("X-Mouth-Backend") or envnames.get("MOUTH_BACKEND") or "auto",
-        "device": h("X-Mouth-Device") or (f"call:{on_call[1]}" if on_call else None)
-        or envnames.get("MOUTH_DEVICE"),
+        # the line's own ask; the rest of the order is resolve_device's, below
+        "device": h("X-Mouth-Device") or (f"call:{on_call[1]}" if on_call else None),
         "pan": _pan(h("X-Mouth-Pan") or h("X-Mouth-Channel")),
         "requested_t": requested_t,
         "requested_ts": _ts(requested_t),
@@ -1014,10 +1087,12 @@ def read(path: Path, d: Optional[Path] = None, *, sync: bool = True) -> Optional
         item["utt"] = derived
     if item["lead_s"] is not None and not item.get("lead_s_from"):
         item["lead_s_from"] = "mail"   # a header alone: the line's own, as a flag is
+    _device(item, extras, is_raw, "call" if on_call and not h("X-Mouth-Device") else "mail", d)
     if not is_raw:  # a mail from outside: its drop is told To its From, not an extra's
         item["notice_to"] = sender or None
     vkey = (str(path.parent.parent), path.name, len(raw), mtime_ns)
     rank = _trust(item, msg, extras, on_call, is_raw, rank, path, vkey, sync, d)
+    _room_hold(item, (h("X-Mouth-When") or "").lower(), extras, d)
     if item["file"]:
         item["backend"] = "file"
         if not is_raw:
@@ -1257,7 +1332,7 @@ class Queue:
                 from . import maillog
 
                 maillog.entry(e, "queued", {k: e.get(k) for k in (
-                    "utt", "text", "voice", "device", "pan", "priority", "hold", "expires_t",
+                    "utt", "text", "voice", "device", "device_from", "pan", "priority", "hold", "expires_t",
                     "agent", "session", "requested_ts", "file", "mail_id")})
             x = dict(e)
             t = eff.get(e["_sup"]) if e["_sup"] else None
@@ -1366,5 +1441,5 @@ class Queue:
         from . import maillog
 
         maillog.entry(x, "queued", {k: x.get(k) for k in (
-            "utt", "text", "voice", "device", "pan", "priority", "hold", "expires_t",
+            "utt", "text", "voice", "device", "device_from", "pan", "priority", "hold", "expires_t",
             "agent", "session", "requested_ts", "file", "mail_id")})

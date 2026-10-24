@@ -26,7 +26,8 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 SRC = REPO / "src"
-KEEPER = ("ears-keeper.sh", "call-ears", "input-watch.swift", "ears-mail.py")
+KEEPER = ("ears-keeper.sh", "call-ears", "input-watch.swift", "ears-mail.py",
+          "ears-sounds.py", "mouth-sounds.py", "held_stream.py")   # the sounds agents: EARS-429
 SCHEMAS = ("ears.schema.json", "ears-sounds.schema.json", "mouth.schema.json")
 BASE = {"numpy", "pyyaml", "httpx", "sounddevice"}
 SMART_TURN = {"onnxruntime", "transformers"}

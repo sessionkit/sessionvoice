@@ -119,7 +119,7 @@ and `lead_s`.
 Every other key in `mouth.json` comes from the file alone, whatever the
 layers say: `output`, `tts`, `barge_in`, `barge_words`, `barge_duck_level`,
 `barge_duck_recover_s`, `barge_duck_max_s`, `barge_ignore_words`,
-`resume_answer_words` and `resume_answer_question`.
+`resume_answer_words`, `resume_answer_question` and `room_hold`.
 
 ## ears.json
 
@@ -137,6 +137,7 @@ The ears' settings: the room's ear and every call's ear.
 | `record_days` | integer, 0 or more | `7` | How many days kept audio stays; `0` keeps it until you delete it. `EARS_RECORD_DAYS` wins. A value that is not valid is ignored. | every capture |
 | `record_notice` | boolean | `true` | On: a call states its recording status in one line of its chat. `EARS_RECORD_NOTICE` wins. A value that is not `true` or `false` counts as on. | the call bot; the ears only report it |
 | `record_spoken_notice` | boolean | `true` | On: a recorded call starts with a spoken notice saying so. `EARS_RECORD_SPOKEN_NOTICE` wins. A value that is not `true` or `false` counts as on. | the call bot; the ears only report it |
+| `heard_partials_only` | boolean | `false` | On: the heard hook drops each finished turn and shows only the partial preview, the shown events and other seats' said lines, for a seat that gets its turns by mail. `EARS_HEARD_PARTIALS_ONLY` wins, and the hook's `--partials-only` or `--no-partials-only` wins over both. A value that is not `true` or `false` counts as off. | `ears heard hook`, on every run |
 
 `ears recording status` prints what `record`, `record_days` and the two
 notices resolve to, and which layer set each one.
@@ -178,7 +179,7 @@ agent, seat and session layers ([above](#the-mouth-reads-some-keys-from-the-laye
 
 | Key | Type | Default | What it does | Layers |
 | --- | --- | --- | --- | --- |
-| `output` | string | none: see [the differences](#where-the-schema-and-the-code-differ) | The output a line plays on when it names none (no `--device`, no `$MOUTH_DEVICE`). `"default"` is the Mac's default output; otherwise an output's exact name. | no |
+| `output` | string | none: see [the differences](#where-the-schema-and-the-code-differ) | The output a line plays on when it names none (no `--device`, no mailed device, no `$MOUTH_DEVICE`). `"default"` is the Mac's default output, `"null"` plays nothing; otherwise an output's exact name. Unset, the line plays on the Mac's default output. | no |
 | `voice` | string | `af_sky` | The voice for a line that names none. For a caller's line, `$MOUTH_VOICE` comes after the layers and before the file, unless the file locks `voice`. | yes |
 | `tts` | object: `url`, `model` | `url` `http://127.0.0.1:8890/v1`, `model` `mlx-community/Kokoro-82M-bf16` | The OpenAI-compatible speech server the Kokoro backend speaks through, and its model. A `url` alone still asks for Kokoro. `$MOUTH_KOKORO_URL` and `$MOUTH_KOKORO_MODEL` win, each on its own. Never a key: see [configuration.md][mouth-config]. | no |
 | `volume` | integer, 0-100 | `100` | A spoken line's level, linear (50 is about -6 dB). `mouth say --volume N` wins. | yes |
@@ -196,6 +197,7 @@ agent, seat and session layers ([above](#the-mouth-reads-some-keys-from-the-laye
 | `barge_ignore_words` | list of strings | a built-in list of filler and common words | Words barge-in never counts as yours. An empty list counts every word; deleting the key restores the list. `mouth barge --ignore` adds words for a while. | no |
 | `resume_answer_words` | integer, 1 or more | `2` | How many of your own words answer a cut question, so its rest is not replayed. It wins over `$MOUTH_RESUME_ANSWER_WORDS`. | no |
 | `resume_answer_question` | boolean | `true` | On: only a cut question is dropped once answered. Off: any cut line you answered is dropped. It wins over `$MOUTH_RESUME_ANSWER_QUESTION`. | no |
+| `room_hold` | boolean | `true` | On: a line on a room device (any output that is not a call) that asks no hold waits for the end of your turn. `mouth say --now` or `--hold none` plays at once; played files and call lines are not changed. `$MOUTH_ROOM_HOLD` wins over it. | no |
 | `lead_s` | number, 0 or more | `0` | Seconds of a line's audio buffered before it plays, so a slow voice cannot chop. `mouth say --lead` wins. | yes |
 
 `mouth status` and `mouth barge` name the layer that set each barge
@@ -208,9 +210,11 @@ Each of these is what the code does today. The schema's `default` is a
 hint for a settings screen, and in these cases the code does not apply it.
 
 - **`output`:** the schema says `"default"`, but an unset `output` is not
-  read as `"default"`. A line that names no output, with no
-  `$MOUTH_DEVICE` and no `output` in the file, is refused. Write
-  `"output": "default"` to play on the Mac's default output.
+  read as `"default"` from the file. A line that names no output, with no
+  `$MOUTH_DEVICE` and no `output` in the file, still plays on the Mac's
+  default output: that is the last rung of the mouth's device order
+  ([mouth.md][mouth-device]), and the line's `device_from` is `default`,
+  not `settings`. Write `"output": "null"` to play nothing instead.
 - **`voice` and `tts`:** the schema gives no default. The code's are
   `af_sky`, and Kokoro on `127.0.0.1:8890`, as in the table.
 - **`barge_in`:** the schema says `"anyone"`. When the key is absent and
@@ -232,4 +236,5 @@ hint for a settings screen, and in these cases the code does not apply it.
 [kit-cascade]: https://github.com/sessionkit/sessionkit/blob/HEAD/docs/settings.md#the-cascade
 [configuration]: configuration.md
 [mouth-config]: configuration.md#the-mouth
+[mouth-device]: mouth.md#how-it-works
 [home]: logs.md#sessionvoices-home

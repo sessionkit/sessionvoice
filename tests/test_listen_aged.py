@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from ears.listen import aged_turn
 
-T0 = datetime(2030, 9, 26, 4, 0, 0, tzinfo=timezone(timedelta(hours=10)))
+T0 = datetime(2030, 6, 9, 4, 0, 0, tzinfo=timezone(timedelta(hours=10)))
 
 
 def line(seq, kind, at, **kw):

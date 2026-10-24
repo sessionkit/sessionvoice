@@ -18,7 +18,8 @@ import pytest
 from ears import services
 
 REPO = Path(__file__).resolve().parents[1]
-SHIPPED = ("ears-keeper.sh", "call-ears", "input-watch.swift", "ears-mail.py")   # ears-mail: EARS-222
+SHIPPED = ("ears-keeper.sh", "call-ears", "input-watch.swift", "ears-mail.py",   # ears-mail: EARS-222
+           "ears-sounds.py", "mouth-sounds.py", "held_stream.py")                # the sounds: EARS-429
 
 
 def _package_data() -> list[str]:

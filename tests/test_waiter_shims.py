@@ -3,34 +3,48 @@ bin/. Each is a shim in the bin/ears pattern that execs the one implementation i
 skills/ears/scripts/, which stays where it is and still works by its old path.
 
 Every run is fenced: HOME and XDG_STATE_HOME are under tmp_path, EARS_HOME is unset,
-and PATH holds only the directories a test names plus /usr/bin:/bin. A test that
-could reach the arm puts a stub heard-first ahead of bin/, so nothing here can arm a
-real waiter or touch a real ~/.ears. ears-count is a read-only ps scan; its seat is a
-name no real seat holds, or a fake `ps` answers it."""
+CLAUDE_PLUGIN_ROOT is unset, and PATH holds only the directories a test names plus
+/usr/bin:/bin. ears-arm finds heard-first from its own location first, so a stub
+ahead of bin/ on PATH would NOT fence the checkout's real bin/heard-first. A test
+that could reach the arm runs the shims of a COPY of the plugin layout
+(tests/plugin_copy.py), whose bin/heard-first is a stub, and asserts that stub ran.
+Nothing here can arm a real waiter or touch a real ~/.ears. ears-count is a
+read-only ps scan; its seat is a name no real seat holds, or a fake `ps` answers it.
+
+The seat is fenced per test (EARS-432): ears-count counts HOST-WIDE by `cut:<seat>` in
+ps, so a fixed seat let a concurrent run's stub count as a waiter here. Each test has
+its own probe seat (``fence.seat``); an argv item equal to SEAT is swapped for it."""
 import os, shutil, subprocess
 from pathlib import Path
 
 import pytest
 
+from tests import plugin_copy
+
 ROOT = Path(__file__).resolve().parents[1]
 BIN = ROOT / "bin"
 SCRIPTS = ROOT / "skills" / "ears" / "scripts"
 SHIMS = ("ears-arm", "ears-count")
-# A seat name no real seat holds, so a real ps scan finds no waiter.
-SEAT = "ears363probe"
+# A placeholder: the fence swaps it for this test's own probe seat, a name no real
+# seat and no concurrent run holds, so a real ps scan finds no waiter.
+SEAT = "<seat>"
+PROBE = "ears363probe"
 
 
 @pytest.fixture
 def fence(tmp_path):
     home = tmp_path / "home"; home.mkdir()
     state = tmp_path / "state"
-    base = {k: v for k, v in os.environ.items() if k not in ("EARS_HOME", "EARS_SPEAKERS")}
+    base = {k: v for k, v in os.environ.items() if k not in plugin_copy.STRIP}
     base.update(HOME=str(home), XDG_STATE_HOME=str(state))
 
     def env(*front):
         return {**base, "PATH": os.pathsep.join([*map(str, front), "/usr/bin", "/bin"])}
 
+    seat = plugin_copy.probe_seat(PROBE)
+
     def run(argv, *front):
+        argv = [seat if a == SEAT else a for a in argv]
         return subprocess.run(argv, capture_output=True, text=True, env=env(*front),
                               timeout=30)
 
@@ -39,7 +53,9 @@ def fence(tmp_path):
         return sorted(str(p.relative_to(tmp_path)) for d in (home, state) if d.exists()
                       for p in d.rglob("*")) + ([str(state)] if state.exists() else [])
 
-    run.env, run.home, run.created, run.tmp = env, home, created, tmp_path
+    run.env, run.home, run.created, run.tmp, run.seat = env, home, created, tmp_path, seat
+    run.plugin = plugin_copy.make(tmp_path)          # its bin/heard-first is a stub
+    run.pbin, run.ran = run.plugin / "bin", tmp_path / "plugin-ran"
     return run
 
 
@@ -111,10 +127,10 @@ def test_ears_count_by_bare_name_prints_zero(fence):
 
 
 def test_ears_arm_dry_run_by_bare_name_creates_nothing(fence):
-    r = fence(["ears-arm", SEAT, "talk", "--dry-run"], BIN)
+    r = fence(["ears-arm", SEAT, "talk", "--dry-run"], fence.pbin)
     assert r.returncode == 0, r.stderr
-    assert r.stdout.startswith("heard-first --source mic")
-    assert f"cut:{SEAT}" in r.stdout
+    assert r.stdout.startswith(f"{fence.pbin}/heard-first --source mic")
+    assert f"cut:{fence.seat}" in r.stdout
     assert fence.created() == []
 
 
@@ -122,28 +138,25 @@ def test_ears_arm_through_the_shim_still_finds_ears_count_beside_it(fence):
     """ears-arm runs `$(dirname "$0")/ears-count`. Through the shim's exec, $0 is the
     script's own path, so that lookup holds. A fake ps reports one waiter for SEAT:
     ears-arm refuses to arm a second one (exit 2), which it can only do if it found
-    ears-count and ears-count read the fake. The stub heard-first, ahead of bin/,
-    proves no arm ran."""
+    ears-count and ears-count read the fake. The copy's stub heard-first proves no
+    arm ran."""
     stubs = fence.tmp / "stubs"
-    stub(stubs, "ps", f'echo "  4242 00:01 /x/bin/heard-first --rule cut:{SEAT} --rule turn"\n')
-    ran = fence.tmp / "heard-first-ran"
-    stub(stubs, "heard-first", f'printf "%s\\n" "$*" > "{ran}"\nexit 99\n')
-    r = fence(["ears-arm", SEAT, "talk"], stubs, BIN)
+    stub(stubs, "ps", f'echo "  4242 00:01 /x/bin/heard-first --rule cut:{fence.seat} --rule turn"\n')
+    r = fence(["ears-arm", SEAT, "talk"], stubs, fence.pbin)
     assert r.returncode == 2, (r.returncode, r.stderr)
-    assert f"1 waiter(s) already up for {SEAT}" in r.stderr
-    assert not ran.exists(), "heard-first was exec'd"
+    assert f"1 waiter(s) already up for {fence.seat}" in r.stderr
+    assert not fence.ran.exists(), "heard-first was exec'd"
 
 
 def test_ears_arm_through_the_shim_reaches_the_arm(fence):
     """The control: with no waiter up, the shim's ears-arm makes its home and execs
-    heard-first, here the stub ahead of bin/. So the empty results above are not a
+    heard-first, here the copy's stub beside it. So the empty results above are not a
     dead fence."""
-    stubs = fence.tmp / "stubs"
-    ran = fence.tmp / "heard-first-ran"
-    stub(stubs, "heard-first", f'printf "%s\\n" "$*" > "{ran}"\nexit 99\n')
-    r = fence(["ears-arm", SEAT, "talk"], stubs, BIN)
+    r = fence(["ears-arm", SEAT, "talk"], fence.pbin)
     assert r.returncode == 99, r.stderr
-    assert f"--state {fence.home}/.ears/heard.state" in ran.read_text()
+    exe, argv = fence.ran.read_text().splitlines()
+    assert exe == f"{fence.pbin}/heard-first"
+    assert f"--state {fence.home}/.ears/heard.state" in argv
 
 
 # -- through a symlink elsewhere (readlink -f) -------------------------------------

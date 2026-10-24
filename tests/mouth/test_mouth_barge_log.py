@@ -231,29 +231,29 @@ def test_a_record_without_seq_is_keyed_by_ts_and_text():
 # The two lines played on 2030-06-09, and his partials over each. These are
 # from EARS-274 findings/2030-06-09-line-texts.md and its word-path findings
 # (seq, ts, text), with every ts moved by ONE constant onto a synthetic
-# 2030-01-07 08:00 base (EARS-393): each delta, the ms and the order as recorded.
+# 2030-12-08 08:00 base (EARS-393): each delta, the ms and the order as recorded.
 L1 = ("Go for it. I'll keep talking for a while so you've got something to cut into. Here's some "
       "filler: the little man the magpie came by today, or maybe he didn't, I wouldn't know, I'm on "
       "a laptop under a table at eight in the morning, and nobody tells me anything about "
       "birds. Kuka the kookaburra would have something to say about that. Anyway, any time now, just "
       "start talking over me and see how fast I duck.")
 L2 = L1[L1.index("Here's"):]
-LINE1 = ("2030-01-07T08:00:36.478+11:00", L1, [
-    (448238, "2030-01-07T08:00:40.606+11:00", "Okay well"),
-    (448239, "2030-01-07T08:00:41.147+11:00", "I'm just trying"),
-    (448240, "2030-01-07T08:00:41.686+11:00", "to"),
-    (448241, "2030-01-07T08:00:42.226+11:00", "barge in now"),
-    (448242, "2030-01-07T08:00:42.786+11:00", "so we'll see"),
-    (448243, "2030-01-07T08:00:43.367+11:00", "what"),
-    (448244, "2030-01-07T08:00:44.467+11:00", "happens and I'm"),
+LINE1 = ("2030-12-08T08:00:36.478+11:00", L1, [
+    (448238, "2030-12-08T08:00:40.606+11:00", "Okay well"),
+    (448239, "2030-12-08T08:00:41.147+11:00", "I'm just trying"),
+    (448240, "2030-12-08T08:00:41.686+11:00", "to"),
+    (448241, "2030-12-08T08:00:42.226+11:00", "barge in now"),
+    (448242, "2030-12-08T08:00:42.786+11:00", "so we'll see"),
+    (448243, "2030-12-08T08:00:43.367+11:00", "what"),
+    (448244, "2030-12-08T08:00:44.467+11:00", "happens and I'm"),
 ])
-LINE2 = ("2030-01-07T08:00:57.289+11:00", L2, [
-    (448259, "2030-01-07T08:01:01.186+11:00", "Okay, so now"),
-    (448260, "2030-01-07T08:01:01.246+11:00", "I'm"),
-    (448261, "2030-01-07T08:01:01.666+11:00", "saying some more"),
-    (448263, "2030-01-07T08:01:02.266+11:00", "words and"),
-    (448264, "2030-01-07T08:01:02.806+11:00", "I'm"),
-    (448265, "2030-01-07T08:01:03.366+11:00", "speaking"),
+LINE2 = ("2030-12-08T08:00:57.289+11:00", L2, [
+    (448259, "2030-12-08T08:01:01.186+11:00", "Okay, so now"),
+    (448260, "2030-12-08T08:01:01.246+11:00", "I'm"),
+    (448261, "2030-12-08T08:01:01.666+11:00", "saying some more"),
+    (448263, "2030-12-08T08:01:02.266+11:00", "words and"),
+    (448264, "2030-12-08T08:01:02.806+11:00", "I'm"),
+    (448265, "2030-12-08T08:01:03.366+11:00", "speaking"),
 ])
 
 
@@ -264,7 +264,7 @@ def _replay(tmp_path, line):
     start, text, partials = line
     d = tmp_path / "replay"
     d.mkdir()
-    log = d / "heard_2030-01-07.jsonl"
+    log = d / "heard_2030-12-08.jsonl"
     since = datetime.fromisoformat(start).timestamp()
     out = Printed()
     blog = player.BargeLog("replay", "default", log=out)

@@ -176,7 +176,8 @@ def test_an_opener_that_arrives_after_his_turn_plays_at_once(box, ears):
 def test_an_ordinary_line_is_not_blocked_by_a_held_one(box, ears):
     ears("partial")
     mouth.say("held opener", hold="turn-end", d=box.d, spawn=False)
-    mouth.say("an announcement", d=box.d, spawn=False)
+    # unheld on purpose: a room line with no hold is held by the room default (EARS-434)
+    mouth.say("an announcement", hold="none", d=box.d, spawn=False)
     th = run_player(box.d, idle=0.3)
     time.sleep(0.8)
     assert [x["text"] for x in lines(box.logs) if x["kind"] == "saying"] == ["an announcement"]

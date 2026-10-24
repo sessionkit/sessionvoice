@@ -1,10 +1,12 @@
-"""Where the audio goes: ONE named device, or nowhere. Never the default by accident.
+"""Where the audio goes: ONE named device, or nowhere. Never another device by accident.
 
 When AirPods drop, the system default falls back to the laptop's own
 speakers. So a device is named exactly
 (case-insensitive), never matched as a substring: ``airpods`` must not pick
 the ``Speakers + AirPods`` aggregate, which plays through the speakers too.
-``default`` is the system default, and only when asked for by that name.
+A named device that is absent is ``device-absent``, never the default instead.
+``default`` is the system default, by that name: asked for, or the last rung of
+the one device order when nothing names a device (``mouth.resolve_device``).
 ``null`` plays nothing, in real time, so stop and cut behave as they would live.
 ``call:<N>`` speaks into live Delta Chat call N through a Delta bot's mouth
 leg (``call`` alone: the one live call). See :class:`CallOut`.

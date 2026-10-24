@@ -52,6 +52,10 @@ ALIASES: dict[str, str] = {
     # who moved a heard cursor (ears.heard)
     "EARS_HEARD_EVENT": "VOICEMODE_HEARD_EVENT",
     "EARS_HEARD_CALLER": "VOICEMODE_HEARD_CALLER",
+    # the heard ride-along hook (ears heard hook): its off switch, budget and line cap
+    "EARS_HEARD_HOOK": "VOICEMODE_HEARD_HOOK",
+    "EARS_HEARD_BUDGET": "VOICEMODE_HEARD_BUDGET",
+    "EARS_HEARD_MAX_LINES": "VOICEMODE_HEARD_MAX_LINES",
     # the mouth's own settings: VOICEMODE_MOUTH_<X> -> MOUTH_<X>.
     # VOICEMODE_MOUTH_SESSION_BIN and _VERIFY_BIN set to "" are off switches, and
     # stay so under either name (presence, above).
@@ -99,11 +103,8 @@ ALIASES: dict[str, str] = {
 #: The ``VOICEMODE_`` names sessionvoice still reads under that name, on
 #: purpose, and gives no new name.
 UNTOUCHED: frozenset[str] = frozenset({
-    # shared with VoiceMode: one heard-log ride-along, whichever tool installed it
+    # shared with VoiceMode
     "VOICEMODE_AGENT",
-    "VOICEMODE_HEARD_HOOK",
-    "VOICEMODE_HEARD_BUDGET",
-    "VOICEMODE_HEARD_MAX_LINES",
     # VoiceMode core's session id
     "VOICEMODE_SESSION_ID",
     # the home's old name: read by ears.home after SESSIONVOICE_HOME, never through

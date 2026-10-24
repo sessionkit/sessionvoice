@@ -66,7 +66,12 @@ def said(logs: Path, utt: str) -> dict:
 
 
 ITEM = {"utt": "u1", "voice": "ivy", "speed": 0.88, "agent": "ivy", "session": "s",
-        "text": "hello there", "requested_ts": "2030-09-28T04:00:00+10:00"}
+        "text": "hello there", "requested_ts": "2030-06-09T04:00:00+10:00"}
+
+
+def _ago(days: int) -> str:
+    """The day dir ``days`` calendar days before the summer Sunday (prune compares dates)."""
+    return (dt.date(2030, 12, 8) - dt.timedelta(days=days)).isoformat()
 
 
 # -- the unit ------------------------------------------------------------------
@@ -79,10 +84,10 @@ def test_pcm16_clips_and_joins_blocks():
 
 
 def test_keep_writes_a_wav_and_its_note_under_the_day(tmp_path):
-    now = dt.datetime(2030, 9, 28, 4, 20).timestamp()
+    now = dt.datetime(2030, 6, 9, 4, 20).timestamp()
     wav = audio.keep(ITEM, [np.full(2400, 0.25, dtype=np.float32)] * 3, 24000, "clone",
                      root=tmp_path, now=now)
-    assert wav == tmp_path / "2030-09-28" / "u1.wav"
+    assert wav == tmp_path / "2030-06-09" / "u1.wav"
     with wave.open(str(wav)) as w:
         assert (w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()) == (1, 2, 24000, 7200)
     note = json.loads(wav.with_suffix(".json").read_text())
@@ -114,34 +119,34 @@ def test_keep_never_raises(tmp_path):
 
 def test_prune_drops_old_days_only_and_leaves_other_names(tmp_path):
     root = tmp_path / "audio"
-    now = dt.datetime(2030, 9, 28, 12, 0).timestamp()
-    for name in ("2030-09-12", "2030-09-20", "2030-09-21", "2030-09-28", "pinned"):
+    now = dt.datetime(2030, 12, 8, 12, 0).timestamp()
+    for name in (_ago(16), _ago(8), _ago(7), "2030-12-08", "pinned"):
         (root / name).mkdir(parents=True)
     gone = audio.prune(root, 7, now=now)
-    assert sorted(p.name for p in gone) == ["2030-09-12", "2030-09-20"]
-    assert sorted(p.name for p in root.iterdir()) == ["2030-09-21", "2030-09-28", "pinned"]
+    assert sorted(p.name for p in gone) == [_ago(16), _ago(8)]
+    assert sorted(p.name for p in root.iterdir()) == [_ago(7), "2030-12-08", "pinned"]
     assert audio.prune(root, 0, now=now) == []  # 0 never prunes
 
 
 def test_prune_runs_at_most_once_an_hour(tmp_path, monkeypatch):
     monkeypatch.setitem(audio._last_prune, "t", 0.0)
-    now = dt.datetime(2030, 9, 28, 12, 0).timestamp()
-    (tmp_path / "2030-09-03").mkdir()
+    now = dt.datetime(2030, 12, 8, 12, 0).timestamp()
+    (tmp_path / "2030-06-09").mkdir()
     assert audio.maybe_prune(tmp_path, now=now)
-    (tmp_path / "2030-09-04").mkdir()
+    (tmp_path / _ago(30)).mkdir()
     assert audio.maybe_prune(tmp_path, now=now + 60) == []
     assert audio.maybe_prune(tmp_path, now=now + 3601)
 
 
 def test_kept_lists_newest_first_by_voice_and_last(tmp_path):
-    t = dt.datetime(2030, 9, 27, 23, 0).timestamp()
+    t = dt.datetime(2030, 6, 9, 23, 0).timestamp()   # u2, 3 h on, is the next day's
     for i, (voice, dt_s) in enumerate([("ivy", 0), ("am_santa", 60), ("ivy", 3 * 3600)]):
         audio.keep({**ITEM, "utt": f"u{i}", "voice": voice}, [np.ones(10, dtype=np.float32)],
                    24000, "clone", root=tmp_path, now=t + dt_s)
     assert [m["utt"] for m in audio.kept(tmp_path)] == ["u2", "u1", "u0"]
     assert [m["utt"] for m in audio.kept(tmp_path, voice="ivy")] == ["u2", "u0"]
     assert [m["utt"] for m in audio.kept(tmp_path, last=2)] == ["u2", "u1"]
-    (tmp_path / "2030-09-27" / "u0.wav").unlink()  # a note without its WAV is not listed
+    (tmp_path / "2030-06-09" / "u0.wav").unlink()  # a note without its WAV is not listed
     assert [m["utt"] for m in audio.kept(tmp_path, voice="ivy")] == ["u2"]
 
 

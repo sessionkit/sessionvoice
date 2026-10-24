@@ -13,6 +13,10 @@ reads set to fixed values). Each case's mail is compared as its ordered
 header list (name, value) and its body. Never re-capture to make this pass:
 a difference is a change to the mail that every say writes.
 
+The pinned clock was moved once, onto Sun 2030-06-09 (the two-Sunday rule), and the
+fixture's clock-derived values rewritten in place to match, same length: the Date
+header and the ns ids. No mail was re-captured and nothing else in it changed.
+
 Since EARS-335 every drop's FIRST line is ``X-Mouth-Local: v1 <hex MAC>``, keyed by
 the box's random key. ``_mail`` pins that line's shape and place, never its value,
 and compares the rest (byte for byte what the drop wrote before) with the fixture.
@@ -37,8 +41,8 @@ from mouth import box
 from ears import envnames
 
 FIXTURE = Path(__file__).parent / "fixtures" / "golden_say.json"
-T0 = 1917302400.0             # a fixed wall clock: 2030-10-04 00:00:00 UTC
-NS0 = 1917302400000000000     # time_ns at T0; each call steps 1 ms
+T0 = 1907193600.0             # a fixed wall clock: 2030-06-09 00:00:00 UTC (a Sunday)
+NS0 = 1907193600000000000     # time_ns at T0; each call steps 1 ms
 TZ = "AEST-10"                # POSIX: UTC+10, no DST, no tzdata needed
 HOST = "golden.example"       # the mouth keeps the first label: "golden"
 

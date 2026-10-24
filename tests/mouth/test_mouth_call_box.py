@@ -118,7 +118,8 @@ def test_mail_to_the_mouth_is_unchanged(d):
     mail(d, "a", "ivy", "mouth@host1")
     x = box.read(box.box_dir(d) / "new" / "a", d)
     assert x["device"] == "null"
-    assert x["hold"] is None
+    # no call's hold: only the room default's (EARS-434), which a call line never gets
+    assert (x["hold"], x["hold_from"]) == ("turn-end", "room")
     assert x["voice"] == box.default_voice(d)[0]
 
 

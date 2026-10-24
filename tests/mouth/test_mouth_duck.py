@@ -341,7 +341,8 @@ def test_t4_with_ducking_off_his_singing_neither_dips_nor_cuts_the_music(env, mi
     time.sleep(0.3)
     partial("la la la, hang on, wait")                # a stop word, even: off never cuts
     time.sleep(0.4)
-    line = say(env, "a line while he sings")
+    # unheld on purpose: a room line waits for his turn by default (EARS-434)
+    line = say(env, "a line while he sings", hold="none")
     assert wait_for(lambda: line["utt"] in kind(env, "said"), 3.0)
     assert not (env.d / "stop").exists()               # no barge-in flush was written
     turn("la la la, hang on, wait")

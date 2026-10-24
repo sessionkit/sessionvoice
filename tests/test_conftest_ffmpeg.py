@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from tests import child_pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 ITEM = "ffmpeg_on_path"
 
@@ -154,7 +156,7 @@ def run_inner(tmp_path: Path, *names: str) -> dict[str, tuple[str, str]]:
     args = [f"{inner}::{n}" for n in names] or [str(inner)]
     out = subprocess.run([sys.executable, "-m", "pytest", "-q", "-rA", "--tb=short", "-p", "no:cacheprovider",
                           "-p", "tests.conftest", "--rootdir", str(ROOT), "-c", str(ROOT / "pyproject.toml"),
-                          f"--junitxml={xml}", *args],
+                          f"--junitxml={xml}", child_pytest.basetemp(tmp_path), *args],
                          cwd=ROOT, env=env, capture_output=True, text=True, timeout=300)
     assert out.returncode in (0, 1) and xml.exists(), out.stdout[-3000:] + out.stderr[-2000:]
     got: dict[str, tuple[str, str]] = {"": ("stdout", out.stdout)}

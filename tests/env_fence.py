@@ -73,6 +73,21 @@ FENCE: dict = {
     # ...and the call bot's two notices, which `ears recording status` reports (default on)
     "EARS_RECORD_NOTICE": None,
     "EARS_RECORD_SPOKEN_NOTICE": None,
+    # ...nor the runner's heard hook settings (EARS-362): a runner that exports
+    # EARS_HEARD_PARTIALS_ONLY=1 (or the hook's off switch, budget or line cap, under
+    # either name) would change what every hook test is shown. Their tests set them.
+    "EARS_HEARD_HOOK": None,
+    "EARS_HEARD_BUDGET": None,
+    "EARS_HEARD_MAX_LINES": None,
+    "EARS_HEARD_PARTIALS_ONLY": None,
+    # ...nor fetch the speech weights (EARS-419): `ears services install` prefetches about
+    # 2.9 GB when it installs the speech server. Off for every test; the prefetch's own tests
+    # (tests/test_services_prefetch.py) unset it and fake the fetch seam.
+    "EARS_NO_PREFETCH": "1",
+    # ...nor the runner's room-hold switch (EARS-434): MOUTH_ROOM_HOLD=off would play every
+    # room line at once, so a test of the default would pass or fail on the runner's shell.
+    # tests/mouth/test_mouth_room_hold.py sets it where it means to.
+    "MOUTH_ROOM_HOLD": None,
 }
 
 

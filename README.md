@@ -34,7 +34,9 @@ streams transcription, and decides when the speaker has finished.
 
 - **macOS** for the always-on parts. The keeper follows devices through
   CoreAudio (it builds `keeper/input-watch.swift` with `swiftc`,
-  `keeper/ears-keeper.sh:104`), and `ears services install` writes launchd
+  `keeper/ears-keeper.sh:134`, when the Command Line Tools are installed;
+  without them it polls `system_profiler` and never runs the `swiftc`
+  install stub), and `ears services install` writes launchd
   agents to `~/Library/LaunchAgents` (`src/ears/services.py:93`). The
   `apple` backend needs macOS 27, Xcode's `swift` and a source checkout
   (`uv run ears install --apple`: the wheel does not ship `swift/`, and
@@ -86,22 +88,29 @@ streams transcription, and decides when the speaker has finished.
   and the setuptools it builds them with is hash-checked too, from the
   shipped `speech/build-constraints.txt`. A new venv is checked in full. A
   re-apply checks only what it installs, not what is already in the venv, so
-  to check an existing venv, remove it and install again. The server fetches no
-  model at install. The first transcription downloads Parakeet, and the
-  first line spoken downloads Kokoro and its voices, so each waits on a large
-  download once.
+  to check an existing venv, remove it and install again. Install then
+  fetches the server's weights, about 2.9 GB, so the first call does not wait
+  on them. It prints the size first, skips any already cached and prints
+  progress while it fetches. `--no-prefetch` (or `EARS_NO_PREFETCH=1`) skips
+  this on a host that must not download, and `--dry-run` prints the size and
+  fetches nothing. A fetch that fails does not fail the install. It says why
+  and how much is left. Whatever is not fetched at install is downloaded by
+  the server on first use: the first transcription waits on Parakeet, and the
+  first line spoken waits on Kokoro and its voices.
 
   **These weights are not pinned.** mlx-audio's server takes whatever is on
   Hugging Face `main` at first use, and it has no way to ask for a revision,
   so a later first use (a new Mac, a cleared cache) can load different
-  weights. `ears services status` has three `weight` rows, for
-  `mlx-community/parakeet-tdt-0.6b-v3`, `mlx-community/Kokoro-82M-bf16` and
-  `prince-canuma/Kokoro-82M` (the voices). Each says whether the commit the
-  Hugging Face cache's `main` points at is the one sessionvoice expects
-  (`SPEECH_WEIGHTS` in `src/ears/services.py`): `match`, `DIFFERS`, or
-  `not cached`. It reads the cache's files and never fetches. It only reports
-  drift; it does not stop or change what the server loads. A real pin, fixed
-  at install, is not built yet.
+  weights. `ears services weights` (and the `weight` rows of `ears services
+  status`) reads the three, `mlx-community/parakeet-tdt-0.6b-v3`,
+  `mlx-community/Kokoro-82M-bf16` and `prince-canuma/Kokoro-82M` (the
+  voices), from the Hugging Face cache: `cached`, `downloading 412 MB of
+  2.5 GB`, or `not cached`, and `DIFFERS` when the cache's `main` is not the
+  commit sessionvoice expects (`SPEECH_WEIGHTS` in `src/ears/services.py`).
+  `--json` prints the same for a program, schema `ears.weights/1`
+  ([docs/models.md](docs/models.md)). It reads the cache's files and never
+  fetches. It only reports; it does not stop or change what the server loads.
+  A real pin, fixed at install, is not built yet.
 
   sessionvoice can promise "never two servers" only from its own side:
   VoiceMode's installer does not ask, so `voicemode service install
@@ -204,7 +213,10 @@ pair of ears on a Mac (depth in [docs/architecture.md](docs/architecture.md)):
   (a call-tap, a call leg) are left alone.
 - **Sounds** (`keeper/ears-sounds.py`, launchd `dev.sessionkit.voice.ears-sounds`):
   a short sound in the user's ears when the ears log an event, so they know
-  they were heard.
+  they were heard. Its partner, `keeper/mouth-sounds.py`
+  (`dev.sessionkit.voice.mouth-sounds`), plays the mouth's cues. Opt-in:
+  `ears services install --only sounds` loads both, from an installed
+  package or a checkout; a bare install never does.
 - **Turn mail** (`keeper/ears-mail.py`, launchd `dev.sessionkit.voice.ears-mail`):
   mails each of the user's finished turns To and From
   `heard+<device>@<host>`, with the `Ears-*` headers of the pager genie's
@@ -258,10 +270,14 @@ pair of ears on a Mac (depth in [docs/architecture.md](docs/architecture.md)):
   To arm the waiter for a seat, run `ears-arm <seat> [talk|alone|room]`;
   `ears-count <seat>` counts the waiters already up. Both are the ears
   skill's tools, on PATH through the plugin's `bin/`; the old path,
-  `skills/ears/scripts/ears-arm`, still works. `ears-arm` runs `heard-first`
-  from PATH. Claude Code puts the plugin's `bin/` on its Bash tool's PATH
-  while the plugin is enabled. Outside Claude Code, put this repo's
-  `bin/` on PATH first.
+  `skills/ears/scripts/ears-arm`, still works. `ears-arm` finds
+  `heard-first` without PATH: in the `bin/` of the plugin it sits in, then in
+  `$CLAUDE_PLUGIN_ROOT/bin`, and only then on PATH. Claude Code puts a
+  plugin's `bin/` on its Bash tool's PATH only for a plugin enabled when the
+  session started, so after a mid-session install the bare names are not
+  found until Claude Code restarts; the old path arms before that. If
+  `heard-first` is found nowhere, `ears-arm` says so in one line and exits
+  127.
 - **Mouth** (`src/mouth`, `bin/mouth`): an agent speaks through one queue,
   and its lines go into the same log, so the waiters can gate out echo.
 - **Calls:** `bin/call-tap` puts a call from any app into the ears, both
@@ -316,8 +332,9 @@ Every log file and what each line means:
 [docs/logs.md](docs/logs.md).
 
 - **Health:** `ears services status` prints one row per launch agent
-  (`running, pid N`, `loaded, not running` or `not installed`), the one
-  that serves speech on `127.0.0.1:8890`, and the home in use.
+  (`running, pid N`, `loaded, not running` or `not installed`), the
+  keeper's `mode` (`input-watch`, or `polling system_profiler` and why),
+  the one that serves speech on `127.0.0.1:8890`, and the home in use.
 
 ## Use
 
@@ -357,6 +374,8 @@ needs a pairing cookie, so another user on the same machine cannot read the
 conversation either. On the host, run `talk pair` in a terminal and open the
 link it prints; `talk token --rotate` makes every browser pair again. Open talk
 at `http://127.0.0.1:<port>/`, never at `localhost`. The code is `src/talk/`.
+`ears services install --only talk` keeps it running as a launch agent
+(opt-in; a bare install never does).
 
 ## Install
 
@@ -370,6 +389,8 @@ import that needs one fails naming it, as `pip install 'sessionvoice[EXTRA]'`.
     uv venv && uv pip install -e '.[all]'  # onnxruntime + mlx-audio
     ears install
     ears services install --agent NAME     # the launch agents: mouth, keeper, mail
+    ears services install --only sounds    # opt-in: the ears and mouth sounds
+    ears services install --only talk      # opt-in: talk serve, the live view
 
 ### The proof of a working install: you speak, and the agent WAKES and answers
 
@@ -435,8 +456,18 @@ answers.
   `message subscription add heard+macbook`;
 - `--agent NAME` adds NAME's wake seat (`ears wake add NAME`) and sends the
   keeper's notices to NAME (`EARS_NOTIFY`; `--notify ADDR` sends them
-  elsewhere). Without it, nobody is woken, and install says so. The notices
-  then go to the operator when `session operator` names one (read at the
+  elsewhere). Without it, and when the wake file names no seat, nobody would
+  be woken, so an install that includes `mail` REFUSES (exit 2, before
+  anything is written; `--dry-run` says `REFUSED`, still lists, and exits 2
+  too). The refusal prints both forms, `ears services install --agent NAME`
+  and `ears services install --no-agent`, and `ears wake add NAME`. Inside
+  an agent seat (`TM_AGENT_ADDRESS` set) it suggests that address's local
+  part as NAME; it never installs on the suggestion. `--no-agent` installs
+  anyway, and install warns that NOBODY is woken. A wake file that already
+  names a seat is not refused (a re-run, the upgrade path): install says
+  which seat it wakes. `--only` without `mail` is never refused for this.
+  With no `--agent`, the notices
+  go to the operator when `session operator` names one (read at the
   keeper's start; install names the address), else they are log-only. To
   mail nobody on a host with an operator, set `EARS_NOTIFY=""` (empty) in
   the keeper's environment. See "Operator and privileged seats" below;
@@ -476,8 +507,18 @@ shows a hook error and lets the agent carry on; an exit 2 (an argument error
 gives one) would stop the agent's turn. `ears` must be on the PATH that `claude` was started with,
 not just the Bash tool's: start `claude` from a shell with the venv active,
 or link `.venv/bin/ears` into a directory on your PATH. It takes effect on
-the agent's next tool call. `VOICEMODE_HEARD_HOOK=off` silences it without
+the agent's next tool call. `EARS_HEARD_HOOK=off` silences it without
 editing the file.
+
+`ears heard hook` is the canonical heard hook. A seat that also gets heard
+mail (it subscribes to `heard+<device>`) gets each finished turn by mail, so
+give it `ears heard hook --partials-only || exit 1` instead: the hook then
+shows only the partial preview of a turn still being spoken and the shown
+events (wake word, barge-in, device change), never the finished turn a
+second time. `EARS_HEARD_PARTIALS_ONLY=1`, or `"heard_partials_only": true`
+in `ears.json`, does the same without editing the command
+([docs/ears.md](docs/ears.md#the-heard-hook)). `ears heard hook --help`
+prints its usage.
 
 ## Tests
 

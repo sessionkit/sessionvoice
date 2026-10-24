@@ -330,7 +330,7 @@ def test_a_bare_install_runs_no_speakers_check(sp, monkeypatch, capsys):
     from test_services_install_checks import _store
     _store(sp["home"])
     monkeypatch.setattr(services, "_mac", lambda: pytest.fail("checked speakers on a bare install"))
-    assert services.main(["install", "--dry-run"]) == 0
+    assert services.main(["install", "--no-agent", "--dry-run"]) == 0   # EARS-421: else REFUSED, rc 2
 
 
 # ---- the shipped lock (super ruling Q1) ---------------------------------------------------------

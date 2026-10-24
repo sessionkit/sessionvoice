@@ -98,7 +98,9 @@ def test_the_exported_tree_has_no_work_hour_stamp():
 
 
 # The matcher itself. Each sample is built from its parts, so this file holds no stamp.
-def _stamp(clock, day="Thu", date="2030-10-03"):
+# The day name is the matcher's input, not the date's weekday: the matcher reads the
+# name and never checks it against the calendar, so every name sits on the one Sunday.
+def _stamp(clock, day="Thu", date="2030-06-09"):
     return clock + " " + day + " " + date
 
 
@@ -125,7 +127,7 @@ def test_the_matcher_follows_sk42(clock, day, hit):
 
 def test_a_stripped_stamp_is_not_a_hit():
     assert work_hour_stamps("noted " + _stamp("").strip() + ": a ruling") == []
-    assert work_hour_stamps("an ISO time 2030-10-03T" + _clock(10, 30) + ":00+10:00") == []
+    assert work_hour_stamps("an ISO time 2030-06-09T" + _clock(10, 30) + ":00+10:00") == []
 
 
 def test_hits_carry_their_line_numbers():

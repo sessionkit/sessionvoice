@@ -31,6 +31,7 @@ PY_COPIES = (
     "keeper/ears-mail.py",
     "keeper/ears-sounds.py",
     "keeper/mouth-sounds.py",
+    "src/ears/heard.py",   # the heard hook's ears.json (EARS-362); stdlib-only, runs as a script
 )
 SH_COPY = "keeper/ears-keeper.sh"
 #: Where code that reads a settings file could live.

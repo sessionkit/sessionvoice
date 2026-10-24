@@ -330,9 +330,9 @@ def test_ears_mail_still_wakes_with_a_hint_in_the_file(env):
     wake.add("dave", "dav", hint="DAVE")
     logs = env / "logs" / "conversations"
     logs.mkdir(parents=True)
-    rec = dict(ts="2030-09-29T01:00:05.000+10:00", kind="turn", source="mic", device="airpods",
+    rec = dict(ts="2030-06-09T01:00:05.000+10:00", kind="turn", source="mic", device="airpods",
                text="Hey Dav, what's on?", t0=100.0, t1=102.0, seq=1)
-    (logs / "heard_2030-09-29.jsonl").write_text(json.dumps(rec) + "\n")
+    (logs / "heard_2030-06-09.jsonl").write_text(json.dumps(rec) + "\n")
     p = subprocess.run([sys.executable, str(REPO / "keeper" / "ears-mail.py"), "--rules",
                         str(env / "wake.json"), "--dry-run", "--once", "--from-start",
                         "--domain", "host1", "--to", "device"],

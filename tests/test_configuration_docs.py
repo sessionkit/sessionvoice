@@ -160,8 +160,8 @@ def test_configuration_names_each_launch_agent_by_its_label():
     from ears import services
 
     rows = _rows(_section(_read(CONFIG_DOC), "The keeper and the launch agents"))
-    for name in services.ALL:
-        assert rows[name][0] == f"`{services._label(name)}`", name
+    for name in services.ALL:   # a service of two agents (sounds) names both labels
+        assert rows[name][0] == ", ".join(f"`{services._label(j)}`" for j in services.jobs([name])), name
 
 
 def test_configuration_names_the_files_the_code_reads(monkeypatch):

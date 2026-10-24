@@ -72,13 +72,13 @@ def make(root: Path, state: str) -> None:
         return
     conv.mkdir(parents=True)
     if state == "other":
-        (conv / "exchanges_2030-01-04.jsonl").write_text("{}\n")
-        (conv / "speakers_2030-01-04.jsonl").write_text("{}\n")
+        (conv / "exchanges_2030-06-09.jsonl").write_text("{}\n")
+        (conv / "speakers_2030-06-09.jsonl").write_text("{}\n")
         (conv / "heard_cursor").write_text("1\n")
     elif state == "lock":
         (conv / "heard.lock").write_text("")
     elif state == "jsonl":
-        (conv / "heard_2030-01-04.jsonl").write_text('{"seq": 1}\n')
+        (conv / "heard_2030-06-09.jsonl").write_text('{"seq": 1}\n')
 
 
 # --- the module: the five steps ---------------------------------------------------------

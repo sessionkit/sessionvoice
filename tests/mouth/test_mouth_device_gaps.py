@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 
 from mouth import output
+from tests import child_pytest
 from tests.audio_fence import expect_refusal
 from test_mouth import FakeSd, PullingSd, _slow_on_device, box, lines, run_player, say  # noqa: F401  (fixture)
 from test_mouth_hold import _wait_for
@@ -337,7 +338,8 @@ def test_absent_comes_from_the_fake_even_on_a_host_with_airpods(tmp_path):
     env = {**os.environ, "HOME": str(tmp_path / "home"), "HOST_SD_LOG": str(log),
            "PYTHONPATH": os.pathsep.join([str(host), os.environ.get("PYTHONPATH", "")])}
     node = "tests/mouth/test_mouth_device_gaps.py::test_a_line_that_never_played_has_no_device_gap_fields"
-    out = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", node],
+    out = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                          child_pytest.basetemp(tmp_path), node],
                          cwd=root, env=env, capture_output=True, text=True, timeout=300)
     assert out.returncode == 0, out.stdout[-3000:] + out.stderr[-2000:]
     assert "1 passed" in out.stdout

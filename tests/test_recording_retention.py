@@ -27,7 +27,7 @@ from ears.listen.turnaudio import PRUNE_EVERY_S as TA_PRUNE_EVERY_S, TurnAudio
 from tests.listen_helpers import CountingSource, FakeSTT, RecordingSink, energy_detector, read_lines
 
 DAY = 86400.0
-NOW = time.mktime((2030, 10, 19, 12, 0, 0, 0, 0, -1))
+NOW = time.mktime((2030, 12, 8, 12, 0, 0, 0, 0, -1))
 OLD = NOW - 400 * DAY
 
 
@@ -57,8 +57,8 @@ class Ears:
         self.base = base
         self.audio = base / "audio"
         self.clips = base / "state" / "missed-reply"
-        self.turn_wav = _plant(self.audio / "2030-01-07" / "120000-000-1.wav")
-        self.clip_wav = _plant(self.clips / "missed-reply_20300107-120000-000_u.wav")
+        self.turn_wav = _plant(self.audio / "2030-06-09" / "120000-000-1.wav")
+        self.clip_wav = _plant(self.clips / "missed-reply_20300609-120000-000_u.wav")
 
     def keepers(self, sw, clock=lambda: NOW):
         ta = TurnAudio(sw, directory=self.audio, clock=clock)
@@ -110,14 +110,14 @@ def test_record_on_prunes_only_the_ears_own_files_of_both_kinds(tmp_path):
     base = tmp_path / "vm"
     ears = Ears(base)
     outside = [
-        _plant(base / "mouth" / "audio" / "2030-01-07" / "u1.wav"),             # the mouth's audio
-        _plant(base / "mouth" / "audio" / "2030-01-07" / "120000-000-1.wav"),
-        _plant(base / "calls" / "2030-01-07" / "caller-call.wav"),             # a call dir
-        _plant(base / "calls" / "missed-reply_20300107-120000-000_u.wav"),
-        _plant(base / "state" / "other" / "missed-reply_20300107-120000-000_u.wav"),
-        _plant(ears.clips / "sub" / "missed-reply_20300107-120000-000_u.wav"),  # nested: not its dir
+        _plant(base / "mouth" / "audio" / "2030-06-09" / "u1.wav"),             # the mouth's audio
+        _plant(base / "mouth" / "audio" / "2030-06-09" / "120000-000-1.wav"),
+        _plant(base / "calls" / "2030-06-09" / "caller-call.wav"),             # a call dir
+        _plant(base / "calls" / "missed-reply_20300609-120000-000_u.wav"),
+        _plant(base / "state" / "other" / "missed-reply_20300609-120000-000_u.wav"),
+        _plant(ears.clips / "sub" / "missed-reply_20300609-120000-000_u.wav"),  # nested: not its dir
         _plant(ears.clips / "someone-elses.wav"),                                # its dir, not its prefix
-        _plant(ears.audio / "2030-01-07" / "missed-reply_x.wav"),               # not a turn-audio name
+        _plant(ears.audio / "2030-06-09" / "missed-reply_x.wav"),               # not a turn-audio name
         _plant(ears.audio / "calls" / "120000-000-1.wav"),                      # not a date dir
     ]
     sw, _ = _switch(tmp_path, {"record": True, "record_days": 1})

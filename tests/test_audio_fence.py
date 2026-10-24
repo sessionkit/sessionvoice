@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from tests import audio_fence
+from tests import audio_fence, child_pytest
 from tests.audio_fence import RealAudioDevice, expect_refusal
 from ears import envnames
 
@@ -137,7 +137,7 @@ def test_a_test_that_swallowed_a_refusal_fails_at_teardown(tmp_path):
         "    pass\n")
     env = {**os.environ, "HOME": str(tmp_path / "home"), "PYTHONPATH": str(ROOT)}
     out = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                          "-p", "tests.audio_fence", str(child)],
+                          "-p", "tests.audio_fence", child_pytest.basetemp(tmp_path), str(child)],
                          cwd=child, env=env, capture_output=True, text=True, timeout=120)
     assert out.returncode == 1, out.stdout + out.stderr
     assert "2 passed, 1 error" in out.stdout, out.stdout
@@ -175,7 +175,7 @@ def test_a_fake_does_not_outlive_its_test(tmp_path):
         "    assert [r['module'] for r in got] == ['sounddevice']\n")
     env = {**os.environ, "HOME": str(tmp_path / "home"), "PYTHONPATH": str(ROOT)}
     out = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                          "-p", "tests.audio_fence", str(child)],
+                          "-p", "tests.audio_fence", child_pytest.basetemp(tmp_path), str(child)],
                          cwd=child, env=env, capture_output=True, text=True, timeout=120)
     assert out.returncode == 0, out.stdout + out.stderr
     assert "2 passed" in out.stdout, out.stdout
@@ -199,7 +199,7 @@ def test_a_refusal_after_every_test_fails_the_session(tmp_path):
         "        time.sleep(0.05)\n")
     env = {**os.environ, "HOME": str(tmp_path / "home"), "PYTHONPATH": str(ROOT)}
     out = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                          "-p", "tests.audio_fence", str(child)],
+                          "-p", "tests.audio_fence", child_pytest.basetemp(tmp_path), str(child)],
                          cwd=child, env=env, capture_output=True, text=True, timeout=120)
     assert out.returncode == 1, out.stdout + out.stderr
     assert "1 passed" in out.stdout
@@ -300,7 +300,8 @@ _PLANNED = re.compile(r"^\s+(tests/\S+?) \(fixtures used: ([^)]*)\)$", re.M)
 ], ids=["mouth-root-mouth", "root-dir-root"])
 def test_every_test_is_fenced_in_any_order(order, tmp_path):
     env = {**os.environ, "HOME": str(tmp_path)}
-    out = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--setup-plan", *order],
+    out = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--setup-plan",
+                          child_pytest.basetemp(tmp_path), *order],
                          cwd=ROOT, env=env, capture_output=True, text=True, timeout=300)
     assert out.returncode == 0, out.stdout[-3000:] + out.stderr[-2000:]
     planned = _PLANNED.findall(out.stdout)

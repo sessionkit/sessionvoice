@@ -19,7 +19,7 @@ def lift(*names):
     return ns
 
 
-T0 = "2030-09-29T12:00:00"    # synthetic; no offset, so fromisoformat reads it on 3.10
+T0 = "2030-06-09T12:00:00"    # synthetic; no offset, so fromisoformat reads it on 3.10
 LINE = ("It's ears-tail. Type ears, then tab. The speaker names already have a plan to become "
         "a service inside ears, and that plan waits on your yes.")
 
@@ -125,7 +125,7 @@ def test_labels_by_reference(tmp_path, last, ok):
         assert p.returncode != 0 and "one label" in (p.stderr + p.stdout)
         return
     assert p.returncode == 0, p.stderr
-    got = {r["seq"]: r["speaker"] for r in map(json.loads, (logs / "speakers_2030-09-29.jsonl").open())}
+    got = {r["seq"]: r["speaker"] for r in map(json.loads, (logs / "speakers_2030-06-09.jsonl").open())}
     assert got == {1: "dave", 2: "ivy", 3: "theo"}
 
 
@@ -152,7 +152,7 @@ def test_clear_cache_after_every_generate(tmp_path):
     # room: 2 references + their prefix; call: 1 reference + its prefix; then 3 lines
     assert calls.count("generate") == 2 + 1 + 1 + 1 + 3
     assert calls == ["generate", "clear_cache"] * (len(calls) // 2)
-    got = {r["seq"]: r["speaker"] for r in map(json.loads, (logs / "speakers_2030-09-29.jsonl").open())}
+    got = {r["seq"]: r["speaker"] for r in map(json.loads, (logs / "speakers_2030-06-09.jsonl").open())}
     assert got == {1: "theo", 2: "alice", 3: "theo"}  # the labels are what they were
 
 

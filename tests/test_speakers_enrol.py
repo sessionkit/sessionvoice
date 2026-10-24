@@ -105,7 +105,7 @@ def recording(d: Path, voices=ROOM, per=3, seconds=2.0) -> Path:
             wav(d / f"{seq}.wav", hz, seconds)
             (d / f"{seq}.json").write_text(json.dumps(
                 {"seq": seq, "kind": "partial", "speaker": None, "t0": 0, "t1": seconds,
-                 "text": f"{who} says line {i}", "ts": f"2030-10-15T11:00:{seq - 100:02d}+11:00"}))
+                 "text": f"{who} says line {i}", "ts": f"2030-12-08T11:00:{seq - 100:02d}+11:00"}))
     return d
 
 
@@ -129,7 +129,7 @@ def en(fence, monkeypatch, tmp_path):
     return fence
 
 
-def mine(en, name="20301015-110000") -> Path:
+def mine(en, name="20301208-110000") -> Path:
     """A recording where enrol makes one: under <home>/enrol/."""
     return recording(en["speakers"] / "enrol" / name)
 

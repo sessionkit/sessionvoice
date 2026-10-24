@@ -93,10 +93,10 @@ def test_the_command_runs_the_hook_verb(tmp_path):
     ears = Path(sys.executable).parent / "ears"
     if not ears.exists():
         pytest.skip("no `ears` script beside this interpreter")
-    # VOICEMODE_HEARD_HOOK=off: the verb is routed and returns before reading any log,
-    # so nothing under the real ~/.voicemode is read or written.
+    # EARS_HEARD_HOOK=off: the verb is routed and returns before reading any log,
+    # so nothing under the real home is read or written.
     env = {"PATH": f"{ears.parent}:/usr/bin:/bin", "HOME": str(tmp_path),
-           "VOICEMODE_HEARD_HOOK": "off"}
+           "EARS_HEARD_HOOK": "off"}
     r = subprocess.run(["/bin/sh", "-c", COMMAND], env=env, input="{}",
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0, r.stderr

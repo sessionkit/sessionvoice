@@ -141,3 +141,83 @@ def test_echo_is_still_not_a_barge(room):
     t0 = time.time() - 5
     room("how FaceTime keeps your own voice out", speaker="theo")      # the line, through the mic
     assert hold.barge(t0, LINE, who=frozenset({"theo"})) is None
+
+
+# -- unheard: the side-car saw it and could not score it ------------------------
+# ``unheard`` is a partial with too little audio to score (a quiet voice). Nobody
+# could name it, the same as a partial still unnamed past its wait, so it counts
+# as if the setting were ``anyone``. It does not wait LABEL_WAIT_S: the label is
+# the side-car's last word on that partial.
+
+def test_an_unheard_partial_cuts_as_if_anyone(room):
+    t0 = time.time() - 5
+    room("actually I need the other one", speaker="unheard")
+    got = hold.barge(t0, LINE, who=frozenset({"theo"}))
+    assert got is not None and got["text"] == "actually I need the other one"
+
+
+def test_an_unheard_partial_keeps_its_label_in_the_trace(room):
+    t0 = time.time() - 5
+    room("actually I need the other one", speaker="unheard")
+    trace: list = []
+    assert hold.barge(t0, LINE, who=frozenset({"theo"}), trace=trace) is not None
+    (entry,) = trace
+    assert entry["speaker"] == "unheard" and "skip" not in entry
+    assert entry["verdict"] == "cut"
+
+
+def test_an_unheard_stop_word_cuts(room):
+    t0 = time.time() - 5
+    room("wait", speaker="unheard")
+    assert hold.barge(t0, LINE, who=frozenset({"theo"}))["text"] == "wait"
+
+
+@pytest.mark.parametrize("label", ["other", "silent", "mixed"])
+def test_other_silent_and_mixed_still_never_cut(room, label):
+    t0 = time.time() - 5
+    room("actually I need the other one", speaker=label)
+    room("wait", speaker=label)                                       # a stop word neither
+    trace: list = []
+    assert hold.barge(t0, LINE, who=frozenset({"theo"}), trace=trace) is None
+    assert [e.get("skip") for e in trace] == ["speaker", "speaker"]
+    assert {e.get("speaker") for e in trace} == {label}
+
+
+def test_in_a_mixed_run_only_the_unheard_words_count(room):
+    """The live run: unheard and other partials interleaved. The other ones'
+    words never make up the count; the unheard ones' do."""
+    t0 = time.time() - 5
+    room("weather forecast tomorrow", speaker="other")                # 3 that are not
+    room("actually", speaker="unheard")                               # 1 that counts
+    room("markets fell sharply", speaker="other")
+    trace: list = []
+    assert hold.barge(t0, LINE, who=frozenset({"theo"}), trace=trace) is None
+    assert [w for e in trace for w in e["counted"]] == ["actually"]
+    room("need that", speaker="unheard")                              # his 2nd ("that" is a stop word)
+    assert hold.barge(t0, LINE, who=frozenset({"theo"}), trace=trace)["text"] == "need that"
+    assert hold.cut_words(trace) == (["actually", "need"], "words")
+
+
+def test_a_named_members_words_add_to_the_unheard_ones(room):
+    t0 = time.time() - 5
+    room("actually", speaker="unheard")
+    room("on a call", speaker="theo")
+    assert hold.barge(t0, LINE, who=frozenset({"theo"}))["text"] == "on a call"
+
+
+def test_ungated_anyone_is_unchanged_by_labels(room):
+    t0 = time.time() - 5
+    room("and in other news tonight the markets fell", speaker="other")
+    assert hold.barge(t0, LINE) is not None                           # anyone: any label cuts
+    assert hold.barge(t0, LINE, who=None) is not None
+
+
+def test_an_unheard_partial_takes_the_floor_for_the_duck(room):
+    """`speaking_over` (the bed's duck) reads the gate the same way."""
+    room("actually I need the other one", speaker="unheard")
+    assert hold.speaking_over("airpods", who=frozenset({"theo"})) is not None
+
+
+def test_another_speakers_partial_does_not_take_the_floor(room):
+    room("and in other news tonight", speaker="other")
+    assert hold.speaking_over("airpods", who=frozenset({"theo"})) is None

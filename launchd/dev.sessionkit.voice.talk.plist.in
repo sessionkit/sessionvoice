@@ -33,13 +33,16 @@
      Was dev.sessionvoice.talk before the rename (dev.voicemode.talk before that): one
      still loaded under an old label is booted out first (launchctl bootout
      gui/$(id -u)/OLD, then rm ~/Library/LaunchAgents/OLD.plist), or two would run.
-     `ears services status` names one it finds; install never touches it.
+     `ears services status` names one it finds; install never touches it, and skips its own
+     beside it.
      Port 8780 is talk's default. Only one thing can hold it: change the port here (and in
      anything in front of it) before loading this beside another Talk on the same machine.
      Optional settings, all off by default (docs/talk.md, "Settings"): add TALK_PERSON,
      TALK_SMART_TURN_DIR, TALK_SETTINGS_URL or TALK_ALLOW_HOSTS to EnvironmentVariables. SESSIONVOICE_HOME
-     moves the heard log, the same as for the ears. The services install that renders and
-     loads this for you is not built yet. -->
+     moves the heard log, the same as for the ears. `ears services install`, asked for talk,
+     writes and loads this job for you, from a checkout or an installed package (the talk
+     beside its python, never /usr/bin/talk); this template is the hand render of it. A hand
+     render at this label is left alone by install, and ours is skipped: never two. -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>dev.sessionkit.voice.talk</string>

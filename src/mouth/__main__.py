@@ -17,6 +17,18 @@ from . import NoAudio, again, amend, play, retract, say, status, stop
 #: own process too (``mouth._replace_resume``); that notice is quiet by rule.
 SERVICE_VERBS = ("mail", "serve", "retract", "again")
 
+DEVICES_HELP = """\
+The output device names, one per line, exactly as --device takes them, then a
+line per live call (call:N). Notes ride after a TAB as '# ...':
+
+  Mac Studio Speakers\t# current output, volume 62%
+  External Headphones
+  # current input: MacBook Pro Microphone
+
+The current output is marked with its volume ('(muted)' when muted). The last
+line names the current input; it starts with '#' and is not a --device name.
+All three are asked of CoreAudio live; what is unknown is left out."""
+
 
 def main(argv=None) -> int:
     from ears.home import STRANDED_HELP, warn_stranded
@@ -33,7 +45,7 @@ def main(argv=None) -> int:
     s.add_argument("--backend", choices=["auto", "kokoro", "clone", "apple", "silence"])
     s.add_argument("--device", help="exact output device name, 'null', 'default', or call:<N> (a live "
                    "Delta Chat call, `mouth devices`); else $MOUTH_DEVICE, else `output` in the "
-                   "settings file; with none, the line is refused")
+                   "settings file, else the system default output")
     side = s.add_mutually_exclusive_group()
     side.add_argument("--pan", type=float, help="-1 left ear only .. 1 right ear only; $MOUTH_PAN")
     side.add_argument("--channel", choices=["left", "right", "both"], help="--pan -1 / 1 / none")
@@ -57,8 +69,10 @@ def main(argv=None) -> int:
     sbarge.add_argument("--no-barge", dest="barge_words", action="store_const", const="off",
                         help="--barge-words off: the user's words never cut this line, a stop ask still does")
     s.add_argument("--wait", action="store_true", help="block until said; print it")
-    s.add_argument("--hold", choices=["turn-end"],
-                   help="wait for the end of the user's turn (the ears' heard log), then speak")
+    s.add_argument("--hold", choices=["turn-end", "none"],
+                   help="turn-end: wait for the end of the user's turn (the ears' heard log), "
+                        "then speak (the default on a room device: room_hold); none: play at "
+                        "once, as --now does without cutting the line playing")
     s.add_argument("--interest", choices=["high", "normal", "low", "zero"],
                    help="how much you want the user's reply: high (wake on their partials), normal (their "
                         "turn), low, zero (speak and leave); read by heard-first reply:AGENT")
@@ -192,7 +206,12 @@ def main(argv=None) -> int:
     ml = sub.add_parser("mail", help="the player, resident on the queue maildir (mail to mouth@<host> lands there)")
     ml.add_argument("--box", type=Path, help="the maildir (default ~/.mail/agents/mouth)")
     ml.add_argument("--once", action="store_true", help="speak what is in new/, then exit")
-    sub.add_parser("devices", help="output device names, exactly as --device takes them")
+    dv = sub.add_parser("devices", help="output device names, exactly as --device takes them; "
+                        "the current output is marked, with its volume, and the current input named",
+                        description=DEVICES_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    dv.add_argument("--json", action="store_true",
+                    help="one JSON object: outputs, calls, current_output, current_input, "
+                    "output_volume (0-1), output_muted; unknown is null")
     sub.add_parser("voices", help="JSON: the default voice, where it came from, and every voice")
     rv = sub.add_parser("resolve", help="JSON: what a --voice expression speaks with (a clone's "
                         "reference clip, or kokoro); exit 2, with the reason, if it does not resolve")
@@ -297,11 +316,10 @@ def main(argv=None) -> int:
     if a.cmd == "timeline":
         return _timeline.run(a)
     if a.cmd == "devices":
-        from .output import live_calls, output_names
+        from .devices import devices, devices_text
 
-        names = output_names(rescan=False)
-        names += [f"call:{c}\t# live call, {who}" for c, who, _ in live_calls()]
-        print("\n".join(names))
+        d = devices()
+        print(json.dumps(d, ensure_ascii=False) if a.json else devices_text(d))
         return 0
     if a.cmd == "voices":
         from ears import heard

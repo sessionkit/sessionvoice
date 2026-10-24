@@ -50,11 +50,11 @@ def test_tap_offset_prefers_the_tap_nearest_listen_started():
 
 def test_call_dir_is_the_newest_dir_for_that_call(tmp_path):
     ns = lift("call_dir"); ns["Path"] = Path
-    for d in ("20300107-080000-chat12-msg54541", "20300107-090000-chat12-msg54541",
-              "20300107-090000-chat12-msg545410"):
+    for d in ("20300609-080000-chat12-msg54541", "20300609-090000-chat12-msg54541",
+              "20300609-090000-chat12-msg545410"):
         (tmp_path / "a" / d).mkdir(parents=True)
     got = ns["call_dir"]("54541", [str(tmp_path / "a"), str(tmp_path / "nowhere")])
-    assert got.name == "20300107-090000-chat12-msg54541"
+    assert got.name == "20300609-090000-chat12-msg54541"
     assert ns["call_dir"]("1", [str(tmp_path / "a")]) is None
 
 
@@ -69,7 +69,7 @@ def test_cut_wav_reads_a_wav_still_being_written(tmp_path):
 
 
 def leg(tmp_path, cover=0.5, taps=({"t": T0_EPOCH - 60, "call": 54541, "wav_s": 1.5},),
-        name="20300107-080000-chat12-msg54541"):
+        name="20300609-080000-chat12-msg54541"):
     rows = []
     calls = tmp_path / "calls"; d = calls / name; d.mkdir(parents=True)
     if taps is not None:
@@ -200,7 +200,7 @@ def test_room_and_call_references_are_enrolled_apart(tmp_path):
     p = subprocess.run(args, capture_output=True, text=True, env=env, timeout=60)
     assert p.returncode == 0, p.stderr
     assert "room reference theo" in p.stdout and "call reference theo" in p.stdout
-    row, = map(json.loads, (logs / "speakers_2030-09-29.jsonl").open())
+    row, = map(json.loads, (logs / "speakers_2030-06-09.jsonl").open())
     assert row["speaker"] == "theo" and row["refs"] == ["theo", "alice"] and "leg" not in row
 
 
@@ -211,8 +211,8 @@ def test_call_dirs_default_names_no_agent_and_finds_every_bot(tmp_path, monkeypa
     ns = lift("call_dir", "CALL_DIRS", os=os); ns["Path"] = Path
     assert ".ivy" not in ns["CALL_DIRS"] and ".vera" not in ns["CALL_DIRS"]
     home = tmp_path / "home"; monkeypatch.setenv("HOME", str(home))
-    old = home / ".alice" / "delta-chat" / "calls" / "20300107-080000-chat12-msg54541"
-    new = home / ".bob" / "delta-chat" / "calls" / "20300107-090000-chat3-msg54541"
+    old = home / ".alice" / "delta-chat" / "calls" / "20300609-080000-chat12-msg54541"
+    new = home / ".bob" / "delta-chat" / "calls" / "20300609-090000-chat3-msg54541"
     for d in (old, new): d.mkdir(parents=True)
     assert ns["call_dir"]("54541", ns["CALL_DIRS"].split(":")) == new   # the newest, any agent
     assert ns["call_dir"]("7", ns["CALL_DIRS"].split(":")) is None
@@ -220,7 +220,7 @@ def test_call_dirs_default_names_no_agent_and_finds_every_bot(tmp_path, monkeypa
 
 def test_call_dir_skips_an_empty_root_never_the_cwd(tmp_path, monkeypatch):
     ns = lift("call_dir"); ns["Path"] = Path
-    (tmp_path / "20300107-080000-chat12-msg9").mkdir()
+    (tmp_path / "20300609-080000-chat12-msg9").mkdir()
     monkeypatch.chdir(tmp_path)
     assert ns["call_dir"]("9", ["", str(tmp_path / "nowhere")]) is None
 
@@ -236,13 +236,13 @@ WEB = 1921357125
 def test_call_dir_finds_a_web_call_s_dir_named_by_its_id(tmp_path):
     ns = lift("call_dir"); ns["Path"] = Path
     delta, web = tmp_path / "delta" / "calls", tmp_path / "sp" / "web" / "calls"
-    for d in (delta / "20300107-080000-chat12-msg54541", delta / "20300107-090000-chat12-msg54541",
+    for d in (delta / "20300609-080000-chat12-msg54541", delta / "20300609-090000-chat12-msg54541",
               web / str(WEB), web / f"{WEB}0", web / "54541x"):
         d.mkdir(parents=True)
     (web / "1921357799").write_text("")                        # a file named like a call: not a dir
     roots = [str(delta), str(web)]
     assert ns["call_dir"](str(WEB), roots) == web / str(WEB)
-    assert ns["call_dir"]("54541", roots).name == "20300107-090000-chat12-msg54541"   # still the newest
+    assert ns["call_dir"]("54541", roots).name == "20300609-090000-chat12-msg54541"   # still the newest
     assert ns["call_dir"]("1921357799", roots) is None
     assert ns["call_dir"]("170000032", roots) is None          # a prefix of an id is not the id
 
@@ -254,7 +254,7 @@ def test_call_dirs_default_covers_sessionphone_s_web_calls(tmp_path, monkeypatch
     monkeypatch.delenv("SESSIONPHONE_ROOT", raising=False)
     ns = lift("call_dir", "CALL_DIRS", os=os); ns["Path"] = Path
     web = home / ".sessionphone" / "web" / "calls" / str(WEB)
-    delta = home / ".alice" / "delta-chat" / "calls" / "20300107-080000-chat12-msg54541"
+    delta = home / ".alice" / "delta-chat" / "calls" / "20300609-080000-chat12-msg54541"
     for d in (web, delta): d.mkdir(parents=True)
     roots = ns["CALL_DIRS"].split(":")
     assert ns["call_dir"](str(WEB), roots) == web and ns["call_dir"]("54541", roots) == delta
@@ -321,7 +321,7 @@ def test_end_to_end_a_web_call_and_a_delta_call_both_label_theo(tmp_path):
     _wav(tmp_path / "room-theo.wav", 600, 3); _wav(tmp_path / "call-theo.wav", 600, 3)
     now = time.time()
     iso = lambda off=0.0: dt.datetime.fromtimestamp(now + off).astimezone().isoformat(timespec="milliseconds")
-    delta = tmp_path / ".alice" / "delta-chat" / "calls" / "20300107-080000-chat12-msg74702"
+    delta = tmp_path / ".alice" / "delta-chat" / "calls" / "20300609-080000-chat12-msg74702"
     calls = tmp_path / ".sessionphone" / "web" / "calls"
     for d, n, wav_s in ((delta, 74702, 1.5), (calls / str(WEB), WEB, 0.659), (calls / str(WEB + 1), WEB + 1, 0.659)):
         d.mkdir(parents=True)

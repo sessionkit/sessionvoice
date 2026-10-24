@@ -63,7 +63,7 @@ def rig(tmp_path, monkeypatch):
     return SimpleNamespace(d=d, logs=logs, audio=aud, settings=tmp_path / "mouth.json")
 
 
-def keep_line(root: Path, utt: str = "3f9c1a2b7e40", day: str = "2030-10-16", *,
+def keep_line(root: Path, utt: str = "3f9c1a2b7e40", day: str = "2030-12-08", *,
               text: str = TEXT, make_wav: bool = True, **meta) -> Path:
     """A kept line as audio.keep leaves it: <day>/<utt>.wav and <utt>.json."""
     folder = root / day
@@ -88,13 +88,13 @@ def rows(logs: Path) -> list[dict]:
 # -- audio.find -------------------------------------------------------------
 
 def test_find_follows_the_day_folders_newest_first(rig):
-    keep_line(rig.audio, "aaa111", "2030-10-14", text="older")
-    keep_line(rig.audio, "aaa111", "2030-10-16", text="newer")
-    keep_line(rig.audio, "bbb222", "2030-10-14", text="only the old day has it")
+    keep_line(rig.audio, "aaa111", "2030-06-09", text="older")
+    keep_line(rig.audio, "aaa111", "2030-12-08", text="newer")
+    keep_line(rig.audio, "bbb222", "2030-06-09", text="only the old day has it")
     assert audio.find("aaa111")["text"] == "newer"
     got = audio.find("bbb222")
     assert got["text"] == "only the old day has it"
-    assert got["wav"] == str(rig.audio / "2030-10-14" / "bbb222.wav") and got["wav_exists"]
+    assert got["wav"] == str(rig.audio / "2030-06-09" / "bbb222.wav") and got["wav_exists"]
 
 
 def test_find_says_none_when_nothing_is_kept(rig):
@@ -115,7 +115,7 @@ def test_find_reads_the_wav_beside_the_note_never_the_path_the_note_names(rig, t
     elsewhere.write_bytes(b"RIFF")
     keep_line(rig.audio, "abc123", make_wav=False, wav=str(elsewhere))
     got = audio.find("abc123")
-    assert got["wav"] == str(rig.audio / "2030-10-16" / "abc123.wav")
+    assert got["wav"] == str(rig.audio / "2030-12-08" / "abc123.wav")
     assert got["wav_exists"] is False
 
 
@@ -273,7 +273,7 @@ def test_a_kept_line_replays_through_the_speech_lane(rig, monkeypatch):
         assert "lane" not in r
     assert saying[0]["text"] == TEXT              # the real words, for the echo trim
     assert said[0]["reason"] == "done" and not said[0].get("audio")   # played, not kept again
-    assert sorted(p.name for p in (rig.audio / "2030-10-16").iterdir()) == \
+    assert sorted(p.name for p in (rig.audio / "2030-12-08").iterdir()) == \
         ["3f9c1a2b7e40.json", "3f9c1a2b7e40.wav"]
     assert len([p for p in rig.audio.rglob("*.json")]) == 1
 
@@ -420,9 +420,10 @@ def test_a_playing_line_of_another_utt_is_never_cut(rig, playing):
 def test_a_replay_that_cannot_be_queued_leaves_the_resume_alone(rig, monkeypatch):
     keep_line(rig.audio)
     queue_resume(rig)
-    env_fence.delenv(monkeypatch, "MOUTH_DEVICE")
-    with pytest.raises(ValueError, match="no device"):
-        mouth.again(UTT, d=rig.d, spawn=False)
+    # EARS-368 changed this on purpose: no device was the refusal used here; since
+    # then a line with no device plays on the system default, so a bad volume is.
+    with pytest.raises(ValueError, match="volume is 0-100"):
+        mouth.again(UTT, d=rig.d, spawn=False, volume=101)
     assert [x["utt"] for x in queued(rig.d)] == ["r0e5u1e00001"]
     assert not [r for r in rows(rig.logs) if r["kind"] == "said"]
 

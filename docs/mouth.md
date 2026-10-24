@@ -15,7 +15,7 @@ line names. A sound from `mouth play` plays on its own lane beside them
   when it ends or is dropped.
 - **A seat uses it** like this:
 
-      mouth devices          # the names --device takes
+      mouth devices          # the names --device takes; the current one marked
       mouth say --device "<device>" --hold turn-end "Hello."
 
   `say` prints the line's id (UTT); `mouth amend UTT TEXT`,
@@ -30,7 +30,9 @@ line names. A sound from `mouth play` plays on its own lane beside them
 ## How it works
 
 - **The queue** is a maildir: `~/.mail/agents/mouth` for the live mouth,
-  unless `$MOUTH_MAILBOX` names another. `new/` holds lines to
+  unless `$MOUTH_MAILBOX` names another. The box and its `tmp/`, `new/`
+  and `cur/` are 0700, like every agent box, and a box found with another
+  mode is set back to 0700 when the mouth next uses it. `new/` holds lines to
   speak. `cur/` holds the line playing and the lines done, each flagged S
   (spoken), T (not spoken) or P (passed). Mail to `mouth@<host>` lands in
   `new/` too, when the mail carrier delivers it there (postfix, or
@@ -99,13 +101,43 @@ line names. A sound from `mouth play` plays on its own lane beside them
   (`src/mouth/resolver.py`). With `--backend auto` on a Mac where Kokoro's
   server does not answer, it speaks with macOS `say` (`resolve()` in
   `src/mouth/backends.py`).
-- **The device** is an exact device name, `default`, `null` (plays
-  nothing), or `call:<N>` for a live Delta Chat call (bare `call`: the only
-  live call). `say` with no `--device` takes `$MOUTH_DEVICE`,
-  else `output` in the settings file (`mouth.json`). An `output` of
-  `default` is honoured as written. With none of the three, `say` refuses
-  the line and names all three fixes, with the settings file's path
-  (`settings_device()` in `src/mouth/__init__.py`, `src/mouth/output.py`).
+- **The device** is an exact device name, `default` (the system default
+  output), `null` (plays nothing), or `call:<N>` for a live Delta Chat call
+  (bare `call`: the only live call). Every line takes ONE order,
+  `say`, `play` and `again` and a mailed line alike
+  (`resolve_device()` in `src/mouth/__init__.py`):
+  1. the line's own ask: `--device`, or a mail's `X-Mouth-Device` (or its
+     `X-Mouth-Extra` `device`), or the call box the mail is To;
+  2. `$MOUTH_DEVICE`;
+  3. `output` in the settings file (`mouth.json`);
+  4. `default`, the system default output.
+
+  `null` at any rung is honoured and plays nothing. The line's
+  `device_from` names the rung (`flag`, `mail`, `call`, `env`, `settings`
+  or `default`) on its `saying` and `said` rows, so a line that played on
+  the system default because nothing was set says so. A `mouth say` line
+  whose caller named its device (`--device` or `$MOUTH_DEVICE`) is the
+  mail it always was, so its rows carry no `device_from`; `mouth say`
+  itself still prints the rung. A device that is
+  absent at play gets `said reason=device-absent` and never falls back to
+  another one. On a machine with no default output at all, a line that
+  reached the last rung gets the same, with the detail "no default output
+  device" (`src/mouth/output.py`).
+- **A room line waits for the user's turn.** A line on a room device (any
+  output that is not `call` or `call:<N>`) that asks no hold is held as
+  `--hold turn-end` is, with the same release and the same safety net: it
+  plays when the user's turn ends, or when the ears have been quiet for
+  `$MOUTH_HOLD_IDLE_S` (8 s), so it never waits forever. Its `saying` row says
+  `hold_from: room`. Unlike a held opener, it is never dropped as `stale`: it
+  waits through the user's next turn too. A line that must interrupt uses
+  `mouth say --now`; `--hold none` (`X-Mouth-When: now` on a mail) plays at
+  once without cutting the line playing. A played file (`mouth play`) and a
+  call line are not changed: a file plays at once, and a call line already
+  waits for the call's turn. It is decided when the player reads the line,
+  where its device is known, so the mail `mouth say` writes is unchanged
+  (`src/mouth/box.py` `_room_hold`). To turn it off, set `"room_hold": false`
+  in mouth.json, or `MOUTH_ROOM_HOLD=off`, which wins over the file; a line's
+  own `--hold` wins over both.
 - **The record:** `saying` is written at the first audio frame and `said`
   at the end (`src/ears/heard.py`, `src/mouth/player.py`). A line that
   never plays gets a `said` alone. `said` says what played, and if the
@@ -170,7 +202,7 @@ line names. A sound from `mouth play` plays on its own lane beside them
   `--heard TEXT` and `--volume N` from the line's said row. It prints one
   JSON line: the replay's `utt`, `again_of`, `again_from` (`audio` or
   `text`) and `replaced`. Exit 0 means it is queued, 2 is a usage error (an
-  utt that is not a plain id, a bad volume, no device), and 3 means there is
+  utt that is not a plain id, a bad volume), and 3 means there is
   nothing to replay.
   - **The WAV is gone** (pruned, `MOUTH_KEEP_AUDIO=0`, or cut
     before its synthesis finished): the note's text is said again in the
@@ -251,6 +283,59 @@ More commands (`mouth --help` lists them all):
     mouth say --next ... / --now # jump the queue / cut in at once
     mouth play FILE --start S --end S   # a file, never a URL
     mouth status                 # player, queue, what is playing
+
+## Devices: which output, which input, how loud
+
+`mouth devices` lists the output names `--device` takes, one per line,
+then one line per live call. It also says which output is the system's
+current one, how loud it is, and which input is current:
+
+    HP Z27i
+    Mac Studio Speakers    # current output, volume 62%
+    External Headphones
+    call:3                 # live call, sessionvoice+super
+    # current input: MacBook Pro Microphone
+
+- **Notes ride after a TAB** as `# ...`, as a live call's line always has
+  (shown above as spaces). Cut each line at the TAB and you have the
+  names, unchanged.
+- **The current output** is marked with its volume, a whole percent of the
+  device's own volume. A muted output reads `volume 62% (muted)`. A device
+  with no volume control (many HDMI and Bluetooth sinks) gets no volume;
+  the mark stays.
+- **The current input** is the last line. It starts with `#` and has no
+  name before it, because an input is not something `--device` takes.
+- **Unknown is left out, never guessed.** Off macOS, or when CoreAudio does
+  not answer, there is no volume and no input line. The output is still
+  marked if PortAudio names a default (see below); if nothing names one,
+  the list is as it always was.
+- **A current output not in the list gets no mark.** The list is
+  PortAudio's and the current output is CoreAudio's. When CoreAudio names
+  a device the list does not hold under the same name, the text marks
+  nothing, and `--json` still names it in `current_output`.
+- **`--json`** prints the same facts as one object:
+
+      {"outputs": ["HP Z27i", "Mac Studio Speakers", "External Headphones"],
+       "calls": [{"name": "call:3", "who": "sessionvoice+super"}],
+       "current_output": "Mac Studio Speakers",
+       "current_input": "MacBook Pro Microphone",
+       "output_volume": 0.62,
+       "output_muted": false}
+
+  `output_volume` runs from 0 to 1. Anything unknown is `null`.
+
+**Where the answer comes from.** CoreAudio, asked live each time, by
+ctypes (`src/mouth/coreaudio.py`). There is nothing to install: no
+Homebrew `SwitchAudioSource`, no `osascript`. PortAudio is not used for
+this because it caches the device list and the default when it starts,
+so its default can be stale after a switch. It is used only when
+CoreAudio cannot name the output at all. The volume is the output's
+virtual main volume where the device has one, else its main volume,
+else the mean of channels 1 and 2.
+
+**Why the mouth reports the input too.** The ears have no device verb,
+and `mouth devices` is the kit's one device listing. A seat that wants
+the current output, the current input and the volume makes one call.
 
 ## Play music or a sound
 

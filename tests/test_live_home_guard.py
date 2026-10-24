@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from tests import home_guard
+from tests import child_pytest, home_guard
 from tests.home_guard import LiveHomeWrite
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,7 +100,7 @@ def test_a_write_the_test_swallowed_still_fails_it(tmp_path):
         "    (tmp_path / 'fine').write_text('ok')\n")
     env = {**os.environ, "HOME": str(tmp_path / "home"), "PYTHONPATH": str(ROOT)}
     out = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-                          "-p", "tests.home_guard", str(child)],
+                          "-p", "tests.home_guard", child_pytest.basetemp(tmp_path), str(child)],
                          cwd=child, env=env, capture_output=True, text=True, timeout=120)
     assert out.returncode == 1, out.stdout + out.stderr
     assert "2 passed, 1 error" in out.stdout, out.stdout

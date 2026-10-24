@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Optional
 
 from ears import envnames
+from ears.maildir import private as _private_maildir
 
 LOG_VAR = "MOUTH_MAIL_LOG"
 
@@ -95,8 +96,7 @@ def write(box: str | Path, kind: str, rec: dict, *, in_reply_to: Optional[str] =
     body = "\n".join(f"{k}: {json.dumps(v, ensure_ascii=False)}" for k, v in rec.items()
                      if v is not None and k not in ("directory",))
     m.set_content(body + "\n")
-    for sub in ("tmp", "cur", "new"):
-        (box / sub).mkdir(parents=True, exist_ok=True)
+    _private_maildir(box)        # the box and tmp/new/cur 0700, as box.ensure makes them
     name = f"{time.time_ns()}.P{os.getpid()}.{host}"
     tmp = box / "tmp" / name
     tmp.write_bytes(bytes(m))

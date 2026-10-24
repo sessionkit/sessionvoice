@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from tests import child_pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 APPLE = "tests/mouth/test_mouth_apple.py"
 SCHEMA = "tests/test_ears_settings_schema.py"
@@ -32,7 +34,8 @@ def test_a_mouth_file_after_a_root_file_is_still_fenced(order, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     env = {**os.environ, "HOME": str(home)}
-    out = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *order],
+    out = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+                          child_pytest.basetemp(tmp_path), *order],
                          cwd=ROOT, env=env, capture_output=True, text=True, timeout=300)
     tail = out.stdout[-3000:] + out.stderr[-2000:]
     assert out.returncode == 0, tail
@@ -56,7 +59,8 @@ def test_every_mouth_test_is_fenced_in_any_order(order, tmp_path):
     """The fence holds whatever the order (the super's ask): pytest's setup plan, no test body
     runs, lists the whole fence for every tests/mouth item and none of it for a root one."""
     env = {**os.environ, "HOME": str(tmp_path)}
-    out = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--setup-plan", *order],
+    out = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--setup-plan",
+                          child_pytest.basetemp(tmp_path), *order],
                          cwd=ROOT, env=env, capture_output=True, text=True, timeout=300)
     assert out.returncode == 0, out.stdout[-3000:] + out.stderr[-2000:]
     planned = _PLANNED.findall(out.stdout)

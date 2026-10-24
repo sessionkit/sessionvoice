@@ -197,7 +197,7 @@ def test_a_held_line_to_its_own_device_does_not_stop_it(env, duck):
     is skipped, as ``_next`` skips it, so the Tink for B still leapfrogs A."""
     setting(env, duck)
     floor_row("partial")                                         # he is mid-turn
-    a1 = say(env, LONG)
+    a1 = say(env, LONG, hold="none")    # plays over him: the room default would hold it (EARS-434)
     held = say(env, "after your turn", device="dev-b", hold="turn-end")
     tink = play(env, seconds=0.3, name="tink.wav", device="dev-b")
     th = run(env)

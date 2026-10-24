@@ -5,6 +5,8 @@
      or a session handover no longer turns them off. Before, nothing started it: it
      was a hand-run spike, and a reboot left it
      off.
+     `ears services install`, asked for the sounds, writes and loads this job for you, from a checkout
+     or an installed package; this template is the hand render of it.
      Runs the ears repo's copy (keeper/ears-sounds.py), which reads the user's paths:
        settings ~/.sessionkit/voice/settings/ears-sounds.json (reread live, no restart)
        sound log ~/Library/Logs/ears/ears-sounds.jsonl

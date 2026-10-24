@@ -38,9 +38,21 @@ Talk ships in the sessionvoice wheel as the `talk` command (`src/talk/`).
   manifest stay open: they are the package's own files and say nothing
   about the room. An open event stream checks its cookie again at each
   keep-alive (every 15 s), so after a rotation it ends within about 15 s.
-- **As a service:** `launchd/dev.sessionkit.voice.talk.plist.in` is a launchd
-  template for `talk serve` on 127.0.0.1:8780. Its header carries the line
-  that fills it in and the lines that load and remove it.
+- **As a service:** `ears services install --only talk` runs `talk serve`
+  on 127.0.0.1:8780 as the launch agent `dev.sessionkit.voice.talk`, from an
+  installed package or a checkout. It is opt-in: a bare
+  `ears services install` never loads it.
+  - It runs the `talk` installed beside the Python that runs `ears`, never
+    the first `talk` on `PATH`: macOS ships an unrelated `/usr/bin/talk`.
+    When there is none, install refuses and writes nothing.
+  - Its log is `~/Library/Logs/ears/talk.log`. `ears services status` has a
+    row for it, and `ears services uninstall --only talk` removes it.
+  - `--dry-run` prints the plist and changes nothing.
+  - To change the port or add a `TALK_*` variable, render
+    `launchd/dev.sessionkit.voice.talk.plist.in` by hand instead. Its header
+    carries the line that fills it in and the lines that load and remove it.
+    Install leaves a hand render alone and skips its own job, so two never
+    fight over the port.
 
 ## Pairing
 

@@ -87,7 +87,9 @@ def test_the_exported_tree_has_no_time_of_day_stamp():
 
 
 # The matcher itself. Each sample is built from its parts, so this file holds no stamp.
-def _stamp(clock, day="Thu", date="2030-10-03"):
+# The day name is the matcher's input, not the date's weekday: the matcher reads the
+# name and never checks it against the calendar, so every name sits on the one Sunday.
+def _stamp(clock, day="Thu", date="2030-06-09"):
     return clock + " " + day + " " + date
 
 
@@ -113,7 +115,7 @@ def test_the_matcher_catches_any_hour_and_any_day(clock, day):
 def test_a_stripped_stamp_is_not_a_hit():
     assert time_of_day_stamps("noted " + _stamp("").strip() + ": a ruling") == []
     assert time_of_day_stamps("At " + _stamp("").strip() + " the AirPods left") == []
-    assert time_of_day_stamps("an ISO time 2030-10-03T" + _clock(21, 30) + ":00+10:00") == []
+    assert time_of_day_stamps("an ISO time 2030-06-09T" + _clock(21, 30) + ":00+10:00") == []
     assert time_of_day_stamps("a clock alone: " + _clock(21, 30) + ", no day") == []
 
 

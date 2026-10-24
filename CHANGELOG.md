@@ -8,7 +8,215 @@ All notable changes to sessionvoice are documented here. The format is
 
 <!-- markdownlint-configure-file {"MD024": {"siblings_only": true}} -->
 
-## [0.2.1]
+## [Unreleased]
+
+## [0.3.0] - 2026-10-24
+
+### Added
+
+- Release mechanics, the same shape as the other repos in the family.
+  `make release` (`BUMP=patch|minor|major`, or `VERSION=X.Y.Z`) runs
+  `scripts/release.py`: uv sets the one version in `pyproject.toml`, the
+  script copies it into `.claude-plugin/plugin.json` and
+  `marketplace.json`, dates this `[Unreleased]` section with a fresh one
+  above it, commits those files by name and makes the annotated tag
+  `vX.Y.Z`. It never pushes; it prints the push line. It refuses a dirty
+  tree, a missing changelog or `[Unreleased]` section, and a tag that
+  already exists, and it checks all of them before it writes anything.
+  `--dry-run` says what it would do, and `--current` prints the version.
+  `make push` pushes the branch and the tags. `make publish` builds and
+  uploads this version with `uv publish`, and the token comes from the
+  password store or the environment, never from a command line.
+- `mouth devices` marks the system's current output and names the current
+  input, and reports the output volume (EARS-430). The current output's
+  line gains a note after a TAB, `# current output, volume 62%`
+  (`(muted)` when muted), and a last line reads
+  `# current input: NAME`. A reader that cuts each line at the TAB still
+  gets only names. The new `--json` prints one object: `outputs`, `calls`,
+  `current_output`, `current_input`, `output_volume` (0 to 1) and
+  `output_muted`. All of it is asked of CoreAudio live, by ctypes, so a
+  seat needs neither Homebrew's `SwitchAudioSource` nor `osascript` for
+  it. What is unknown (off macOS, or a device with no volume control) is
+  left out of the text and `null` in the JSON, never guessed.
+- `ears heard hook` has a partials-only mode, for a seat that gets each
+  finished turn by mail (`heard+<device>`). It drops every finished turn,
+  with the partials that turn covers, and keeps the partial preview of a
+  turn still being spoken, the shown events (wake word, barge-in, device
+  change) and other seats' said lines; the cursor still moves past what it
+  drops. Turned on by `--partials-only` (or off by `--no-partials-only`),
+  else `EARS_HEARD_PARTIALS_ONLY`, else `heard_partials_only` in
+  `ears.json` (new in its schema), else off. The heard waiter does not
+  read it.
+- `ears services weights [--json]` reads the speech server's three weights
+  from the Hugging Face cache, without fetching anything (EARS-419). Each
+  one is `cached`, `downloading` (with bytes done and the expected total) or
+  `missing`, plus a drift flag. `--json` prints one line with the schema
+  `ears.weights/1`, documented in `docs/models.md`, so a caller can say
+  "downloading 412 MB of 2.9 GB" instead of going quiet. The expected size
+  of each weight is pinned beside its commit, about 2.9 GB in all.
+- `ears services install` fetches the speech server's three weights (about
+  2.9 GB) when it installs that server, so the first call no longer waits
+  silently on the download (EARS-419). It prints the size first, skips and
+  names weights already cached, and prints progress during the fetch. The
+  fetch is the server's own `snapshot_download` call with revision `main`,
+  into the cache the server reads, whatever this shell's `HF_HOME` says.
+  `--no-prefetch` or `EARS_NO_PREFETCH=1` skips it and says what the first
+  call will fetch. `--dry-run` prints the size and fetches nothing. A failed
+  fetch never fails the install: it says why and how much is left.
+- `ears services install --only sounds` runs the ears sounds and the mouth
+  sounds as two launch agents, `dev.sessionkit.voice.ears-sounds` and
+  `dev.sessionkit.voice.mouth-sounds`, from an installed package with no
+  checkout (EARS-429). The package now ships `keeper/ears-sounds.py`,
+  `keeper/mouth-sounds.py` and `keeper/held_stream.py`, which ears-sounds
+  imports from beside itself. Both run on the agents' Python; their
+  settings are `ears-sounds.json` and `mouth-sounds.json` in the settings
+  folder, their STOP files are `~/.sessionkit/voice/STOP-ears-sounds` and
+  `STOP-mouth-sounds`, and their logs sit beside the other agents' logs.
+  A STOP file keeps its agent down until the next install. Sounds are
+  opt-in: a bare install never loads them. `--dry-run` prints both plists
+  and writes nothing, `status` has a row for each, and `uninstall --only
+  sounds` removes both. A hand render of either, under its label or an
+  older `dev.sessionvoice.*` or `dev.voicemode.*` name, is left running and
+  ours is skipped, so no sound plays twice.
+- `ears services install --only talk` runs `talk serve` as the launch agent
+  `dev.sessionkit.voice.talk`, from an installed package with no checkout
+  (EARS-429). It runs the `talk` command installed beside the agents'
+  Python, never the first `talk` on `PATH` (macOS ships an unrelated
+  `/usr/bin/talk`); with none there, install refuses and writes nothing. It
+  serves `127.0.0.1:8780`, talk's default, and logs to `talk.log` beside the
+  other agents' logs. Talk is opt-in: a bare install never loads it.
+  `--dry-run` prints the plist and writes nothing, `status` has a row for
+  it, and `uninstall --only talk` removes it. A hand render, under its
+  label or an older `dev.sessionvoice.talk` or `dev.voicemode.talk` name,
+  is left running and ours is skipped, so two never fight over the port;
+  `status` now names one under an old name as hand-made.
+- The turn mailer writes each finished turn of a Delta call to that call's
+  box, `calls+<bot>-<N>@<host>` (EARS-431), carrying both directions: the
+  caller's turns come in from the mailer, a seat's replies go to the same
+  box. The bot is named by the call's own `call-ears.sock` probe, so a
+  Delta bot kept in sessionphone's root (`~/.sessionphone[/<profile>]`)
+  gets call-box mail too, as one under `~/.<agent>/delta-chat` does; a
+  Delta profile named `web` there is skipped as a web leg. The mail
+  carries `Ears-Kind: turn`, `Ears-Seq`, `Call-Id` and `Call-Bot`, from
+  `ears`. The mouth's echo turns are no longer mailed. New switches
+  `--calls on|off` (off restores the old skip) and `--calls-from`; a call
+  whose bot no leg names is skipped as `call-bot`. A hand-made job that
+  mails the same box should be retired in the same step, or each turn
+  arrives twice. Details: "The call-box mail" in `docs/ears.md`.
+
+### Changed
+
+- The heard hook's settings have names of their own: `EARS_HEARD_HOOK`,
+  `EARS_HEARD_BUDGET` and `EARS_HEARD_MAX_LINES`. The old
+  `VOICEMODE_HEARD_HOOK`, `VOICEMODE_HEARD_BUDGET` and
+  `VOICEMODE_HEARD_MAX_LINES` are still read as deprecated aliases; the new
+  name wins when both are set, and an empty one counts as set.
+- `docs/ears.md` names `ears heard hook` the canonical heard hook, in a new
+  section, "The heard hook", and says a seat that gets heard mail runs it
+  with `--partials-only`.
+- Barge-in: a partial the speaker side-car labels `unheard` (too little
+  audio to score, often a quiet voice) now counts toward a cut as if
+  `barge_in` were `anyone`, as a partial nobody names in time already did.
+  Before, it was skipped like another speaker's, so with names set a quiet
+  voice could not cut a line. `other`, `silent` and `mixed` still never
+  cut on a place with names. The bed's duck reads the label the same way.
+- `mouth barge` and `mouth status` show who may cut: `barge.barge_in` holds
+  `room` and `call`, each with `who` (`anyone` or the names) and where it
+  came from (`by`: `setting`, `operator` for the operator's default, or
+  `builtin` when nothing is configured).
+- A line on a room device now waits for the end of the user's turn by
+  default (EARS-434). A line that asked no hold used to play at once, so a
+  seat that forgot `--hold turn-end` talked over the user. Now any output
+  that is not a call holds such a line as `--hold turn-end` does, with the
+  same release and the same safety net (`$MOUTH_HOLD_IDLE_S`), so it never
+  waits forever; unlike a held opener it is never dropped as `stale`. Its
+  `saying` row says `hold_from: room`. `mouth say --now` still interrupts,
+  and the new `--hold none` (`X-Mouth-When: now` on a mail) plays at once
+  without cutting the line playing. Played files (`mouth play`) and call
+  lines are unchanged. To restore the old behaviour, set
+  `"room_hold": false` in `mouth.json`, or `MOUTH_ROOM_HOLD=off`, which wins
+  over the file.
+- The ears skill's speaking rules open with "reply in the batch you are
+  in": when a turn wants an answer and the words are right, `mouth say`
+  goes in the current tool batch, beside the other calls, not after them.
+- `ears services install` refuses a bare install that would wake nobody
+  (EARS-421). When `mail` is installed, neither `--agent NAME` nor the new
+  `--no-agent` is given, and the wake file names no seat, it exits 2
+  before anything is written, instead of installing with a warning. The
+  refusal prints both forms and `ears wake add NAME`, and inside an agent
+  seat it suggests `TM_AGENT_ADDRESS`'s local part as NAME (a suggestion
+  only). `--dry-run` says `REFUSED`, still lists, and exits 2.
+  `--no-agent` installs as a bare install did, with the NOBODY warning;
+  it and `--agent` are mutually exclusive. A re-run on a host whose wake
+  file already names a seat, and `--only` without `mail`, are not refused.
+- A line with no device now plays on the system default output (EARS-368).
+  `mouth say`, `play`, `again` and a mailed line all take one order,
+  through one function (`mouth.resolve_device`): the line's own device
+  (`--device`, or a mail's `X-Mouth-Device`, or the call it is To), then
+  `$MOUTH_DEVICE`, then `output` in `mouth.json`, then `default`. Before
+  this, `say` with none of the first three refused the line. A mailed
+  line never read `output` at all: it reached the player with no device,
+  was filed `said reason=device-absent`, and played nothing. `null` at
+  any rung still plays nothing, and a named device that is absent is
+  still `device-absent`, never the default instead. Only a machine with
+  no default output at all now gets `device-absent` for an unnamed line,
+  with the detail "no default output device". A line's `device_from`
+  (`flag`, `mail`, `call`, `env`, `settings` or `default`) names the rung
+  that chose its device: `mouth say` prints it, and the `saying` and
+  `said` rows carry it, except for a `mouth say` line whose caller named
+  the device, whose mail is unchanged.
+- The synthetic dates in the docs and tests fall on one of two days,
+  2030-06-09 and 2030-12-08. Where one came before another, the earlier
+  one reads 2030-06-09 and the later one 2030-12-08, so the order holds;
+  an age in days is counted back from one of them, never typed. Clock
+  times are unchanged, and release headings keep their real dates.
+- The `weight` rows of `ears services status` are the reader's rows. They
+  say `cached`, `downloading N of M`, `not cached`, or that a download
+  stopped, with `DIFFERS` when the cache's `main` is another commit. They
+  used to say `match`, `DIFFERS` or `not cached` (EARS-419).
+
+### Fixed
+
+- `ears heard hook --help` and `-h` print the hook's usage and exit 0,
+  without reading stdin or moving a cursor. Before, the hook ignored the
+  flag, ran, and printed nothing. `ears heard --help` prints the same usage
+  on stdout and exits 0.
+- The wake rules example's note no longer says ears-mail never reads "this
+  copy", which was false once the example was copied to the live
+  `wake.json`. It names the file ears-mail reads instead.
+- `ears-arm` finds `heard-first` without PATH (EARS-422). Claude Code puts a
+  plugin's `bin/` on the Bash tool's PATH only for a plugin enabled when the
+  session started, so after a mid-session install `ears-arm` failed with
+  `exec: heard-first: not found` until Claude Code restarted. It now looks in
+  the `bin/` of the plugin it sits in (symlinks resolved), then in
+  `$CLAUDE_PLUGIN_ROOT/bin`, then on PATH. If all three miss it prints one
+  line, that `heard-first` was not found and that restarting Claude Code puts
+  the plugin's `bin/` on PATH, and exits 127. `--dry-run` prints the path it
+  found.
+- `ears services weights` reads the cache the speech server reads,
+  whatever this shell's `HF_HOME` says (EARS-419).
+- The ears keeper no longer runs `swiftc` on a Mac without the Command
+  Line Tools (EARS-424). There `/usr/bin/swiftc` is the install stub, and
+  each fresh keeper start (every launchd restart or reinstall) brought
+  back the "install the command line developer tools" dialog. The keeper
+  now asks `xcode-select -p` first, which never prompts, and builds
+  `input-watch` only when it names a directory that exists. Without the
+  tools it polls `system_profiler`, logs once per start
+  `no Command Line Tools: polling system_profiler (install them for faster
+  device changes)`, and never calls the stub. A watcher already built
+  needs no tools. `ears services status` prints the keeper's mode under
+  its row: `input-watch, pid N`, or `polling system_profiler` and why.
+- The mouth's mail box (`~/.mail/agents/mouth`, or `$MOUTH_MAILBOX`) and
+  its `tmp/`, `new/` and `cur/` are made 0700, like every other agent
+  box, whatever the umask. Before this they were made with the umask's
+  mode, usually 0755, so other local users could list the box. A box
+  already made 0755 is set to 0700 the next time the mouth starts, says a
+  line or writes a mail log entry.
+- `ears services install` makes the `heard` box it nests under the store
+  0700 as well, and sets an existing one back to 0700 (a dry run says it
+  would). The hand-made-box advice it prints now makes the box 0700 too.
+
+## [0.2.1] - 2026-10-21
 
 ### Fixed
 
@@ -441,8 +649,8 @@ All notable changes to sessionvoice are documented here. The format is
 - The tests and docs hold no captured real time (EARS-393). The replayed
   heard-log rows (`tests/test_echo_cut.py`), the barge-in replay and its
   onset (`tests/mouth/test_mouth_barge_log.py`, `test_mouth_onset.py`) and
-  the `docs/logs.md` example rows are each moved by one constant onto a
-  synthetic 2030-01-07 base, so every delta, the order, the milliseconds and
+  the `docs/logs.md` example rows are each moved by one constant onto one
+  synthetic base date, so every delta, the order, the milliseconds and
   each seq are as recorded and the tests prove the same things. The
   example's ns mail id moves with them. Captured epochs (a web call id,
   ears and notice message ids, the audio-devices example) move to the house

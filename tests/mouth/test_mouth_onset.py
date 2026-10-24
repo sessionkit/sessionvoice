@@ -303,15 +303,15 @@ def test_the_duck_record_dips_wall_to_wall(ears):
     """dip_ms is the wall time of the first dip minus the onset row's ts, both
     wall clocks: 08:00:39.186 (the 08:00 onset, seq 448237) to .204 is 18 ms.
     The recover runs on the injected monotonic clock, which never enters it."""
-    onset_ts = "2030-01-07T08:00:39.186+11:00"
+    onset_ts = "2030-12-08T08:00:39.186+11:00"
     walls = iter([datetime.fromisoformat(onset_ts).timestamp() + 0.018, 9e9])
     d = output.LineDuck(RATE)
     bd = onset.BargeDuck(d, hold.MIC, 0.25, 2.5, clock=lambda: 1000.0, wall=lambda: next(walls))
     _vad_row(448237, onset_ts)
     bd.step(now=10.0)                                       # the first dip: wall stamped once
-    _vad_row(448238, "2030-01-07T08:00:40.000+11:00")
+    _vad_row(448238, "2030-12-08T08:00:40.000+11:00")
     bd.step(now=11.0)                                       # a second onset: no new stamp
-    _vad_row(448239, "2030-01-07T08:00:41.000+11:00", speech=False)
+    _vad_row(448239, "2030-12-08T08:00:41.000+11:00", speech=False)
     bd.step(now=11.5)                                       # his offset: the recover clock starts
     bd.step(now=14.0)                                       # 2.5 s after the offset: back up
     d.trace.extend([(9.0, 9.01, 0.2),                       # an earlier line's dip on this device
@@ -324,7 +324,7 @@ def test_the_duck_record_dips_wall_to_wall(ears):
                    "first_onset_seq": 448237, "first_onset_ts": onset_ts,
                    "ducked_ts": rec["ducked_ts"], "dip_ms": 18, "applied_ms": 31, "ahead_ms": 200,
                    "recovered": 1, "capped": False, "capped_words": None, "cut": False, "reason": "done"}
-    assert datetime.fromisoformat(rec["ducked_ts"]) == datetime.fromisoformat("2030-01-07T08:00:39.204+11:00")
+    assert datetime.fromisoformat(rec["ducked_ts"]) == datetime.fromisoformat("2030-12-08T08:00:39.204+11:00")
 
 
 def test_a_duck_nobody_set_off_records_zero_onsets(ears):

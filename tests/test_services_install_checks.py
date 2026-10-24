@@ -92,6 +92,13 @@ def fence(monkeypatch, tmp_path):
     monkeypatch.setattr(services, "_speech_platform", lambda: None)
     monkeypatch.setattr(services, "speech_missing_module", lambda py: calls["speech"].append(("import", str(py))))
     monkeypatch.setattr(services, "_speech_sh", lambda argv: pytest.fail(f"a fenced test ran {argv}"))
+    # ...nor fetches its weights (EARS-419): the prefetch is off (env_fence) and its seam
+    # refuses, and the reader it prints reads the server's cache, under the temp HOME, never the host's
+    monkeypatch.setattr(services, "_prefetch_sh", lambda argv, out, cache: pytest.fail(f"a fenced test fetched {argv}"))
+    # (HF_HOME, the weakest of huggingface_hub's names: a test that sets another still wins)
+    for k in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf-home"))
     return {"home": home, "calls": calls, "loaded": loaded, "env": env, "tmp": tmp_path}
 
 
@@ -972,4 +979,152 @@ def test_main_passes_agent_and_notify(monkeypatch):
     got = {}
     monkeypatch.setattr(services, "install", lambda names, dry=False, **kw: got.update(kw, names=names) or 0)
     services.main(["install", "--agent", "dave", "--notify", "jim"])
-    assert got == {"agent": "dave", "notify": "jim", "names": ["speech", "mouth", "keeper", "mail"]}
+    assert got == {"agent": "dave", "notify": "jim", "no_prefetch": False,
+                   "names": ["speech", "mouth", "keeper", "mail"]}
+
+
+# ---- EARS-421: a bare install that would wake nobody is REFUSED -----------------------------------
+# Refused only when ALL hold: mail is installed, no --agent, no --no-agent, and the wake file names
+# no seat. The refusal lives in main(), before install(): nothing is written.
+
+def _no_install(monkeypatch):
+    monkeypatch.setattr(services, "install", lambda *a, **kw: pytest.fail("install() ran after a refusal"))
+
+
+def _nothing_written(fence):
+    assert not services.AGENTS.exists() and not services.LOGS.exists()
+    assert not Path(os.environ["EARS_WAKE"]).exists()
+    assert not [c for c in fence["calls"]["launchctl"] if c and c[0] in ("bootstrap", "bootout")]
+
+
+def test_a_bare_install_with_no_seat_is_refused_before_install_runs(fence, monkeypatch, capsys):
+    monkeypatch.delenv("TM_AGENT_ADDRESS", raising=False)
+    _no_install(monkeypatch)
+    assert services.main(["install"]) == 2
+    cap = capsys.readouterr()
+    assert cap.err.startswith("ears services install: REFUSED: no --agent NAME")
+    assert "NOBODY would be woken when you speak" in cap.err and str(wake.target()) in cap.err
+    assert "    ears services install --agent NAME" in cap.err        # both forms, each runnable
+    assert "    ears services install --no-agent" in cap.err
+    assert "`ears wake add NAME`" in cap.err and "nothing was written" in cap.err
+    assert "you appear to be seat" not in cap.err                     # TM_AGENT_ADDRESS unset: no hint
+
+
+def test_a_bare_install_with_no_seat_writes_nothing(fence, monkeypatch, capsys):
+    """The real install(), not a spy: no plist, no log dir, no wake file, no launchctl load."""
+    monkeypatch.delenv("TM_AGENT_ADDRESS", raising=False)
+    _store(fence["home"])
+    assert services.main(["install", "--only", "keeper,mail"]) == 2
+    assert "REFUSED" in capsys.readouterr().err
+    _nothing_written(fence)
+
+
+@pytest.mark.parametrize("only", [None, "mail", "keeper,mail", "call,mail"])
+def test_every_set_with_mail_in_it_is_refused(fence, monkeypatch, capsys, only):
+    monkeypatch.delenv("TM_AGENT_ADDRESS", raising=False)
+    _no_install(monkeypatch)
+    assert services.main(["install"] + (["--only", only] if only else [])) == 2
+
+
+@pytest.mark.parametrize("addr, seat", [("dave", "dave"), ("dave@host1", "dave"),
+                                        ("sessionmail+engineer@host1", "sessionmail+engineer"),
+                                        (" vera@host1 ", "vera")])
+def test_the_refusal_suggests_the_seat_from_tm_agent_address_and_never_installs_on_it(
+        fence, monkeypatch, capsys, addr, seat):
+    monkeypatch.setenv("TM_AGENT_ADDRESS", addr)
+    _no_install(monkeypatch)
+    assert services.main(["install"]) == 2               # suggest, never assume
+    err = capsys.readouterr().err
+    assert f"you appear to be seat {seat}: ears services install --agent {seat}\n" in err
+    assert not Path(os.environ["EARS_WAKE"]).exists()
+
+
+@pytest.mark.parametrize("addr", ["", "   ", "@host1"])
+def test_an_empty_tm_agent_address_gives_no_hint(fence, monkeypatch, capsys, addr):
+    monkeypatch.setenv("TM_AGENT_ADDRESS", addr)
+    _no_install(monkeypatch)
+    assert services.main(["install"]) == 2
+    assert "you appear to be seat" not in capsys.readouterr().err
+
+
+def test_an_unreadable_wake_file_names_nobody_so_it_is_refused(fence, monkeypatch, capsys):
+    monkeypatch.delenv("TM_AGENT_ADDRESS", raising=False)
+    Path(os.environ["EARS_WAKE"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(os.environ["EARS_WAKE"]).write_text("not json")
+    _no_install(monkeypatch)
+    assert services.main(["install"]) == 2
+    assert "REFUSED" in capsys.readouterr().err
+
+
+def test_no_agent_installs_as_a_bare_install_did_and_still_warns(fence, monkeypatch, capsys):
+    monkeypatch.setenv("TM_AGENT_ADDRESS", "dave@host1")          # a hint is never a --agent
+    _store(fence["home"])
+    assert services.main(["install", "--only", "keeper,mail", "--no-agent"]) == 0
+    cap = capsys.readouterr()
+    assert "REFUSED" not in cap.err
+    assert "NOBODY will be woken" in cap.out and "LOG ONLY" in cap.out     # the warning stays
+    assert _plist(fence, "mail").exists() and _plist(fence, "keeper").exists()
+    env = plistlib.loads(_plist(fence, "keeper").read_bytes())["EnvironmentVariables"]
+    assert "EARS_NOTIFY" not in env                                       # the notices line unchanged
+    assert not Path(os.environ["EARS_WAKE"]).exists()                     # no seat added
+
+
+def test_main_hands_install_no_agent_as_no_agent(monkeypatch):
+    got = {}
+    monkeypatch.setattr(services, "install", lambda names, dry=False, **kw: got.update(kw, dry=dry) or 0)
+    assert services.main(["install", "--no-agent", "--notify", "jim"]) == 0
+    assert got == {"agent": None, "notify": "jim", "no_prefetch": False, "dry": False}
+
+
+def test_agent_and_no_agent_are_mutually_exclusive(fence, monkeypatch, capsys):
+    _no_install(monkeypatch)
+    with pytest.raises(SystemExit) as e:
+        services.main(["install", "--agent", "dave", "--no-agent"])
+    assert e.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+    _nothing_written(fence)
+
+
+def test_a_wake_file_that_names_a_seat_is_not_refused_and_says_who_it_wakes(fence, monkeypatch, capsys):
+    """A re-run (the upgrade path) wakes the seat already named: install goes on, and says which
+    seat it wakes (super ruling: no silent 'it worked')."""
+    monkeypatch.delenv("TM_AGENT_ADDRESS", raising=False)
+    _store(fence["home"])
+    wake.add("vera")
+    assert services.main(["install", "--only", "keeper,mail"]) == 0
+    cap = capsys.readouterr()
+    assert "REFUSED" not in cap.err
+    assert f"wake   no --agent; {wake.target()} already wakes vera" in cap.out.splitlines()
+    assert "NOBODY" not in cap.out
+    assert _plist(fence, "mail").exists()
+
+
+@pytest.mark.parametrize("only", ["speakers", "speech", "mouth", "keeper", "mouth,keeper", "stt"])
+def test_only_without_mail_wakes_nobody_either_way_and_is_not_refused(fence, monkeypatch, capsys, only):
+    monkeypatch.delenv("TM_AGENT_ADDRESS", raising=False)
+    got = []
+    monkeypatch.setattr(services, "install", lambda names, dry=False, **kw: got.append(names) or 0)
+    assert services.main(["install", "--only", only]) == 0
+    assert got and "mail" not in got[0]
+    assert "REFUSED" not in capsys.readouterr().err
+
+
+def test_a_bare_dry_run_says_refused_goes_on_listing_and_exits_2(fence, monkeypatch, capsys):
+    """The file's dry-run convention: a dry run says REFUSED and exits 2 as install would, and
+    still lists the checks and the plists. Nothing is written either way."""
+    monkeypatch.delenv("TM_AGENT_ADDRESS", raising=False)
+    _store(fence["home"])
+    assert services.main(["install", "--only", "keeper,mail", "--dry-run"]) == 2
+    cap = capsys.readouterr()
+    assert cap.err.startswith("ears services install: REFUSED: no --agent NAME")
+    assert "--- " in cap.out and "NOBODY will be woken" in cap.out
+    _nothing_written(fence)
+
+
+def test_a_dry_run_with_no_agent_or_agent_exits_0(fence, monkeypatch, capsys):
+    monkeypatch.delenv("TM_AGENT_ADDRESS", raising=False)
+    _store(fence["home"])
+    assert services.main(["install", "--only", "keeper,mail", "--dry-run", "--no-agent"]) == 0
+    assert services.main(["install", "--only", "keeper,mail", "--dry-run", "--agent", "dave"]) == 0
+    assert "REFUSED" not in capsys.readouterr().err
+    _nothing_written(fence)

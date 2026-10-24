@@ -1,5 +1,5 @@
 """EARS-10: speaker ID follows the capture across device changes, and never goes deaf
-without saying so. At Thu 2030-10-03 the AirPods came out, the keeper moved to the
+without saying so. At Sun 2030-06-09 the AirPods came out, the keeper moved to the
 MacBook mic, and a side-car pinned to --device airpods went deaf; seq 157865 had words and
 came out "silent". No model: the side-car's functions and Ring are lifted by name, and the
 relabel run uses the stand-in diarizer from test_speakers."""
@@ -142,7 +142,7 @@ def test_relabel_never_calls_a_spoken_line_silent(tmp_path):
     env = dict(os.environ, PYTHONPATH=str(tmp_path / "stub"), STUB_LAST="1")
     p = subprocess.run(args, capture_output=True, text=True, env=env, timeout=60)
     assert p.returncode == 0, p.stderr
-    rows = {r["seq"]: r for r in map(json.loads, (logs / "speakers_2030-09-29.jsonl").open())}
+    rows = {r["seq"]: r for r in map(json.loads, (logs / "speakers_2030-06-09.jsonl").open())}
     assert rows[1]["speaker"] == "unheard" and "no signal" in rows[1]["why"]
     assert rows[2]["speaker"] == "unheard" and "words" in rows[2]["why"]
     assert rows[3]["speaker"] == "silent" and "why" not in rows[3]
@@ -309,7 +309,7 @@ def line(seq, dev="airpods", t0=10.0, t1=12.0, session="ears-keeper", source="mi
 
 def test_a_line_with_no_stream_start_gets_its_row_at_once():
     ns, rows = follower()
-    ns["take"](line(1), "2030-10-03")
+    ns["take"](line(1), "2030-06-09")
     assert rows == [(1, None, None, "no stream start for its capture yet (no listen-started or heartbeat)")]
     assert not ns["backlog"]
 
@@ -435,7 +435,7 @@ def run_deaf(tmp_path, ticks=60, sd=None, argv=()):
               target_device=lambda: "airpods",
               label=lambda seg, refset=None: ("theo", {"theo": 1.0}, 100, 0.0))  # no diarizer
     sd = sd or StaleSD(["Theo's AirPods Pro"])
-    st, day = {"stream": None, "dev": None}, "2030-10-17"
+    st, day = {"stream": None, "dev": None}, "2030-06-09"
     ns["starts"][("ears-keeper", "airpods")] = start
     out = tmp_path / f"speakers_{day}.jsonl"
     for tick in range(1, ticks + 1):
@@ -493,10 +493,10 @@ def test_a_row_with_no_window_has_no_cover(tmp_path):
     ns.update(say=lambda m: None, label=lambda seg, refset=None: ("theo", {"theo": 1.0}, 100, 0.0),
               mouth_name=lambda who, fr, *x: (who, fr, None))
     r = line(1)
-    ns["take"](r, "2030-10-17")                                   # no stream start
-    ns["record"](line(2), None, 0.0, 0.0, "2030-10-17", why="a call line with no t0/t1", leg="call")
-    ns["record"](line(3), np.full(SR, 0.3, np.float32), 0.0, 1.0, "2030-10-17")   # relabel
-    rows = [json.loads(x) for x in (tmp_path / "speakers_2030-10-17.jsonl").read_text().splitlines()]
+    ns["take"](r, "2030-06-09")                                   # no stream start
+    ns["record"](line(2), None, 0.0, 0.0, "2030-06-09", why="a call line with no t0/t1", leg="call")
+    ns["record"](line(3), np.full(SR, 0.3, np.float32), 0.0, 1.0, "2030-06-09")   # relabel
+    rows = [json.loads(x) for x in (tmp_path / "speakers_2030-06-09.jsonl").read_text().splitlines()]
     assert [r["seq"] for r in rows] == [1, 2, 3] and not any("cover" in r for r in rows)
     assert ns["deaf"]["n"] == 0
 

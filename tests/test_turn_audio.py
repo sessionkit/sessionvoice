@@ -12,6 +12,7 @@ import subprocess
 import sys
 import time
 import wave
+from datetime import timedelta
 from pathlib import Path
 
 import numpy as np
@@ -21,7 +22,7 @@ from ears import heard, recording
 from ears.listen import FRAME_S, SAMPLE_RATE, capture
 from ears.listen import turnaudio
 from ears.listen.turnaudio import CAP_S, PRUNE_EVERY_S, TurnAudio, default_dir, prune
-from tests._anchor import ANCHOR
+from tests._anchor import ANCHOR, ANCHOR_SUMMER
 from tests.listen_helpers import CountingSource, FakeSTT, RecordingSink, energy_detector, read_lines
 
 FRAME = int(round(FRAME_S * SAMPLE_RATE))
@@ -313,7 +314,12 @@ def test_ears_mail_dry_run_prints_ears_audio_for_a_kept_turn(tmp_path):
 # -- retention ----------------------------------------------------------------------------
 
 DAY = 86400.0
-NOW = time.mktime((2030, 10, 19, 12, 0, 0, 0, 0, -1))
+NOW = time.mktime((2030, 12, 8, 12, 0, 0, 0, 0, -1))   # noon on the summer Sunday, local
+
+
+def _ago(days: int) -> str:
+    """The date dir ``days`` calendar days before NOW's date (prune() compares dates)."""
+    return (ANCHOR_SUMMER.date() - timedelta(days=days)).isoformat()
 
 
 def _kept(d: Path, day: str, name: str = "120000-000-1.wav") -> Path:
@@ -325,9 +331,9 @@ def _kept(d: Path, day: str, name: str = "120000-000-1.wav") -> Path:
 
 def test_prune_deletes_date_dirs_older_than_record_days_and_keeps_the_rest(tmp_path):
     d = tmp_path / "audio"
-    old = _kept(d, "2030-10-11")         # 8 days old: gone at 7
-    edge = _kept(d, "2030-10-12")        # exactly 7 days: kept
-    new = _kept(d, "2030-10-19")
+    old = _kept(d, _ago(8))              # 8 days old: gone at 7
+    edge = _kept(d, _ago(7))             # exactly 7 days: kept
+    new = _kept(d, "2030-12-08")
     assert prune(d, NOW, 7) == 1
     assert not old.parent.exists() and edge.exists() and new.exists()
 
@@ -347,18 +353,18 @@ def test_prune_touches_only_what_it_wrote(tmp_path):
     and prove the pruner leaves it all alone."""
     base = tmp_path / "vm"
     d = base / "audio"
-    ours = _kept(d, "2030-01-03")
-    ours_tmp = _kept(d, "2030-01-04", ".120000-000-4242.tmp.wav")
+    ours = _kept(d, "2030-06-09")
+    ours_tmp = _kept(d, _ago(8), ".120000-000-4242.tmp.wav")
     planted = [
-        base / "sibling" / "2030-01-03" / "120000-000-1.wav",            # a sibling dir of audio/
-        base / "mouth" / "audio" / "2030-01-03" / "u1.wav",               # a mouth-like audio dir
-        base / "mouth" / "audio" / "2030-01-03" / "120000-000-1.wav",
-        base / "state" / "missed-reply" / "missed-reply_20300103-120000-000_u.wav",
-        d / "2030-01-03" / "notes.txt",                                   # a non-wav in an old date dir
-        d / "2030-01-03" / "someone-elses.wav",                           # a wav it did not name
+        base / "sibling" / "2030-06-09" / "120000-000-1.wav",            # a sibling dir of audio/
+        base / "mouth" / "audio" / "2030-06-09" / "u1.wav",               # a mouth-like audio dir
+        base / "mouth" / "audio" / "2030-06-09" / "120000-000-1.wav",
+        base / "state" / "missed-reply" / "missed-reply_20300609-120000-000_u.wav",
+        d / "2030-06-09" / "notes.txt",                                   # a non-wav in an old date dir
+        d / "2030-06-09" / "someone-elses.wav",                           # a wav it did not name
         d / "calls" / "120000-000-1.wav",                                 # a non-date dir inside audio/
-        d / "2030-1-3" / "120000-000-1.wav",                              # not a date pattern
-        d / "2030-01-07" / "sub" / "120000-000-1.wav",                    # a nested tree in a date dir
+        d / "2030-6-9" / "120000-000-1.wav",                              # not a date pattern
+        d / _ago(9) / "sub" / "120000-000-1.wav",                       # a nested tree in a date dir
     ]
     for p in planted:
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -368,7 +374,7 @@ def test_prune_touches_only_what_it_wrote(tmp_path):
     target = elsewhere / "120000-000-1.wav"
     target.parent.mkdir(parents=True)
     target.write_bytes(b"x")
-    (d / "2030-01-05").symlink_to(elsewhere, target_is_directory=True)
+    (d / _ago(10)).symlink_to(elsewhere, target_is_directory=True)
     for p in [*planted, target, ours, ours_tmp]:
         os.utime(p, (NOW - 400 * DAY, NOW - 400 * DAY))
 
@@ -378,21 +384,21 @@ def test_prune_touches_only_what_it_wrote(tmp_path):
     assert ours.parent.exists()                  # still holds files it did not write
     for p in planted:
         assert p.exists(), p
-    assert target.exists() and (d / "2030-01-05").is_symlink()
+    assert target.exists() and (d / _ago(10)).is_symlink()
 
 
 def test_prune_runs_at_capture_start_and_then_at_most_hourly(tmp_path):
     d = tmp_path / "audio"
     t = [NOW]
     keep = TurnAudio(recording.Fixed(True), directory=d, clock=lambda: t[0])
-    _kept(d, "2030-10-03")
+    _kept(d, _ago(16))
     assert keep.open() == 1                       # at start (recording on)
-    _kept(d, "2030-10-04")
+    _kept(d, _ago(15))
     t[0] += PRUNE_EVERY_S - 1
     assert keep.poll() == 0                       # not yet an hour
     t[0] += 2
     assert keep.poll() == 1
-    _kept(d, "2030-10-05")
+    _kept(d, _ago(14))
     t[0] += 60
     assert keep.poll() == 0                       # the next one waits another hour
 

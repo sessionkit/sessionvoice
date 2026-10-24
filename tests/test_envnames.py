@@ -1,5 +1,5 @@
-"""EARS-294 T4 and T5: the env helper (src/ears/envnames.py), the ten renamed ears names
-and the 39 renamed mouth names (VOICEMODE_MOUTH_<X> -> MOUTH_<X>).
+"""EARS-294 T4 and T5: the env helper (src/ears/envnames.py), the renamed ears names
+(ten, and the heard hook's three of EARS-362) and the 39 renamed mouth names (VOICEMODE_MOUTH_<X> -> MOUTH_<X>).
 
 (a) Every alias in the table: the OLD name alone is read, the NEW name alone is read,
     both set to different values means NEW wins, and set-but-empty counts as set.
@@ -27,7 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 PAIRS = sorted(envnames.ALIASES.items())
 OLD_TO_NEW = {old: new for new, old in envnames.ALIASES.items()}
 
-# The ten this task renames: the table must hold exactly these, NEW -> OLD.
+# The ten this task renames, and the heard hook's three (EARS-362): the table must hold
+# exactly these, NEW -> OLD.
 RENAMED = {
     "EARS_LISTEN_STT_URL": "VOICEMODE_LISTEN_STT_URL",
     "EARS_LISTEN_STT_MODEL": "VOICEMODE_LISTEN_STT_MODEL",
@@ -39,6 +40,9 @@ RENAMED = {
     "EARS_LAG_WARN_S": "VOICEMODE_EARS_LAG_WARN_S",
     "EARS_HEARD_EVENT": "VOICEMODE_HEARD_EVENT",
     "EARS_HEARD_CALLER": "VOICEMODE_HEARD_CALLER",
+    "EARS_HEARD_HOOK": "VOICEMODE_HEARD_HOOK",
+    "EARS_HEARD_BUDGET": "VOICEMODE_HEARD_BUDGET",
+    "EARS_HEARD_MAX_LINES": "VOICEMODE_HEARD_MAX_LINES",
 }
 # ...and the mouth's 39 (T5), spelled out here so the table cannot drop or add one quietly.
 MOUTH_RENAMED = (
@@ -59,7 +63,7 @@ MOUTH_ALREADY = {"MOUTH_QUEUE", "MOUTH_MAILDIR", "MOUTH_WT", "MOUTH_TIMEOUT_S", 
                  "MOUTH_SOUNDS_SETTINGS", "MOUTH_SOUNDS_STOP", "MOUTH_SOUNDS_WAIT"}
 
 
-def test_the_table_holds_the_ten_ears_names_and_the_39_mouth_names():
+def test_the_table_holds_the_thirteen_ears_names_and_the_39_mouth_names():
     assert len(MOUTH_RENAMED) == len(set(MOUTH_RENAMED)) == 39
     assert envnames.ALIASES == RENAMED
 
@@ -275,8 +279,49 @@ def test_the_hygiene_scan_catches_a_bypass(tmp_path):
 
 def test_heards_own_pairs_are_the_tables():
     """heard.py imports nothing outside the standard library, so it keeps a copy."""
-    assert heard.HEARD_ENV_OLD == {heard.HEARD_EVENT_ENV: envnames.ALIASES[heard.HEARD_EVENT_ENV],
-                                   heard.HEARD_CALLER_ENV: envnames.ALIASES[heard.HEARD_CALLER_ENV]}
+    mine = (heard.HEARD_EVENT_ENV, heard.HEARD_CALLER_ENV, heard.HEARD_HOOK_ENV,
+            heard.HEARD_BUDGET_ENV, heard.HEARD_MAX_LINES_ENV)
+    assert heard.HEARD_ENV_OLD == {n: envnames.ALIASES[n] for n in mine}
+    # partials-only is new: it has no old name, in either table
+    assert heard.HEARD_PARTIALS_ONLY_ENV not in envnames.ALIASES
+    assert heard.HEARD_PARTIALS_ONLY_ENV not in heard.HEARD_ENV_OLD
+
+
+def test_the_heard_hooks_names_are_no_longer_untouched():
+    """EARS-362: VOICEMODE_HEARD_HOOK/_BUDGET/_MAX_LINES are old names now, not shared ones."""
+    for old in ("VOICEMODE_HEARD_HOOK", "VOICEMODE_HEARD_BUDGET", "VOICEMODE_HEARD_MAX_LINES"):
+        assert old not in envnames.UNTOUCHED
+        assert old in OLD_TO_NEW
+
+
+@pytest.mark.parametrize("new", ["EARS_HEARD_BUDGET", "EARS_HEARD_MAX_LINES"])
+def test_heard_reads_the_hooks_old_number_and_the_new_wins(new, monkeypatch):
+    old = envnames.ALIASES[new]
+    monkeypatch.delenv(new, raising=False)
+    monkeypatch.setenv(old, "7")
+    assert heard._env_int(new, 99) == 7
+    monkeypatch.setenv(new, "11")
+    assert heard._env_int(new, 99) == 11
+    monkeypatch.setenv(new, "")           # set but empty: the old name is not read, the default is
+    assert heard._env_int(new, 99) == 99
+    monkeypatch.delenv(new)
+    monkeypatch.delenv(old)
+    assert heard._env_int(new, 99) == 99
+
+
+def test_heard_reads_the_hooks_old_off_switch_and_the_new_wins(monkeypatch):
+    new, old = "EARS_HEARD_HOOK", "VOICEMODE_HEARD_HOOK"
+    monkeypatch.delenv(new, raising=False)
+    monkeypatch.delenv(old, raising=False)
+    assert not heard.hook_disabled()
+    monkeypatch.setenv(old, "off")
+    assert heard.hook_disabled()
+    monkeypatch.setenv(new, "on")         # new wins: on
+    assert not heard.hook_disabled()
+    monkeypatch.setenv(new, "")           # set but empty: the old "off" is not read
+    assert not heard.hook_disabled()
+    monkeypatch.setenv(new, "OFF ")
+    assert heard.hook_disabled()
 
 
 @pytest.mark.parametrize("field, new", [("event", "EARS_HEARD_EVENT"), ("caller", "EARS_HEARD_CALLER")])

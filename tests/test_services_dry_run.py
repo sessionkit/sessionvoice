@@ -25,7 +25,7 @@ LOOK = ("print", "list")
 
 
 def _every_label():
-    names = list(services.ALL) + list(services.OLD)
+    names = services.jobs(services.ALL) + list(services.OLD)
     return list(dict.fromkeys(l for n in names for l in services._labels(n)))
 
 
@@ -42,7 +42,7 @@ def host(sp, monkeypatch, tmp_path):
     unlink. Returns the fence, with ``plists`` and ``changed`` (the calls refused)."""
     services.AGENTS.mkdir(parents=True, exist_ok=True)
     plists = {}
-    ours = {services._label(n) for n in services.ALL}
+    ours = {services._label(n) for n in services.jobs(services.ALL)}
     for label in _every_label():
         p = services.AGENTS / f"{label}.plist"
         if label in ours:     # as install wrote it (its MARKER), so never taken for hand-made
@@ -102,7 +102,7 @@ def test_uninstall_dry_run_names_each_label_and_plist_and_changes_nothing(host, 
     _unchanged(host, tmp_path)
     assert host["calls"]["launchctl"] == []              # it does not even look
     names = list(services.ALL) if not only else [only[1]] if only[1] in services.OLD else only[1].split(",")
-    names = ["keeper" if n in services.OLD else n for n in names]
+    names = ["keeper" if n in services.OLD else n for n in services.jobs(names)]
     if "keeper" in names:
         names += list(services.OLD)
     labels = list(dict.fromkeys(l for n in names for l in services._labels(n)))
@@ -142,7 +142,7 @@ def test_uninstall_dry_run_on_an_empty_host_calls_nothing(sp, monkeypatch, capsy
 def test_a_real_uninstall_still_boots_out_and_deletes_every_label(sp, capsys):
     services.AGENTS.mkdir(parents=True, exist_ok=True)
     plists = []
-    ours = {services._label(n) for n in services.ALL}
+    ours = {services._label(n) for n in services.jobs(services.ALL)}
     for label in _every_label():
         p = services.AGENTS / f"{label}.plist"
         if label in ours:     # as install wrote it (its MARKER): a hand render would be left
@@ -167,9 +167,11 @@ def test_main_hands_uninstall_the_flag(monkeypatch):
 
 # ---- install --dry-run: every set it takes -----------------------------------------------------
 
-INSTALL = [[], ["--apple"], ["--agent", "dave"], ["--only", "stt"], ["--only", "speech"],
-           ["--only", "mouth"], ["--only", "keeper"], ["--only", "mail"], ["--only", "speakers"],
-           ["--only", "call,room"], ["--only", ",".join(services.ALL)]]
+# [] and ["--apple"] are the bare form: with no wake seat it is REFUSED (EARS-421), and a refused
+# dry run still lists and still changes nothing; --no-agent is the same set, installed on purpose
+INSTALL = [[], ["--apple"], ["--agent", "dave"], ["--no-agent"], ["--only", "stt"], ["--only", "speech"],
+           ["--only", "mouth"], ["--only", "keeper"], ["--only", "mail"], ["--only", "mail", "--no-agent"],
+           ["--only", "speakers"], ["--only", "call,room"], ["--only", ",".join(services.ALL)]]
 
 
 @pytest.mark.parametrize("args", INSTALL, ids=lambda a: "-".join(a).strip("-") or "default")
@@ -179,8 +181,8 @@ def test_install_dry_run_changes_nothing(host, tmp_path, capsys, args):
     assert "--- " in capsys.readouterr().out or args == ["--only", "speech"]
 
 
-@pytest.mark.parametrize("args", [[], ["--only", "speakers"], ["--only", "keeper"]],
-                         ids=["default", "speakers", "keeper"])
+@pytest.mark.parametrize("args", [[], ["--no-agent"], ["--only", "speakers"], ["--only", "keeper"]],
+                         ids=["default", "no-agent", "speakers", "keeper"])
 def test_install_dry_run_on_a_fresh_host_changes_nothing(sp, monkeypatch, tmp_path, capsys, args):
     _store(sp["home"])
     before = _tree(tmp_path)

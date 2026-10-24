@@ -11,7 +11,7 @@
     },
     "output": {
       "title": "Output",
-      "description": "The device a line plays on when it names none (no --device, no $MOUTH_DEVICE). 'default' plays on macOS's default output; otherwise one output's exact name. Unset, such a line is refused; the schema's default is never applied.",
+      "description": "The device a line plays on when it names none (no --device, no mailed device, no $MOUTH_DEVICE). 'default' plays on macOS's default output, 'null' plays nothing; otherwise one output's exact name. Unset, such a line plays on the system default output.",
       "type": "string",
       "default": "default"
     },
@@ -83,7 +83,7 @@
     },
     "barge_in": {
       "title": "Who may barge in",
-      "description": "Whose words cut a line while it plays. Anyone: any words that are not the line's own (the television too). Names: only words the speaker side-car names as one of them; other voices, the television, silence and mixed voices never cut. A line still unnamed 2 s after its words cuts as if this were Anyone, so a stopped side-car never takes barge-in away. Today the side-car names the room mic only, so on a call a list acts as Anyone. When `session operator` names an operator, the default is that operator's mailbox in the room (calls stay anyone), read as a speaker name: enroll under your mailbox name. Set this key, to anyone or to names, and it wins.",
+      "description": "Whose words cut a line while it plays. Anyone: any words that are not the line's own (the television too). Names: only words the speaker side-car names as one of them; other voices, the television, silence and mixed voices never cut. A line still unnamed 2 s after its words cuts as if this were Anyone, so a stopped side-car never takes barge-in away; so do words the side-car hears but cannot score (unheard: too little audio, a quiet voice), at once. Today the side-car names the room mic only, so on a call a list acts as Anyone. When `session operator` names an operator, the default is that operator's mailbox in the room (calls stay anyone), read as a speaker name: enroll under your mailbox name. Set this key, to anyone or to names, and it wins.",
       "default": "anyone",
       "anyOf": [
         {"$ref": "#/$defs/who"},
@@ -137,6 +137,12 @@
     "resume_answer_question": {
       "title": "Only a cut question counts as answered",
       "description": "On (the default), only a cut line whose sentence asked you something is dropped when you answer it; a cut statement is always replayed. Off drops the replay of any cut line you answered with resume_answer_words of your own words. This beats $MOUTH_RESUME_ANSWER_QUESTION (off, 0, no or false turn it off).",
+      "type": "boolean",
+      "default": true
+    },
+    "room_hold": {
+      "title": "Room lines wait for the end of your turn",
+      "description": "On (the default), a line on a room device (any output that is not a call) that asks no hold waits for the end of your turn, as mouth say --hold turn-end does. A line sent with --now or --hold none (X-Mouth-When: now), a played file and a call line are not changed. Off plays such a line at once. $MOUTH_ROOM_HOLD beats this (off, 0, no or false turn it off).",
       "type": "boolean",
       "default": true
     },

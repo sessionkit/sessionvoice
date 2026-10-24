@@ -16,10 +16,17 @@ everyone"; reply, light and first entries ride (only call and everyone wake).
 Ears-Audio names the turn's kept WAV when the record has `audio` (recording
 on); with no `audio` there is no Ears-Audio header.
 <device> is device_slug(): airpods, macbook (the built-in mic), else the name
-in lower-case words joined by "-". NOT mailed: drafts and partials, and
-calls (source call, or a BlackHole device: a Delta call is delta+call<N>),
-which are skipped and said on stderr. --to seats is the pre-genie behaviour
-below (each matched turn To the seats it is for), kept until the genie is live.
+in lower-case words joined by "-". NOT mailed: drafts and partials, the mouth's
+echo, empty turns, and a BlackHole device's turns (the call tap).
+A FINISHED turn of a Delta call (source call, device call:N) is mailed To
+calls+<bot>-<N>@<host>, the call's own box, with the headers Ears-Kind: turn,
+Ears-Seq, Call-Id and Call-Bot, never to heard+<device>; the box carries both
+directions. The bot is learned from the call's call-ears.sock probe (a call whose
+bot no leg names is skipped, {"skip": "call-bot"}, said on stderr). --calls off
+skips call turns again ({"skip": "call"}); --calls-from sets the From.
+Web legs (<sessionphone root>/web) are left to sessionphone web. --to seats is
+the pre-genie behaviour below (each matched turn To the seats it is for), kept
+until the genie is live.
 NEVER run --to seats and --to device for the same seat: a call would reach it
 twice. The device box's name is --sender ($EARS_MAIL_FROM, default
 heard): `heard`, because ears+<device> would fall into the ears project's
@@ -1079,6 +1086,186 @@ def sessionvoice_home():
     return os.path.expanduser("~/.sessionvoice")
 
 
+# -- a Delta call's turns: To its call box, calls+<bot>-<N> --------------------
+# A FINAL turn of a Delta call (source call, device call:N) goes To the call's box,
+# calls+<bot>-<N>@<domain>, the box the mouth reads (src/mouth/box.py call_box):
+# the caller's turns come in here, the seats' replies go To the same box. The bot is
+# learned from the call's own leg: its call-ears.sock answers a probe with
+# {"agent", "profile", "calls": [N...]}.
+CALL_DEVICE = re.compile(r"^call:(\d+)$")
+CALL_SUBJECT_MAX = 56
+CALL_BOTS_KEPT = 256          # the newest {N: bot} entries kept in --state
+PROBE_TIMEOUT_S = 1.0         # as keeper/call-ears: a leg that never answers stalls no mail
+
+
+def call_socks():
+    """Every Delta bot's ear-leg socket: a stdlib copy of ears.listen.sources.call_socks
+    (keeper/ imports nothing from src/; tests/test_call_sock_search.py holds the two
+    equal). $EARS_CALL_SOCKS if it is set at all (colon-separated), else its old name;
+    else call-ears.sock in sessionphone's root ($SESSIONPHONE_ROOT, default
+    ~/.sessionphone) and in each ~/.<agent>/delta-chat, each [/<profile>]."""
+    env = os.environ.get("EARS_CALL_SOCKS", os.environ.get("VOICEMODE_CALL_EARS_SOCKS"))
+    if env:
+        return [p for p in env.split(":") if p]
+    out = set()
+    for root in call_roots():
+        out.update(glob.glob(os.path.join(glob.escape(root), "call-ears.sock")))
+        out.update(glob.glob(os.path.join(glob.escape(root), "*", "call-ears.sock")))
+    return sorted(out)
+
+
+def sessionphone_root():
+    home = os.path.expanduser("~")
+    return os.path.expanduser(os.environ.get("SESSIONPHONE_ROOT") or os.path.join(home, ".sessionphone"))
+
+
+def call_roots():
+    """sessionphone's root, then each agent's own ~/.<agent>/delta-chat (sources.bot_roots)."""
+    home = os.path.expanduser("~")
+    return [sessionphone_root()] + sorted(glob.glob(os.path.join(home, ".*", "delta-chat")))
+
+
+def web_leg(path):
+    """True for sessionphone web's leg, <sessionphone root>/web/call-ears.sock: it names no
+    Delta bot, and its own server already mails each web turn to its seat."""
+    return (os.path.normpath(os.path.dirname(path))
+            == os.path.normpath(os.path.join(sessionphone_root(), "web")))
+
+
+def bot_of(reply):
+    """The bot a probe reply names: agent, or <agent>-<profile> when profile is set, as
+    one local part; None when it names no agent."""
+    if not isinstance(reply, dict):
+        return None
+    agent = _local(reply.get("agent") or "")
+    if not agent:
+        return None
+    profile = _local(reply.get("profile") or "")
+    return f"{agent}-{profile}" if profile else agent
+
+
+PROBE_MAX_BYTES = 65536       # a probe reply is one short JSON line
+
+
+def probe(path, timeout=PROBE_TIMEOUT_S):
+    """One leg's probe reply, a dict; {} when it cannot be read in TIMEOUT, in all: a
+    leg that trickles bytes and never ends its line stalls no mail either."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    deadline = time.monotonic() + timeout
+    try:
+        s.settimeout(timeout)
+        s.connect(path)
+        s.sendall(b'{"probe": true}\n')
+        buf = b""
+        while b"\n" not in buf:
+            left = deadline - time.monotonic()
+            if left <= 0 or len(buf) > PROBE_MAX_BYTES:
+                return {}
+            s.settimeout(left)
+            c = s.recv(4096)
+            if not c:
+                break
+            buf += c
+        got = json.loads(buf.split(b"\n")[0] or b"{}")
+        return got if isinstance(got, dict) else {}
+    except (OSError, ValueError, RecursionError):   # RecursionError: a reply nested
+        return {}                                   # thousands deep, still under the cap
+    finally:
+        s.close()
+
+
+class CallBots:
+    """{call id: bot}, learned by probing every leg. A call is learned the first time
+    any row names its call:N (a partial is written while the call is live), probed
+    again for a turn whose call is unknown, and KEPT after hang-up, so the last turn
+    still finds its box; --state keeps the newest CALL_BOTS_KEPT across restarts.
+    A capture's listen-started forgets the call and probes afresh: a call id is the
+    bot's message id, so another bot's later call can reuse a kept one.
+    When two legs list one call, the first in sorted order wins (as CallSource)."""
+
+    def __init__(self, saved=None, socks=call_socks, probe=probe):
+        self.bots, self.seen = {}, set()
+        self._socks, self._probe = socks, probe
+        for k, v in (saved if isinstance(saved, dict) else {}).items():
+            try:
+                if isinstance(v, str) and v:
+                    self.bots[int(k)] = v
+            except (TypeError, ValueError):
+                continue
+        self._trim()
+
+    def _trim(self):
+        while len(self.bots) > CALL_BOTS_KEPT:
+            del self.bots[next(iter(self.bots))]
+
+    def learn(self):
+        """Probe every leg (web legs excepted) and note each call it lists."""
+        found = {}
+        for path in self._socks():
+            if web_leg(path):
+                continue
+            reply = self._probe(path)
+            bot = bot_of(reply)
+            calls = reply.get("calls") if bot else None
+            if not isinstance(calls, list):     # a leg's bad reply names no call, and
+                continue                        # never stops the device mail
+            for n in calls:
+                if isinstance(n, int) and not isinstance(n, bool):
+                    found.setdefault(n, bot)
+        for n, bot in found.items():
+            self.bots.pop(n, None)              # re-learned: the newest again
+            self.bots[n] = bot
+        self._trim()
+
+    def saw(self, n, started=False):
+        """A row named call:N: probe the first time this process sees it, and again at
+        each capture's start (STARTED), with the kept bot forgotten: if the probe then
+        misses it, the turn probes again, and never goes to an earlier call's bot."""
+        if started:
+            self.bots.pop(n, None)
+            self.seen.discard(n)
+        if n not in self.seen:
+            self.seen.add(n)
+            if len(self.seen) > 4 * CALL_BOTS_KEPT:
+                self.seen = {n}
+            self.learn()
+
+    def bot(self, n):
+        """The bot of call N, probing again if it is unknown; None if no leg names it."""
+        if n not in self.bots:
+            self.learn()
+        return self.bots.get(n)
+
+    def state(self):
+        return {str(n): b for n, b in self.bots.items()}
+
+
+def call_of(rec):
+    """N for a row of a Delta call's capture (device call:N), else None."""
+    m = CALL_DEVICE.match(str(rec.get("device") or ""))
+    return int(m.group(1)) if m else None
+
+
+def call_subject(rec):
+    """<speaker>: <text>, cut to CALL_SUBJECT_MAX, made safe; "a turn" when empty."""
+    text = " ".join(str(rec.get("text") or "").split())
+    who = rec.get("speaker")
+    s = (f"{who.strip()}: " if isinstance(who, str) and who.strip() else "") + text
+    return clean_subject(s[:CALL_SUBJECT_MAX]) or "a turn"
+
+
+def call_mail(rec, bot, n, frm):
+    """The call box's turn mail: To calls+<bot>-<N>, From FRM, exactly four headers
+    (Ears-Kind: turn, Ears-Seq when the seq is an int, Call-Id, Call-Bot), the whole
+    row as one JSON line for its body. No Ears-Rule: a call-box turn wakes no rule."""
+    seq = rec.get("seq")
+    headers = {"Ears-Kind": "turn"}
+    if isinstance(seq, int) and not isinstance(seq, bool):
+        headers["Ears-Seq"] = str(seq)
+    headers.update({"Call-Id": str(n), "Call-Bot": bot})
+    return {"to": [f"calls+{bot}-{n}"], "from": frm, "subject": call_subject(rec),
+            "body": json.dumps(rec, ensure_ascii=False) + "\n", "headers": headers}
+
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -1116,6 +1303,12 @@ def main(argv=None):
                     help="the mouth CLI an again verdict runs as CMD again UTT (default "
                          "$EARS_MOUTH, else this python's -m mouth). It has 5 s; if it fails the "
                          "turn is a call instead. Under --dry-run it is printed, never run")
+    ap.add_argument("--calls", choices=("on", "off"), default="on",
+                    help="--to device: each finished turn of a Delta call (device call:N) To its "
+                         "call box, calls+<bot>-<N>@DOMAIN, the bot named by the call's own "
+                         "call-ears.sock (default on); off: skipped, as before")
+    ap.add_argument("--calls-from", default="ears", metavar="LOCAL",
+                    help="the call-box turn mail's From, LOCAL@DOMAIN (default ears)")
     a = ap.parse_args(argv)
     speaker = a.speaker or f"unknown@{a.domain}"  # an unplaced voice is not the operator
     only = [s.strip() for s in a.seats.split(",") if s.strip()]
@@ -1137,12 +1330,14 @@ def main(argv=None):
 
     offsets, room, twins = {}, Room(), Twins()
     kodi = Kodi(a.kodi) if a.kodi else None
-    saved = {}
+    saved, saved_bots = {}, {}
     if a.state and os.path.exists(a.state):
         try:
-            saved = json.load(open(a.state)).get("offsets", {})
-        except ValueError:
-            saved = {}
+            st = json.load(open(a.state))
+            saved, saved_bots = st.get("offsets", {}), st.get("call_bots") or {}
+        except (ValueError, AttributeError):
+            saved, saved_bots = {}, {}
+    calls = CallBots(saved_bots) if a.to == "device" and a.calls == "on" else None
     for p in files():
         size = os.path.getsize(p)
         if a.from_start:
@@ -1161,7 +1356,8 @@ def main(argv=None):
         if a.state:
             tmp = a.state + ".tmp"
             with open(tmp, "w") as f:
-                json.dump({"offsets": offsets}, f)
+                json.dump({"offsets": offsets,
+                           **({"call_bots": calls.state()} if calls is not None else {})}, f)
             os.replace(tmp, a.state)
 
     def deliver(m, rec):
@@ -1172,7 +1368,7 @@ def main(argv=None):
         for to in m["to"]:
             one = dict(m, to=[to])
             out = {"at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
-                   "seq": rec.get("seq"), "to": one["to"], "rule": m["headers"]["Ears-Rule"],
+                   "seq": rec.get("seq"), "to": one["to"], "rule": m["headers"].get("Ears-Rule"),
                    "subject": m["subject"]}
             if a.dry_run:
                 out["dry_run"] = True
@@ -1240,6 +1436,9 @@ def main(argv=None):
                     continue
                 room.note(rec)
                 kind = rec.get("kind")
+                n = call_of(rec) if calls is not None and rec.get("source") == "call" else None
+                if n is not None:       # learned while the call is live: its first row
+                    calls.saw(n, kind == "event" and rec.get("event") == "listen-started")
                 # the mouth tells a cut line's sender itself: stand down only
                 # for a notice that reached it, so a failed: or none: row is still told
                 if kind == "said" and rec.get("cut") and rec.get("agent") in mailto \
@@ -1252,6 +1451,13 @@ def main(argv=None):
                     continue
                 slug = None
                 if a.to == "device":    # calls first: verdicts() marks a line answered
+                    if n is not None:   # a Delta call's turn: To its call box, never heard+
+                        bot = calls.bot(n)
+                        if bot:
+                            deliver(call_mail(rec, bot, n, a.calls_from), rec)
+                        else:
+                            skip("call-bot", rec, call=n)
+                        continue
                     if rec.get("source", "mic") != "mic":
                         skip("call", rec, source=rec.get("source"))
                         continue

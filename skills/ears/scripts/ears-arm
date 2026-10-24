@@ -108,7 +108,25 @@ case "$mode" in
   *) echo "ears-arm: unknown mode '$mode' (talk|alone|room)" >&2; exit 1 ;;
 esac
 
-cmd=(heard-first --source mic,call --state "$state" "${rules[@]}" ${light[@]+"${light[@]}"})
+# heard-first is found WITHOUT relying on PATH first. Claude Code puts a plugin's bin/
+# on the Bash tool's PATH only for a plugin that was enabled when the session started,
+# so after a mid-session install a bare heard-first is not found. In order: the plugin
+# root's bin/ beside this script (symlinks resolved, as bin/ears-arm finds this
+# script), then $CLAUDE_PLUGIN_ROOT/bin, then PATH. The path stays .../bin/heard-first,
+# which is what ears-count looks for in ps.
+self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+root="$(cd "$(dirname "$self")/../../.." && pwd)"
+hf=""
+for c in "$root/bin/heard-first" ${CLAUDE_PLUGIN_ROOT:+"$CLAUDE_PLUGIN_ROOT/bin/heard-first"}; do
+  if [ -f "$c" ] && [ -x "$c" ]; then hf="$c"; break; fi
+done
+[ -n "$hf" ] || hf="$(command -v heard-first 2>/dev/null)" || hf=""
+if [ -z "$hf" ]; then
+  echo "ears-arm: heard-first was not found (not in $root/bin, \$CLAUDE_PLUGIN_ROOT/bin or PATH); restarting Claude Code puts the plugin's bin/ on PATH" >&2
+  exit 127
+fi
+
+cmd=("$hf" --source mic,call --state "$state" "${rules[@]}" ${light[@]+"${light[@]}"})
 [ -n "${EARS_SPEAKERS:-}" ] && cmd+=(--speakers "$EARS_SPEAKERS")
 if [ "$dry" = 1 ]; then printf '%q ' "${cmd[@]}"; echo; exit 0; fi
 n=$("$(dirname "$0")/ears-count" "$seat" 2>/dev/null) || n=0

@@ -76,6 +76,14 @@ The device kind changes only these steps:
   The keeper also stops the room capture while a call is live, unless
   `room_on_call` is `true` in `~/.sessionkit/voice/settings/ears.json`.
 - **A line over music** (`output.MixLane`) uses its device's or call's dip.
+- **Who may cut, by name.** With names in `barge_in`, the speaker side-car
+  labels each partial: a name, `other` (another voice, the television),
+  `silent`, `mixed` or `unheard` (too little audio to score, often a quiet
+  voice). A named member's words count; `other`, `silent` and `mixed` never
+  do, stop words included. `unheard` counts as if `barge_in` were `anyone`,
+  as a partial still unnamed after the 2 s wait does, so a quiet voice or a
+  stopped side-car cannot take the user's barge-in away. The `barge` trace
+  keeps the label (`speaker: unheard`) on the words it counted.
 
 **The shared path:**
 
@@ -96,7 +104,11 @@ word rule: the recogniser must turn the noise into 2 content words before
 anything is cut.
 
 **Read before you tune.** `mouth status` prints `barge`: each value, with
-the layer that set it (`from`, `by`). A cut line's `said` row carries
+the layer that set it (`from`, `by`). Its `barge_in` says who may cut in each
+place, `room` and `call`: `who` is `anyone` or the names (`[]` is nobody),
+with `by` `setting` (the key is set), `operator` (unset: the operator's
+mailbox, room only) or `builtin` (unset and unconfigured: anyone). `mouth
+barge` prints the same. A cut line's `said` row carries
 `cut_by` and `cut_how`. The player's own log, `player.log`, holds a record
 of every weighing and dip:
 
@@ -117,7 +129,7 @@ then the variable, then the built-in.
 | `barge_duck_level` | 25 (0-100) | setting; `mouth barge --duck L\|off` | 100 or `off`: noise no longer dips the line |
 | `barge_duck_max_s` | 4 s | setting; `mouth barge --duck-max S` | Shorter: unbroken noise holds the line down for less time |
 | `barge_duck_recover_s` | 1.0 s on `nemotron` partials, 2.5 s on `final` | setting only | Shorter: back up sooner after a burst |
-| `barge_in` | `anyone`; `{"room": [<mailbox>]}` with an operator | setting | Names gate the room. On a call, unnamed words count after the 2 s wait |
+| `barge_in` | `anyone`; `{"room": [<mailbox>]}` with an operator | setting | Names gate the room. On a call, unnamed words count after the 2 s wait. `unheard` words always count |
 | Freshness bound | 4 s | `$MOUTH_BARGE_FRESH_S` | Words written later than this do not count |
 | Wait for a speaker name | 2 s | `$MOUTH_LABEL_WAIT_S` | Unnamed words then count as anyone's |
 | Replay window | 20 s | `$MOUTH_RESUME_S` (0: no replay) | Nothing |

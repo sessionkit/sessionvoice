@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<!-- DRAFT, NOT INSTALLED. Nothing installs this. On a machine that already runs
-     a mouth-sounds agent (under any label), switching over to this one is its owner's
-     separate go, with steps, checks and a rollback written down first. Do not copy it
-     into ~/Library/LaunchAgents and do not bootstrap it without that go.
+<!-- The HAND render of the job `ears services install`, asked for the sounds, writes and loads
+     (from a checkout or an installed package, with its own paths and an install marker).
+     Prefer the install. On a machine that already runs a mouth-sounds agent (under any
+     label), switching over is its owner's separate go, with steps, checks and a rollback
+     written down first: install skips ours beside a hand one, never two.
 
      mouth-sounds as a launch agent: the little cues for the mouth's flow (drop, front,
      canned, bud, scoop). It runs the ears repo's copy (keeper/mouth-sounds.py) on the

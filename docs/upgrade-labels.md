@@ -12,9 +12,11 @@ each step with its check and its way back.
   one has gone.
 - **It never moves a job you rendered by hand.** That covers the sounds, talk,
   a hand speakers side-car, and a hand keeper or mailer. You boot each one out
-  and render it again from its renamed template in `launchd/`.
-- **A hand keeper, mailer or side-car means install skips its own job.** Two
-  would run otherwise. `ears services status` says so, with the exact command
+  and render it again from its renamed template in `launchd/`, or, for the
+  sounds and talk, let `ears services install --only sounds` or `--only talk`
+  run them instead.
+- **A hand keeper, mailer, side-car, sounds or talk job means install skips its
+  own job.** Two would run otherwise. `ears services status` says so, with the exact command
   that switches to install's job.
 - **Nothing moves on a pull.** The old jobs run the new code under their old
   names until you do this. `ears services status` names every old-form job it
@@ -37,9 +39,7 @@ undo.
 - Every old-form job `status` finds is on its own line:
   - `old label: <label> is still loaded; ... moves it`: one install made.
   - `<label> (hand-made): ...; install skips <name> while it is here`: a hand
-    keeper, mailer or side-car.
-  - `hand <label> (old name): ...; boot it out and render launchd/<new>.plist.in in its place`:
-    a hand sounds or talk job.
+    keeper, mailer, side-car, sounds or talk job.
   - `WARNING: <label> (LEGACY render)`: a stale hand mailer or player. Install
     replaces it and keeps its plist as `<label>.plist.replaced-<stamp>`.
 - Copy every old-form plist somewhere outside `~/Library/LaunchAgents` (launchd
@@ -52,7 +52,10 @@ undo.
     ears services install --dry-run; echo "rc=$?"
 
 Pass the same flags you installed with (`--agent NAME`, `--only ...`).
-Expect `rc=0`; `rc=2` means a refusal, so read it. For each service install
+Expect `rc=0`; `rc=2` means a refusal, so read it. A host whose wake file
+names a seat needs no `--agent`: install says which seat it wakes. One whose
+wake file names none is refused unless you pass `--agent NAME` or
+`--no-agent`. For each service install
 made, expect:
 
     <name>  old label com.sessionvoice.ears-<name> (loaded): would be booted out and its plist removed
@@ -151,9 +154,9 @@ template is the source.
   render does not. So install leaves your render alone and skips its own job.
   The reverse is yours: rendering over a plist install wrote replaces install's
   job.
-- **mouth-sounds** is a draft template. Its header says switching a running
-  mouth-sounds job over to it is its owner's separate go. Re-render it under
-  the new name only with that go.
+- **mouth-sounds**: switching a running mouth-sounds job over, to a render or
+  to install's own job (`--only sounds`), is its owner's separate go, as its
+  template's header says. Install skips its own job beside a hand one.
 
 ## 4. A hand keeper, mailer or side-car
 

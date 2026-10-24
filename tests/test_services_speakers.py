@@ -201,9 +201,10 @@ def _verbs(monkeypatch, argv):
 
 
 def test_a_bare_install_names_no_speakers_and_a_bare_uninstall_does(monkeypatch):
-    assert "speakers" not in _verbs(monkeypatch, ["install"])["install"]
-    assert "speakers" not in _verbs(monkeypatch, ["install", "--dry-run"])["install"]
-    assert "speakers" not in _verbs(monkeypatch, ["install", "--apple"])["install"]
+    # --no-agent: a bare install with mail in it and no wake seat refuses before install() (EARS-421)
+    assert "speakers" not in _verbs(monkeypatch, ["install", "--no-agent"])["install"]
+    assert "speakers" not in _verbs(monkeypatch, ["install", "--no-agent", "--dry-run"])["install"]
+    assert "speakers" not in _verbs(monkeypatch, ["install", "--no-agent", "--apple"])["install"]
     assert _verbs(monkeypatch, ["install", "--only", "speakers"])["install"] == ["speakers"]
     assert "speakers" in _verbs(monkeypatch, ["uninstall"])["uninstall"]
 
@@ -212,7 +213,7 @@ def test_a_bare_install_names_no_speakers_and_a_bare_uninstall_does(monkeypatch)
 def test_a_bare_install_writes_and_prints_no_speakers_agent(sp, capsys, dry_run):
     from test_services_install_checks import _store
     _store(sp["home"])
-    assert services.main(["install"] + (["--dry-run"] if dry_run else [])) == 0
+    assert services.main(["install", "--no-agent"] + (["--dry-run"] if dry_run else [])) == 0   # EARS-421
     out = capsys.readouterr().out
     assert "ears-speakers" not in out and "SPEAKER_" not in out            # no plist printed
     assert not any(l.startswith("speakers") for l in out.splitlines())      # and no row

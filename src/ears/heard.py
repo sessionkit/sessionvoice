@@ -398,7 +398,19 @@ HEARD_CALLER_ENV = "EARS_HEARD_CALLER"
 # Their old names, still read: NEW if it is set at all, else OLD. The
 # table is src/ears/envnames.py; this file imports nothing outside the standard
 # library, so it keeps its own copy, which tests/test_envnames.py holds to it.
-HEARD_ENV_OLD = {"EARS_HEARD_EVENT": "VOICEMODE_HEARD_EVENT", "EARS_HEARD_CALLER": "VOICEMODE_HEARD_CALLER"}
+HEARD_ENV_OLD = {
+    "EARS_HEARD_EVENT": "VOICEMODE_HEARD_EVENT",
+    "EARS_HEARD_CALLER": "VOICEMODE_HEARD_CALLER",
+    "EARS_HEARD_HOOK": "VOICEMODE_HEARD_HOOK",
+    "EARS_HEARD_BUDGET": "VOICEMODE_HEARD_BUDGET",
+    "EARS_HEARD_MAX_LINES": "VOICEMODE_HEARD_MAX_LINES",
+}
+# The hook's own settings (read only on the hook path): off switch, budget, line cap.
+HEARD_HOOK_ENV = "EARS_HEARD_HOOK"
+HEARD_BUDGET_ENV = "EARS_HEARD_BUDGET"
+HEARD_MAX_LINES_ENV = "EARS_HEARD_MAX_LINES"
+# Partials-only mode. A new setting: it has no old name.
+HEARD_PARTIALS_ONLY_ENV = "EARS_HEARD_PARTIALS_ONLY"
 EVENT_TOOL = "tool"     # an agent's own tool call (heard_wait)
 EVENT_OTHER = "other"   # nobody said
 
@@ -679,7 +691,8 @@ class _Item:
 
 
 def collapse(recs: list[_Rec], session: Optional[str] = None,
-             names: Optional[dict[int, str]] = None) -> list[_Item]:
+             names: Optional[dict[int, str]] = None, *,
+             partials_only: bool = False) -> list[_Item]:
     """Records -> what to show, ordered by the seq that completed each.
 
     A run of partials from one source and device is subsumed by the turn
@@ -688,6 +701,11 @@ def collapse(recs: list[_Rec], session: Optional[str] = None,
     has them as converse's result) are silent: they move the cursor and
     cost nothing. ``names`` (seq -> speaker, from ``load_speakers``) adds who
     spoke after the time, when known: ``[heard mic 08:00:00 alice partial]``.
+
+    ``partials_only``: every item a turn record completes is silent (the
+    turn, with the partials it subsumes), for a seat that gets each finished
+    turn by mail. The cursor still moves past it. Partials with no turn yet,
+    the shown events and the mouth's said lines are unchanged.
     """
     names = dict(names or {})
     for r in recs:  # a speaker written on the record itself (by ears) wins
@@ -707,7 +725,8 @@ def collapse(recs: list[_Rec], session: Optional[str] = None,
         elif kind == TURN:
             covers = pending.pop(key, [])
             first = covers[0]["seq"] if covers else rec["seq"]
-            if rec.get("via") == "converse" and session and rec.get("session") == session:
+            if partials_only or (rec.get("via") == "converse" and session
+                                 and rec.get("session") == session):
                 items.append(_Item(None, first, rec["seq"]))
             else:
                 who = _who([p["seq"] for p in covers] + [rec["seq"]], names)
@@ -861,7 +880,9 @@ def follow(*, backlog: int = 10, after_seq: Optional[int] = None, poll: float = 
 # --------------------------------------------------------------------------
 
 def _env_int(name: str, default: Optional[int]) -> Optional[int]:
-    raw = os.environ.get(name)
+    """``name`` (or its old name, :func:`_env`) as an integer; unset, empty or
+    not an integer is ``default``."""
+    raw = _env(name)
     if raw is None or raw.strip() == "":
         return default
     try:
@@ -871,8 +892,60 @@ def _env_int(name: str, default: Optional[int]) -> Optional[int]:
 
 
 def hook_disabled() -> bool:
-    return os.environ.get("VOICEMODE_HEARD_HOOK", "").strip().lower() in (
-        "0", "off", "false", "no")
+    """``$EARS_HEARD_HOOK`` (else its old name) is 0, off, false or no."""
+    return (_env(HEARD_HOOK_ENV) or "").strip().lower() in _OFF_WORDS
+
+
+_ON_WORDS = frozenset({"1", "on", "true", "yes"})
+_OFF_WORDS = frozenset({"0", "off", "false", "no"})
+PARTIALS_ONLY_KEY = "heard_partials_only"
+# a copy of ears.home.SETTINGS; tests/test_settings_dir.py holds it to the module
+VOICE_SETTINGS = ".sessionkit/voice/settings"
+
+
+def ears_conf_path() -> Path:
+    """ears.json: ``$EARS_CONF`` if set and not empty, else ``ears.json`` in
+    ``~/.sessionkit/voice/settings`` (``ears.home.settings_dir()``). The same
+    answer as ``ears.recording.conf_path``, computed here: this file imports
+    nothing from the package."""
+    return Path(os.environ.get("EARS_CONF") or
+                os.path.join(os.path.expanduser("~"), VOICE_SETTINGS, "ears.json"))
+
+
+def _file_partials_only(path: Optional[Path] = None) -> Optional[bool]:
+    """ears.json's ``heard_partials_only``: True or False, else None (no file, an
+    unreadable or invalid one, no key). Never raises: the hook must not fail on it."""
+    try:
+        with open(path or ears_conf_path(), "rb") as f:
+            data = json.loads(f.read(256 * 1024))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or PARTIALS_ONLY_KEY not in data:
+        return None
+    v = data[PARTIALS_ONLY_KEY]
+    return v if isinstance(v, bool) else False   # an invalid value is the default, off
+
+
+def partials_only_setting(cli: Optional[bool] = None, *,
+                          conf: Optional[Path] = None) -> bool:
+    """Partials-only mode, from the first layer that is set: the CLI flag
+    (``--partials-only``/``--no-partials-only``), ``$EARS_HEARD_PARTIALS_ONLY``,
+    ears.json's ``heard_partials_only``, else off.
+
+    The env var: 1, on, true or yes is on; 0, off, false or no is off (any
+    case, trimmed). Unset or empty is not set (the file decides); any other
+    value is the default, off. The file: a JSON boolean; any other value is
+    off; no file, or one that cannot be read or parsed, is not set. Never
+    raises.
+    """
+    if cli is not None:
+        return bool(cli)
+    raw = os.environ.get(HEARD_PARTIALS_ONLY_ENV)
+    if raw is not None and raw.strip():
+        word = raw.strip().lower()
+        return word in _ON_WORDS   # an off word, or garbage: off
+    got = _file_partials_only(conf)
+    return bool(got)
 
 
 def _init_cursor(session: str, log_directory: Optional[Path],
@@ -914,7 +987,8 @@ def pending(session: str, *, log_directory: Optional[Path] = None,
 def take(session: str, *, budget_tokens: Optional[int] = None,
          max_lines: Optional[int] = None, log_directory: Optional[Path] = None,
          cursor_directory: Optional[Path] = None, lock_timeout: float = 1.0,
-         by: Optional[dict] = None) -> tuple[str, Optional[int]]:
+         by: Optional[dict] = None, partials_only: bool = False
+         ) -> tuple[str, Optional[int]]:
     """Render what ``session`` has not been shown, and advance its cursor.
 
     Exactly what the hook prints (collapse, budget, cut line), as plain
@@ -922,11 +996,13 @@ def take(session: str, *, budget_tokens: Optional[int] = None,
     to show; ``("", None)`` when the lock was not had. A waiter that wakes
     an idle agent prints this and exits, so the hook does not repeat it.
     ``by`` names who is taking (``mutator()``), for the cursor's write.
+    ``partials_only`` is :func:`collapse`'s: the hook passes it; a waiter
+    (``heard_wait``) leaves it off.
     """
     budget = budget_tokens if budget_tokens is not None else _env_int(
-        "VOICEMODE_HEARD_BUDGET", DEFAULT_BUDGET_TOKENS)
+        HEARD_BUDGET_ENV, DEFAULT_BUDGET_TOKENS)
     if max_lines is None:
-        max_lines = _env_int("VOICEMODE_HEARD_MAX_LINES", None)
+        max_lines = _env_int(HEARD_MAX_LINES_ENV, None)
     with _SessionLock(session, lock_timeout, cursor_directory) as got:
         if not got:
             return "", None
@@ -942,7 +1018,7 @@ def take(session: str, *, budget_tokens: Optional[int] = None,
                             by=by)
             return "", cur.seq
         names = load_speakers({r.path for r in recs}, recs[0].seq)
-        items = collapse(recs, session, names)
+        items = collapse(recs, session, names, partials_only=partials_only)
         text, new_seq = render(items, budget_tokens=budget, max_lines=max_lines,
                                file_name=recs[-1].path.name)
         if new_seq is not None and new_seq > cur.seq:
@@ -959,9 +1035,12 @@ def take(session: str, *, budget_tokens: Optional[int] = None,
 
 def run_hook(stdin_text: str, *, budget_tokens: Optional[int] = None,
              max_lines: Optional[int] = None, log_directory: Optional[Path] = None,
-             cursor_directory: Optional[Path] = None, lock_timeout: float = 1.0
-             ) -> Optional[str]:
+             cursor_directory: Optional[Path] = None, lock_timeout: float = 1.0,
+             partials_only: Optional[bool] = None) -> Optional[str]:
     """One hook run. Returns the JSON Claude Code reads, or None for silence.
+
+    ``partials_only`` is the CLI's choice; None reads the setting
+    (:func:`partials_only_setting`: env, then ears.json, then off).
 
     The session is the hook input's ``session_id`` (else the environment's).
     A session with no cursor starts at the end of the log and is shown
@@ -983,7 +1062,8 @@ def run_hook(stdin_text: str, *, budget_tokens: Optional[int] = None,
     by = mutator(event=str(raw_event) if raw_event else None)
     text, _ = take(session, budget_tokens=budget_tokens, max_lines=max_lines,
                    log_directory=log_directory, cursor_directory=cursor_directory,
-                   lock_timeout=lock_timeout, by=by)
+                   lock_timeout=lock_timeout, by=by,
+                   partials_only=partials_only_setting(partials_only))
     if not text:
         return None
     return json.dumps({"hookSpecificOutput": {
@@ -995,19 +1075,42 @@ def run_hook(stdin_text: str, *, budget_tokens: Optional[int] = None,
 # --------------------------------------------------------------------------
 
 def _usage() -> str:
-    return ("usage: heard.py hook [--budget TOKENS] [--max-lines N]   (reads hook JSON on stdin)\n"
-            "       heard.py write partial|turn TEXT [--source S] [--device D] [--detector D]\n"
-            "       heard.py write event NAME [--source S] [--device D] [--text T]\n"
-            "       heard.py last-seq\n")
+    return ("usage: ears heard hook [--budget TOKENS] [--max-lines N] [--partials-only | --no-partials-only]\n"
+            "           the ride-along hook: reads the hook's JSON on stdin and prints what the\n"
+            "           heard log gained since this session last looked. --partials-only drops\n"
+            "           each finished turn (for a seat that gets turns by mail, heard+<device>)\n"
+            "           and keeps the partial preview and shown events; the cursor still moves.\n"
+            "           Also $EARS_HEARD_PARTIALS_ONLY, or heard_partials_only in ears.json.\n"
+            "           $EARS_HEARD_HOOK=off silences it; $EARS_HEARD_BUDGET, $EARS_HEARD_MAX_LINES.\n"
+            "       ears heard write partial|turn TEXT [--source S] [--device D] [--detector D]\n"
+            "       ears heard write event NAME [--source S] [--device D] [--text T]\n"
+            "       ears heard last-seq\n"
+            "       (as a script: heard.py VERB ...)\n")
 
 
-def _opts(argv: list[str]) -> tuple[list[str], dict[str, str]]:
+_HELP = ("-h", "--help")
+_HOOK_FLAGS = {"--partials-only": ("partials_only", "1"),
+               "--no-partials-only": ("partials_only", "0")}
+
+
+def _opts(argv: list[str], flags: Optional[dict] = None) -> tuple[list[str], dict[str, str]]:
+    """Positionals, and ``--name VALUE`` pairs as ``{name: VALUE}``. ``-h`` and
+    ``--help`` are flags (``help``), never a pair; so is each of ``flags``
+    (``{--flag: (name, value)}``, the last one given wins)."""
     pos: list[str] = []
     opts: dict[str, str] = {}
+    flags = flags or {}
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a.startswith("--") and i + 1 < len(argv):
+        if a in _HELP:
+            opts["help"] = "1"
+            i += 1
+        elif a in flags:
+            name, value = flags[a]
+            opts[name] = value
+            i += 1
+        elif a.startswith("--") and i + 1 < len(argv):
             opts[a[2:].replace("-", "_")] = argv[i + 1]
             i += 2
         else:
@@ -1020,15 +1123,25 @@ def main(argv: Optional[list[str]] = None) -> int:
     import sys
     argv = list(sys.argv[1:] if argv is None else argv)
     verb = argv.pop(0) if argv else "hook"
-    pos, opts = _opts(argv)
+    if verb in _HELP or verb == "help":
+        sys.stdout.write(_usage())
+        return 0
+    pos, opts = _opts(argv, _HOOK_FLAGS if verb == "hook" else None)
+    if "help" in opts:
+        # before the off switch, stdin and any cursor: --help only prints
+        sys.stdout.write(_usage())
+        return 0
     if verb == "hook":
         if hook_disabled():
             return 0
         stdin_text = "" if sys.stdin is None or sys.stdin.isatty() else sys.stdin.read()
+        cli_partials = ({"1": True, "0": False}[opts["partials_only"]]
+                        if "partials_only" in opts else None)
         try:
             out = run_hook(stdin_text,
                            budget_tokens=int(opts["budget"]) if "budget" in opts else None,
-                           max_lines=int(opts["max_lines"]) if "max_lines" in opts else None)
+                           max_lines=int(opts["max_lines"]) if "max_lines" in opts else None,
+                           partials_only=cli_partials)
         except Exception as e:
             # Fail LOUD, but with 1, never 2. Measured
             # (claude -p, 2.1.280): exit 1 on PostToolUse/PostToolBatch shows

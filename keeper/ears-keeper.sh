@@ -33,7 +33,11 @@
 # it, the loop ran system_profiler every second, which cost
 # coreaudiod ~17% of a core all night (measured).
 # If the watcher cannot be built or keeps dying, it polls system_profiler as
-# before. Then:
+# before. It is built only when the Command Line Tools are there (`xcode-select -p`
+# names a directory that exists): without them /usr/bin/swiftc is the install stub,
+# which opens the "install the command line developer tools" dialog, so the keeper
+# never runs it and polls system_profiler instead. $RUN/input-watch.mode
+# says which, for `ears services status`. Then:
 #   - any change to the input set -> a `device-change` event in the heard log
 #   - the target device appears or disappears -> an EOM mail to $EARS_NOTIFY,
 #     so the pager wakes the agent. EARS_NOTIFY unset: the operator, when
@@ -105,19 +109,31 @@ WATCH_SRC="$(cd "$(dirname "$0")" && pwd)/input-watch.swift"
 WATCH_BIN="${EARS_WATCH_BIN:-$RUN/input-watch}"
 WATCH_STATE="$RUN/input-watch.state"
 WATCH_PIDF="$RUN/input-watch.pid"
+WATCH_MODE="$RUN/input-watch.mode"   # "<keeper pid> <mode>": what `ears services status` reports
 CALLS_PIDF="$RUN/call-ears.pid"
 watch_pid=""; watch_fails=0
 FOLLOW=0; [ "$DEVICE" = default ] && FOLLOW=1
 
 watching() { [ -n "$watch_pid" ] && kill -0 "$watch_pid" 2>/dev/null && [ -s "$WATCH_STATE" ]; }
+watch_mode() { echo "$$ $*" >"$WATCH_MODE" 2>/dev/null || true; }   # one line, rewritten at each change
+# The Command Line Tools, asked WITHOUT swiftc: `xcode-select -p` never prompts (no
+# tools: it exits 2), and the directory it names must exist (a deleted CommandLineTools can
+# leave a stale path while swiftc would still prompt). Bare, on PATH (/usr/bin is on the
+# launchd PATH), so a test can put a fake ahead of it.
+clt_here() { local d; d="$(xcode-select -p 2>/dev/null)" && [ -n "$d" ] && [ -d "$d" ]; }
 watch_up() {  # keep input-watch running; call from the loop itself, never inside $(...)
   watching && return 0
   [ "$watch_fails" -ge 3 ] && return 1   # gave up: system_profiler from here on
   if [ -n "$watch_pid" ]; then note "input-watch $watch_pid died; restarting it"; fi
   if [ ! -x "$WATCH_BIN" ] || [ "$WATCH_SRC" -nt "$WATCH_BIN" ]; then
+    if ! clt_here; then   # never the swiftc stub: it opens the install dialog. Once per keeper start
+      watch_fails=3; watch_mode "polling system_profiler: no Command Line Tools"
+      note "no Command Line Tools: polling system_profiler (install them for faster device changes)"; return 1
+    fi
     note "input-watch: building $WATCH_BIN"
     if ! swiftc -O -swift-version 5 -o "$WATCH_BIN" "$WATCH_SRC" >&2; then
-      watch_fails=3; note "input-watch: build FAILED; polling system_profiler"; return 1
+      watch_fails=3; watch_mode "polling system_profiler: the input-watch build failed"
+      note "input-watch: build FAILED; polling system_profiler"; return 1
     fi
   fi
   rm -f "$WATCH_STATE"   # never $AUDIO_DEVICES: a dead writer's file is told apart by its pid
@@ -125,10 +141,11 @@ watch_up() {  # keep input-watch running; call from the loop itself, never insid
   "$WATCH_BIN" "$WATCH_STATE" --json "$AUDIO_DEVICES" >/dev/null 2>&1 &
   watch_pid=$!; echo "$watch_pid" >"$WATCH_PIDF"
   for _ in $(seq 20); do [ -s "$WATCH_STATE" ] && break; sleep 0.1; done
-  if watching; then note "input-watch: up, pid $watch_pid"; return 0; fi
-  watch_fails=$((watch_fails + 1)); note "input-watch: no state after 2 s (fail $watch_fails of 3)"; return 1
+  if watching; then watch_mode "input-watch, pid $watch_pid"; note "input-watch: up, pid $watch_pid"; return 0; fi
+  watch_fails=$((watch_fails + 1)); watch_mode "polling system_profiler: input-watch gave no state (fail $watch_fails of 3)"
+  note "input-watch: no state after 2 s (fail $watch_fails of 3)"; return 1
 }
-watch_down() { [ -n "$watch_pid" ] && kill "$watch_pid" 2>/dev/null; rm -f "$WATCH_PIDF"; }
+watch_down() { [ -n "$watch_pid" ] && kill "$watch_pid" 2>/dev/null; rm -f "$WATCH_PIDF" "$WATCH_MODE"; }
 inputs() {  # one input device name per line, sorted
   if watching; then tail -n +2 "$WATCH_STATE"; return; fi
   system_profiler SPAudioDataType | awk '

@@ -21,8 +21,8 @@ KEYS = {"event", "caller", "pid", "at", "heard", "session"}
 @pytest.fixture
 def base(tmp_path, monkeypatch):
     monkeypatch.setenv("VOICEMODE_BASE_DIR", str(tmp_path))
-    for v in ("VOICEMODE_HEARD_BUDGET", "VOICEMODE_HEARD_MAX_LINES",
-              heard.HEARD_EVENT_ENV, heard.HEARD_CALLER_ENV, *heard.HEARD_ENV_OLD.values(),
+    for v in (heard.HEARD_BUDGET_ENV, heard.HEARD_MAX_LINES_ENV, heard.HEARD_HOOK_ENV,
+              heard.HEARD_PARTIALS_ONLY_ENV, heard.HEARD_EVENT_ENV, heard.HEARD_CALLER_ENV, *heard.HEARD_ENV_OLD.values(),
               *SESSION_ENVS):
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "writer-session")
@@ -72,38 +72,38 @@ def lines_end(path, n):
 # --- the round trip and the legacy cursor ---------------------------------------
 
 def test_save_then_load_keeps_by(base):
-    heard.save_cursor("s", heard.Cursor(5, "heard_2030-10-09.jsonl", 10),
+    heard.save_cursor("s", heard.Cursor(5, "heard_2030-12-08.jsonl", 10),
                       by={"event": "PostToolBatch", "caller": "/x/hook"})
     cur = heard.load_cursor("s")
-    assert (cur.seq, cur.file, cur.offset) == (5, "heard_2030-10-09.jsonl", 10)
+    assert (cur.seq, cur.file, cur.offset) == (5, "heard_2030-12-08.jsonl", 10)
     assert_by(cur.by, "PostToolBatch", "/x/hook")
     assert raw_cursor()["by"] == cur.by          # on disk, beside the offset
 
 
 def test_pid_at_heard_session_are_stamped_at_the_write_not_the_callers(base, monkeypatch):
-    stamps = iter(["2030-10-09T05:00:00.000+11:00", "2030-10-09T05:09:00.000+11:00"])
+    stamps = iter(["2030-12-08T05:00:00.000+11:00", "2030-12-08T05:09:00.000+11:00"])
     monkeypatch.setattr(heard, "_now_iso", lambda: next(stamps))
     by = heard.mutator(event="tool", caller="ears.heard_wait")   # armed at 05:00
-    assert by["at"] == "2030-10-09T05:00:00.000+11:00"
+    assert by["at"] == "2030-12-08T05:00:00.000+11:00"
     heard.save_cursor("s", heard.Cursor(1), by={**by, "pid": 1, "heard": "x",
                                                 "session": "someone-else"})
     got = heard.load_cursor("s").by
-    assert got["at"] == "2030-10-09T05:09:00.000+11:00"            # the write's time
+    assert got["at"] == "2030-12-08T05:09:00.000+11:00"            # the write's time
     assert (got["event"], got["caller"]) == ("tool", "ears.heard_wait")
     assert got["pid"] == os.getpid() and got["session"] == "writer-session"
     assert got["heard"] == os.path.abspath(heard.__file__)
 
 
 def test_a_legacy_cursor_with_no_by_loads_with_by_none(base):
-    put_cursor({"seq": 3, "file": "heard_2030-10-09.jsonl", "offset": 7})
+    put_cursor({"seq": 3, "file": "heard_2030-12-08.jsonl", "offset": 7})
     cur = heard.load_cursor("s")
-    assert (cur.seq, cur.file, cur.offset, cur.by) == (3, "heard_2030-10-09.jsonl", 7, None)
+    assert (cur.seq, cur.file, cur.offset, cur.by) == (3, "heard_2030-12-08.jsonl", 7, None)
     assert "by" not in json.loads(cur.to_json())   # and writes no "by": null either
 
 
 @pytest.mark.parametrize("bad", ["vera", ["PostToolBatch"], 7, None, True])
 def test_a_non_dict_by_loads_as_none(base, bad):
-    put_cursor({"seq": 3, "file": "heard_2030-10-09.jsonl", "offset": 7, "by": bad})
+    put_cursor({"seq": 3, "file": "heard_2030-12-08.jsonl", "offset": 7, "by": bad})
     cur = heard.load_cursor("s")
     assert cur.seq == 3 and cur.offset == 7 and cur.by is None
 
@@ -123,15 +123,15 @@ def test_an_unreadable_cursor_is_still_absent(base, junk):
 
 
 def test_an_old_reader_still_reads_a_cursor_with_by(base):
-    heard.save_cursor("s", heard.Cursor(9, "heard_2030-10-09.jsonl", 40),
+    heard.save_cursor("s", heard.Cursor(9, "heard_2030-12-08.jsonl", 40),
                       by={"event": "PostToolBatch", "caller": "/x"})
     raw = raw_cursor()   # the old load_cursor's exact reads
     assert (int(raw["seq"]), raw.get("file"), int(raw.get("offset") or 0)) == (
-        9, "heard_2030-10-09.jsonl", 40)
+        9, "heard_2030-12-08.jsonl", 40)
 
 
 def test_a_resaved_loaded_cursor_never_keeps_the_previous_writers_name(base):
-    put_cursor({"seq": 3, "file": "heard_2030-10-09.jsonl", "offset": 7, "by": PREV})
+    put_cursor({"seq": 3, "file": "heard_2030-12-08.jsonl", "offset": 7, "by": PREV})
     cur = heard.load_cursor("s")
     assert cur.by == PREV
     heard.save_cursor("s", cur)                   # no by: this writer's defaults

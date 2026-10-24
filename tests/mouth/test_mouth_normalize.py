@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from datetime import datetime
 
 import numpy as np
 import pytest
@@ -185,7 +186,7 @@ def test_measured_once_and_written_beside_the_voice(mdir):
     p = mdir / "voices" / "af_test" / "settings.json"
     assert json.loads(p.read_text()) == vs
     assert vs["gain_from"] == "measured" and vs["measured_lufs"] == pytest.approx(-23.0, abs=0.3)
-    assert vs["gain_db"] == pytest.approx(7.0, abs=0.3) and vs["measured_at"].startswith("2030-10-10")
+    assert vs["gain_db"] == pytest.approx(7.0, abs=0.3) and datetime.fromisoformat(vs["measured_at"]).timestamp() == 1_917_852_900.0
     keep_lines("af_test", 0.5, 30)                        # louder lines later: never re-measured
     assert level.ensure_measured("af_test", -16.0, "kokoro") == vs
 

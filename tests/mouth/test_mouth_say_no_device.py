@@ -1,10 +1,12 @@
 """EARS-361: ``say`` with no device falls back to the host settings file's ``output``.
 
 The order is ``--device`` > ``$MOUTH_DEVICE`` > ``output`` in the host
-settings file (``voices.settings_path``) > refuse. An ``output`` of ``"default"``
-written in the file is honoured as written; an absent file, an absent key, or an
-empty or non-string value is unset, and the line is refused with a message that
-names all three fixes. The schema's documented default is never applied.
+settings file (``voices.settings_path``) > the system default output
+(EARS-368, ``mouth.resolve_device``; a mailed line takes the same order:
+``test_mouth_default_device.py``). An ``output`` of ``"default"`` written in
+the file is honoured as written; an absent file, an absent key, or an empty or
+non-string value is unset, and the line takes the last rung, ``default``,
+with ``device_from: default``. Until EARS-368 that last rung was a refusal.
 
 Fakes only: a tmp mouth dir, a tmp settings file, ``spawn=False`` (no player),
 the ``silence`` backend, and the cascade off (``tests/conftest.py``).
@@ -92,26 +94,26 @@ def test_play_takes_the_settings_output_too(rig, tmp_path):
     "not json",                            # unreadable
     json.dumps(["output", "airpods"]),     # not an object
 ], ids=["no-file", "no-key", "empty", "blank", "null", "number", "list", "bad-json", "not-object"])
-def test_an_unset_output_still_refuses_naming_every_fix(rig, content):
+def test_an_unset_output_takes_the_system_default(rig, content):
+    """EARS-368 changed this on purpose: it was ``..._still_refuses_naming_every_fix``."""
     d, settings = rig
     if content is not None:
         settings.write_text(content)
-    with pytest.raises(ValueError) as e:
-        say(d)
-    msg = str(e.value)
-    assert "no device" in msg
-    assert "--device" in msg and "MOUTH_DEVICE" in msg
-    assert "`output`" in msg and str(settings) in msg
-    assert queued(d) == []
+    item = say(d)
+    assert (item["device"], item["device_from"]) == ("default", "default")
+    assert [(x["device"], x["device_from"]) for x in queued(d)] == [("default", "default")]
 
 
-def test_the_schema_default_is_never_applied(rig):
+def test_the_schema_default_is_not_the_settings_rung(rig):
     """The schema documents ``"default": "default"``; nothing writes it, so a file
-    without the key must refuse, never play on the system default by accident."""
+    without the key is unset: the line reaches the last rung, ``default``, and says
+    so, never ``settings``. EARS-368 changed this on purpose: it was
+    ``test_the_schema_default_is_never_applied``, a refusal."""
     d, settings = rig
     settings.write_text(json.dumps({"voice": "af_sky"}))
-    with pytest.raises(ValueError, match="no device"):
-        say(d)
+    assert say(d)["device_from"] == "default"
+    settings.write_text(json.dumps({"output": "default"}))
+    assert say(d)["device_from"] == "settings"   # written in the file: the settings rung
 
 
 def test_settings_device_reads_only_a_set_string(rig):

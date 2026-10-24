@@ -76,9 +76,10 @@ def test_the_new_device_name_wins(d, monkeypatch):
     assert mouth.say("hello", spawn=False, d=d)["device"] == "null"
 
 
-def test_with_neither_device_name_say_still_refuses(d):
-    with pytest.raises(ValueError, match=r"set MOUTH_DEVICE"):
-        mouth.say("hello", spawn=False, d=d)
+def test_with_neither_device_name_say_takes_the_system_default(d):
+    """EARS-368 changed this on purpose: it was ``..._say_still_refuses``."""
+    item = mouth.say("hello", spawn=False, d=d)
+    assert (item["device"], item["device_from"]) == ("default", "default")
 
 
 def test_the_old_voice_name_still_picks_the_voice(d, monkeypatch):

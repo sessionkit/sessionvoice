@@ -205,10 +205,15 @@ def _log_dir(item: dict) -> Optional[Path]:
 def _common(item: dict) -> dict:
     return {"utt": item["utt"], "voice": item.get("voice"), "backend": item.get("backend"),
             "backend_asked": item.get("backend_asked"), "pan": item.get("pan"),
+            # the rung that chose the device (mouth.resolve_device): flag, mail, call,
+            # env, settings or default; the device itself is the caller's
+            "device_from": item.get("device_from"),
             "session": item.get("session"), "agent": item.get("agent"),
             "requested_ts": item.get("requested_ts"), "directory": _log_dir(item),
             "file": item.get("file"), "start": item.get("start"), "end": item.get("end"),
             "mail_id": item.get("mail_id"), "hold": item.get("hold"),
+            # room: held by the room default (hold.ROOM_HOLD), not by its sender
+            "hold_from": item.get("hold_from"),
             "interest": item.get("interest"), "resume_of": item.get("resume_of"),
             # a say-again replay names the line it replays, so the keeper
             # follows it back to the original; its text is the original's own
@@ -944,8 +949,9 @@ def _resume(d: Path, item: dict, rec: dict) -> None:
                    **({"resume_played": str(rec.get("text_played_est") or ""),
                        "resume_played_s": rec["played_s"]}
                       if rec.get("played_s") is not None else {}),
-                   # its own barge count (--barge-words/--no-barge)
-                   **{k: item[k] for k in ("barge_words", "barge_words_from") if k in item},
+                   # its own barge count (--barge-words/--no-barge), and its device's rung
+                   **{k: item[k] for k in ("barge_words", "barge_words_from", "device_from")
+                      if k in item},
                    # its levelling as its caller answered it; else the host's, at take
                    **{k: item[k] for k in ("normalize", "normalize_from", "normalize_lufs",
                                            "normalize_lufs_from") if k in item},

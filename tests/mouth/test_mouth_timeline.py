@@ -137,7 +137,7 @@ def test_retract_verb_then_row_gone(d, monkeypatch, heard_dir):
 
 def test_hold_is_held_while_his_turn_is_open(d, monkeypatch, heard_dir):
     h = say("opener", hold="turn-end", expires_s=60, d=d, monkeypatch=monkeypatch)
-    plain = say("not held", d=d, monkeypatch=monkeypatch)
+    plain = say("not held", hold="none", d=d, monkeypatch=monkeypatch)   # past the room default
     now = time.time()
     heard_log(heard_dir, {"kind": "partial", "source": "mic", "ts": iso(now - 1), "text": "so I was"})
     rows = {r["utt"]: r for r in timeline.future(d, heard_dir=heard_dir, now=now)}

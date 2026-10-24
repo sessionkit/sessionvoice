@@ -64,7 +64,7 @@ em = _em()
 
 
 def ts(sec):
-    return f"2030-09-29T01:{int(sec // 60):02d}:{sec % 60:06.3f}+10:00"
+    return f"2030-06-09T01:{int(sec // 60):02d}:{sec % 60:06.3f}+10:00"
 
 
 def vera_line():
@@ -119,7 +119,7 @@ def rig(tmp_path, monkeypatch):
 
 def keep(rig, *, wav=True, utt=UTT):
     """Vera's line as audio.keep leaves it: <day>/<utt>.wav beside <utt>.json."""
-    folder = rig.audio / "2030-09-29"
+    folder = rig.audio / "2030-06-09"
     folder.mkdir(parents=True, exist_ok=True)
     w = folder / f"{utt}.wav"
     if wav:
@@ -134,7 +134,7 @@ def keep(rig, *, wav=True, utt=UTT):
 def keeper(rig, monkeypatch, capsys, records):
     """The real keeper, --to device --once, over RECORDS: ([mail], [stderr JSON], fire log).
     Its mails go to the refusing fixture and are recorded on the way."""
-    (rig.base / "logs" / "conversations" / "heard_2030-09-29.jsonl").write_text(
+    (rig.base / "logs" / "conversations" / "heard_2030-06-09.jsonl").write_text(
         "".join(json.dumps(r) + "\n" for r in records))
     rf = rig.base / "wake.json"
     rf.write_text(json.dumps(RULES))

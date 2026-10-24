@@ -49,24 +49,128 @@ Mac, a cleared cache) can load different weights from the ones sessionvoice
 was checked against. sessionvoice cannot pin them from its side yet; a pin
 fixed at install is not built yet.
 
-What it does instead is report drift. `SPEECH_WEIGHTS` in
+What it does instead is read the cache and report. `SPEECH_WEIGHTS` in
 `src/ears/services.py` is the one place that names the commit expected for
-each of the three repos. `ears services status` prints a `weight` row for
-each, from the Hugging Face cache's files alone (`refs/main` and its
-snapshot). It imports no Hugging Face code and opens no connection.
+each of the three repos, and `SPEECH_WEIGHT_SIZES` beside it holds what the
+server fetches from each at that commit. `ears services weights` reads each
+weight's state from the Hugging Face cache's files alone. It imports no
+Hugging Face code, runs no command and opens no connection, so it is safe to
+call during a call. `ears services status` prints the same `weight` rows.
 
-- `match`: the cache's `main` is the expected commit.
-- `DIFFERS`: the cache's `main` is another commit, which it names. The
-  server loads that one.
-- `not cached`: nothing for that repo yet, so the next first use fetches
-  whatever `main` is then.
+| weight | use | what the server fetches | size |
+| --- | --- | --- | --- |
+| `mlx-community/parakeet-tdt-0.6b-v3` | stt | the files mlx-audio's allow patterns select (4) | 2,508,940,517 bytes |
+| `mlx-community/Kokoro-82M-bf16` | tts | the files mlx-audio's allow patterns select (56) | 355,322,783 bytes |
+| `prince-canuma/Kokoro-82M` | voices | `voices/<voice>.safetensors`, one per voice it is asked for (54 in all; never the `.pt` file beside each) | 28,206,306 bytes for all |
 
-The cache it reads is `HF_HUB_CACHE`, else `HF_HOME/hub`, else
-`~/.cache/huggingface/hub`, from the shell `status` runs in. sessionvoice's
-own server (`dev.sessionkit.voice.mlx-audio`) sets none of these, so it uses the
-last. A server started with another `HF_HOME` has its own cache, which this
-does not see. The rows are a report: `status` exits 0 whatever they say, and
-nothing is fetched, removed or blocked.
+The sizes come from the Hugging Face metadata API
+(`/api/models/<repo>/tree/<sha>`), never from fetching the weights. In all
+that is about 2.9 GB.
+
+Each weight is in one of three states, decided in this order:
+
+1. `downloading`: a `blobs/*.incomplete` file in the repo's cache folder was
+   written in the last 120 seconds. huggingface_hub writes each file there
+   as it arrives, then renames it into place.
+2. `cached`: `refs/main` names a commit, its `snapshots/<commit>/` folder
+   exists, no `.incomplete` file is left, and the bytes on disk reach the
+   expected size (or the size is unknown).
+3. `missing`: anything else. That covers nothing there yet, a partial
+   snapshot, and an `.incomplete` file nobody has written for 120 seconds (a
+   download that stopped). The next first use fetches whatever `main` is
+   then.
+
+Separately, a weight drifts when the cache's `main` is another commit from
+the one expected. The server loads that commit. Its size is then unknown.
+
+The server fetches the voice packs one at a time, as each voice is first
+asked for. So the voices weight reads `missing`, with a count such as
+`3 of 54 packs`, until every pack is there.
+
+### `ears services weights --json`
+
+One JSON object on one line, on stdout, with the schema `ears.weights/1`. It
+exits 0 whenever it could read the cache. A missing cache is a state, not an
+error.
+
+```json
+{"schema":"ears.weights/1","cache":"<home>/.cache/huggingface/hub","state":"downloading","bytes_done":412000000,"bytes_total":2892469606,"weights":[{"repo":"mlx-community/parakeet-tdt-0.6b-v3","use":"stt","state":"downloading","bytes_done":412000000,"bytes_total":2508940517,"expected":"<40 hex>","cached_ref":"<40 hex>","drift":false}]}
+```
+
+`<home>` stands in for your home directory. The real output prints the
+cache's absolute path.
+
+| key | type | meaning |
+| --- | --- | --- |
+| `schema` | str | always `ears.weights/1`. New keys may be added under /1. A rename, a removal or a new `state` value bumps it to /2. |
+| `cache` | str | the Hugging Face hub cache it read: the one the speech server reads, as an absolute path |
+| `state` | `cached` \| `downloading` \| `missing` | overall: `downloading` if any weight is, else `cached` if all are, else `missing` |
+| `bytes_done` | int | the sum over the weights |
+| `bytes_total` | int \| null | the sum over the weights when every weight's size is known, else null |
+| `weights` | list | one entry per weight: stt, tts, voices, in that order |
+| `weights[].repo` | str | the Hugging Face repo |
+| `weights[].use` | `stt` \| `tts` \| `voices` | what it is for |
+| `weights[].state` | `cached` \| `downloading` \| `missing` | as above |
+| `weights[].bytes_done` | int | bytes on disk for this repo: its complete files (read through a link into the shared store) plus its `.incomplete` files |
+| `weights[].bytes_total` | int \| null | what the server fetches at `expected`; null when the weight drifts |
+| `weights[].expected` | str | the 40-hex commit sessionvoice was checked against |
+| `weights[].cached_ref` | str \| null | what `refs/main` holds, at most 40 characters, or null |
+| `weights[].drift` | bool | `cached_ref` is set and is not `expected` |
+
+A caller that gets a non-zero exit, output that does not parse, or another
+`schema` should treat the weights as not confirmed.
+
+The cache it reads is the one the speech server reads, so the reading
+answers one question: will the server's first call fetch? launchd gives
+sessionvoice's own server (`dev.sessionkit.voice.mlx-audio`) none of the
+shell's variables, and its plist sets no `HF_*`, so that cache is
+`~/.cache/huggingface/hub`. If the plist ever sets one, that value wins, by
+huggingface_hub's own order (`HF_HUB_CACHE`, else `HF_HOME/hub`). The
+shell's own `HF_HUB_CACHE` or `HF_HOME` does not change it: weights cached
+only there are reported as not cached, because the server cannot see them.
+A server started by hand with another `HF_HOME` has its own cache, which
+this does not see. The rows are a report: `status` and `weights` exit 0
+whatever they say, and nothing is fetched, removed or blocked.
+
+### The install-time prefetch
+
+When `ears services install` installs sessionvoice's own speech server, it
+fetches the three weights once, after the server's job is loaded. Then the
+first call does not wait about a minute for each download. The fetch is the
+server's own call, run on the server's python: `snapshot_download(repo,
+revision="main", allow_patterns=...)`, with the patterns from
+`SPEECH_WEIGHT_SIZES` (mlx-audio's allow patterns for stt and tts, and
+`voices/*.safetensors` for the voices). The cache then holds what the server
+looks for, and `refs/main` is written.
+
+- **The size comes first.** One line gives the total still to fetch, from
+  the reader (each weight's size minus what is already on disk). Weights
+  already cached are named and skipped.
+- **Then progress.** While a weight downloads, install reads the cache every
+  5 seconds and prints `N of M` for the weights it is fetching. On a terminal
+  the line is rewritten in place. When the output is piped, each reading is a
+  new line.
+- **The opt-out.** `--no-prefetch`, or `EARS_NO_PREFETCH` set to `1`, `true`
+  or `on`, skips the fetch. Install then says how much the first call will
+  fetch. `--dry-run` prints the size and the plan and fetches nothing.
+- **A failure is not fatal.** If a fetch fails or is interrupted, install
+  says why and how much the first call will now fetch, and carries on. It
+  never fails because of the prefetch.
+- **A final reading.** Install ends with the `weight` rows, which show what
+  is cached now.
+
+The fetch goes into the cache the speech server reads, not the cache of the
+shell that runs install. launchd gives the server none of the shell's
+variables, and its plist sets no `HF_*`, so that cache is
+`~/.cache/huggingface/hub`. If the plist ever sets one, that value wins.
+Install hands the fetch this path as `HF_HUB_CACHE`, with the server's
+`HF_*` in place of the shell's, so what huggingface_hub keeps beside the
+cache (its xet cache, under `HF_HOME`) goes where the server's would. It
+reads the size and the progress from the same path, and prints it. When the shell's own cache is
+elsewhere (because `HF_HUB_CACHE` or `HF_HOME` is set), install says so in
+one line. Weights cached only there are fetched again, because the server
+cannot see them. When the server on `:8890` is someone else's (install's
+step 2, which installs nothing), install fetches nothing for it either.
 
 ## Parakeet TDT 0.6B v3
 
@@ -187,7 +291,8 @@ nothing is fetched, removed or blocked.
     header choose the backend.
 - **Revision:** not pinned, for the model or for the voices, which come from
   `prince-canuma/Kokoro-82M`; the server fetches `main` of each. `ears
-  services status` reports drift from the expected commits. See
+  services weights` reports what is cached and any drift from the expected
+  commits. See
   [The speech server's weights are not pinned][weights-unpinned].
 - **Size:** 356 MB: the weights (`kokoro-v1_0.safetensors`, 327 MB) plus 55
   voice files.
