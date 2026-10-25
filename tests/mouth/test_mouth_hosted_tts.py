@@ -889,21 +889,23 @@ def _hosted_section() -> str:
     return m.group(1)
 
 
-def test_readme_points_a_stranger_at_the_hosted_section():
-    readme = (ROOT / "README.md").read_text()
-    assert "docs/models.md#a-hosted-speech-endpoint-instead" in readme
+def test_the_speech_server_page_points_a_stranger_at_the_hosted_section():
+    # EARS-447: the README's Requirements moved to docs/dependencies.md, and the speech
+    # server's detail, this pointer included, to docs/speech-server.md, which it links.
+    page = (ROOT / "docs" / "speech-server.md").read_text()
+    assert "](speech-server.md)" in (ROOT / "docs" / "dependencies.md").read_text()
+    assert "models.md#a-hosted-speech-endpoint-instead" in page
     for word in ("`tts`", f"~/{SETTINGS}/mouth.json", "MOUTH_TTS_KEY"):
-        assert word in readme, word
+        assert word in page, word
     _hosted_section()
 
 
-def test_readme_cites_the_line_that_holds_the_kokoro_default():
-    """README names backends.py:<n> for the mouth's Kokoro default (do-001 moved it to KOKORO_URL)."""
-    readme = (ROOT / "README.md").read_text()
-    m = re.search(r"mouth's Kokoro voices \(`src/mouth/backends\.py:(\d+)`\)", readme)
-    assert m
-    line = (ROOT / "src" / "mouth" / "backends.py").read_text().splitlines()[int(m.group(1)) - 1]
-    assert line.startswith("KOKORO_URL = ") and "8890" in line
+def test_the_speech_server_page_names_the_kokoro_default_the_code_holds():
+    """The page says the mouth's Kokoro voices are on 127.0.0.1:8890, and KOKORO_URL is that
+    server. No file:line in the public text (EARS-447: receipts live in the review)."""
+    page = (ROOT / "docs" / "speech-server.md").read_text()
+    assert "127.0.0.1:8890" in page and "the mouth's Kokoro voices" in page
+    assert backends.KOKORO_URL == "http://127.0.0.1:8890/v1"
 
 
 def test_the_docs_example_is_a_placeholder_the_schema_and_code_accept(mouth_json):
@@ -921,7 +923,8 @@ def test_the_docs_hold_no_real_key_or_account():
     """Placeholders only: no provider-shaped key, the key as <your-key>, example.com hosts."""
     s = _hosted_section()
     readme = (ROOT / "README.md").read_text()
-    for text in (s, readme):
+    page = (ROOT / "docs" / "speech-server.md").read_text()
+    for text in (s, readme, page):
         assert not re.search(r"\bsk-[A-Za-z0-9_-]{8,}", text)
     assert "MOUTH_TTS_KEY=<your-key>" in s
     assert "launchctl setenv MOUTH_TTS_KEY '<your-key>'" in s
@@ -1173,6 +1176,6 @@ def test_the_docs_show_the_key_file_made_private_first():
     s = _hosted_section()
     assert f"install -m 600 /dev/null ~/{SETTINGS}/tts.key" in s
     assert "launchctl setenv MOUTH_TTS_KEY '<your-key>'" in s and "hand test" in s
-    assert f"~/{SETTINGS}/tts.key" in (ROOT / "README.md").read_text()
+    assert f"~/{SETTINGS}/tts.key" in (ROOT / "docs" / "speech-server.md").read_text()
     assert f"~/{SETTINGS}/tts.key" in MOUTH_SCHEMA["properties"]["tts"]["description"]
     assert "EARS-310 do-004" not in s                       # do-003's placeholders are filled

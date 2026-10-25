@@ -64,10 +64,11 @@ def test_the_plugin_description_no_longer_says_nothing_to_install():
 
 
 def test_the_plugin_description_says_what_readme_says_about_stt():
-    # EARS-289 (SK-46 G34): README's Requirements make a speech server on :8890 a
-    # prerequisite and Apple an opt-in backend; the description said "no STT server to run".
+    # EARS-289 (SK-46 G34): the dependency docs make a speech server on :8890 the ears'
+    # default engine and Apple an opt-in backend; the description said "no STT server to run".
+    # README's Requirements now only link docs/dependencies.md (EARS-447), so read the page.
     desc = json.loads(PLUGIN.read_text())["description"]
-    req = re.search(r"^## Requirements\n(.*?)^## ", README.read_text(), re.S | re.M).group(1)
+    req = (ROOT / "docs" / "dependencies.md").read_text()
     assert "no stt server" not in desc.lower()
     assert "127.0.0.1:8890" in desc and "127.0.0.1:8890" in req
     assert "Parakeet" in desc and "Parakeet" in req

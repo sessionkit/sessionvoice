@@ -131,7 +131,8 @@ def words(t): return "".join(c.lower() if c.isalnum() else " " for c in str(t or
 def note_mouth(r):
     k = r.get("kind")
     if k == "saying" and r.get("utt"):
-        mouth[r["utt"]] = [r.get("agent") or "mouth", epoch(r["ts"]), None, set(words(r.get("text")))]
+        # the words IN ORDER, so the line's ending is known
+        mouth[r["utt"]] = [r.get("agent") or "mouth", epoch(r["ts"]), None, words(r.get("text"))]
         while len(mouth) > 64: mouth.pop(next(iter(mouth)))
         return True
     if k == "said" and r.get("utt") in mouth:
@@ -139,14 +140,42 @@ def note_mouth(r):
         return True
     return k in ("saying", "said")
 def mouth_name(who, fr, text, w0, w1, lines, tail=1.5, agents=frozenset()):
-    """(who, fracs, utt): an 'other' (or an agent ref's) line over a playing mouth line whose
-    words are >= half that line's is the line's agent; a mixed line keeps 'mixed' and its
-    'other' share is renamed, so its lead (bob) still counts for a speaker gate."""
+    """(who, fracs, utt): an 'other' (or an agent ref's) line over a playing mouth line is
+    the line's agent when at least half its HEARD words are the line's; a mixed line keeps
+    'mixed' and its 'other' share is renamed, so its lead (bob) still counts for a speaker
+    gate.
+
+    A heard line mostly AFTER the mouth line ended (its window's midpoint past the end)
+    can only be the line's echo if it is the line's ENDING: an in-order run of heard words
+    that is the line's last words, at least half the heard words. A person's "Anything."
+    after "... say anything, and I'll confirm I heard you." keeps its voice label.
+    A line whose said row was never seen ends at the next line's start (the
+    mouth plays one line at a time), else at an estimate: s0 + max(10 s, 0.6 s a word)."""
+    def end_of(utt, s0, s1, lw):
+        if s1 is not None:
+            return s1
+        nxt = [v[1] for k, v in lines.items() if k != utt and v[1] > s0]
+        return min(nxt) if nxt else s0 + max(10.0, 0.6 * len(lw))
+
+    def ending_run(hw, lw):
+        """The longest run hw[i:j] that is lw's last j-i words."""
+        n = len(lw)
+        for k in range(min(len(hw), n), 0, -1):
+            if any(hw[i:i + k] == lw[n - k:] for i in range(len(hw) - k + 1)):
+                return k
+        return 0
+
     hw = words(text)
     for utt, (agent, s0, s1, lw) in reversed(list(lines.items())):
-        if w1 < s0 - 0.5 or (s1 is not None and w0 > s1 + tail):
+        e = end_of(utt, s0, s1, lw)
+        if w1 < s0 - 0.5 or w0 > e + tail:
             continue
-        if len(hw) < 1 or sum(w in lw for w in hw) / len(hw) < 0.5:
+        if len(hw) < 1:
+            continue
+        if (w0 + w1) / 2 > e:   # mostly after the line: only its ending can be its echo
+            if ending_run(hw, list(lw)) / len(hw) < 0.5:
+                continue
+        elif sum(w in set(lw) for w in hw) / len(hw) < 0.5:
             continue
         fr = {(agent if k == "other" or k in agents else k): v for k, v in fr.items()}
         if who == "other" or who in agents:

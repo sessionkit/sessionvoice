@@ -14,7 +14,8 @@ system default: FAKE_SD_DEFAULT (a file), read ONCE at import and again only at
 _initialize, the way PortAudio caches it. FAKE_SD_FAIL (a string of steps, consumed
 one at a time, kept in FAKE_SD_LOG + ".fail"): each open, and each sound started in
 an open stream, takes the next step; "F" fails it (an open raises; a sound kills the
-stream), anything else lets it through.
+stream), anything else lets it through. A held stream is called back only while it
+has a sound to take, so every sound it starts is one this fake saw first.
 """
 import os
 import threading
@@ -107,7 +108,17 @@ class OutputStream:
     def _run(self):
         held = getattr(self._cb, "__self__", None)   # the HeldStream: is a new sound about to start?
         while not self._stop.is_set():
-            new = held is not None and held._cur is None and len(held._queue) > 0
+            new = False
+            if held is not None:
+                # Look under the HeldStream's own lock, the one write() queues under. Looked
+                # at bare, a sound queued between this look and the callback below was taken
+                # unseen: no play, no fail step, so "..F" killed sound 3, not sound 2 (EARS-453).
+                with held._lock:
+                    new = held._cur is None and len(held._queue) > 0
+                    idle = held._cur is None and not held._queue
+                if idle:     # nothing to take: the callback would only write silence, so skip it
+                    time.sleep(0.002)   # (a sound queued now is seen on the next look)
+                    continue
             if new and _fails():
                 self.active = False
                 _note("dead:" + self.name)

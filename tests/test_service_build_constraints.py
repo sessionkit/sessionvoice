@@ -18,7 +18,8 @@ direct-URL pin names its own file: a `.whl` URL is a wheel, anything else is bui
 - What it cannot see: a version with wheels for other platforms only (none for macOS arm64 /
   cp312) and an sdist has two hashes or more, and uv would build it here. The lock does not
   say which file a hash belongs to. Measured against PyPI on 2030-06-09, both locks have no
-  such pin: only docopt==0.6.2 and webrtcvad==2.0.10 (speech) build from source.
+  such pin. Only docopt==0.6.2 (speech, pure Python) builds from source: the speech lock takes
+  webrtcvad-wheels in place of mlx-audio's webrtcvad sdist (a C extension, so a compiler).
 
 The speakers lock has no sdist-only pin, so its install passes no `-b` and it ships no
 constraints file: a pin that would need one fails here first."""
@@ -88,12 +89,12 @@ def test_every_sdist_only_pin_has_its_build_closure_hash_pinned(name):
     assert uncovered(LOCKS[name]("requirements.lock").read_text(), _constraints(name)) == []
 
 
-def test_the_speech_lock_builds_exactly_docopt_and_webrtcvad():
-    """The measured finding the file was written for (PyPI's file lists, 2030-06-09)."""
+def test_the_speech_lock_builds_exactly_docopt():
+    """The measured finding the file was written for (PyPI's file lists, 2030-06-09), less
+    webrtcvad: the one C extension built from source, so the one pin that needed a compiler."""
     lock = services._speech_file("requirements.lock").read_text()
-    assert sdist_only(lock) == {"docopt==0.6.2", "webrtcvad==2.0.10"}
-    assert set(DECLARED.findall(_constraints("speech"))) == {
-        ("docopt==0.6.2", "setuptools"), ("webrtcvad==2.0.10", "setuptools")}
+    assert sdist_only(lock) == {"docopt==0.6.2"}
+    assert set(DECLARED.findall(_constraints("speech"))) == {("docopt==0.6.2", "setuptools")}
 
 
 def test_the_speakers_lock_builds_nothing_and_ships_no_constraints():

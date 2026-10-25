@@ -35,15 +35,13 @@ import numpy as np
 
 from ears import envnames
 
-
-class DeviceAbsent(RuntimeError):
-    pass
+from . import canplay as _canplay
+from .canplay import DeviceAbsent, NoOutputDevice, PortAudioMissing  # noqa: F401 - output.* names
 
 
 def _sd():
-    import sounddevice as sd
-
-    return sd
+    """``sounddevice``; :class:`PortAudioMissing` (a :class:`DeviceAbsent`) without PortAudio."""
+    return _canplay._sd()
 
 
 #: PortAudio's rescan is a terminate and an initialize, and a terminate closes

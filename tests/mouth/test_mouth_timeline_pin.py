@@ -2,14 +2,16 @@
 
 PATH's python3 on a clean Mac is Apple's 3.9.6, below the package's 3.10 floor: importing
 ears/events.py (`int | None`) raised TypeError and every notifier call failed. The wrapper
-now runs <repo>/.venv/bin/python, or $MOUTH_PYTHON when that is set, and with neither it
-says so in one line and exits 2.
+now runs $MOUTH_PYTHON when that is set, else <repo>/.venv/bin/python, else the installed uv
+tool's python (<tools>/sessionkit, then <tools>/sessionvoice: EARS-440, a plugin's copy of bin/
+has no .venv), and with none of them it says so in one line and exits 2.
 
-The first three tests are portable: a scratch tree holds a COPY of the wrapper (a symlink
+Every test but the last is portable: a scratch tree holds a COPY of the wrapper (a symlink
 would resolve back to this repo), src/ linked to this repo's, and .venv/bin/python linked to
 the python running the tests. A fake python3 first on PATH leaves a marker and exits 97 if
-anything runs it. The last test is the real stranger's case and needs a system python below
-the floor; without one it skips, saying why.
+anything runs it. HOME, UV_TOOL_DIR and XDG_DATA_HOME are always scratch (or absent), so a
+host that really has the kit installed answers nothing here. The last test is the real
+stranger's case and needs a system python below the floor; without one it skips, saying why.
 """
 
 import json
@@ -71,17 +73,108 @@ def test_the_wrapper_runs_its_own_venv_python_never_paths_python3(scratch, tmp_p
         assert not marker.exists(), f"{cmd} ran PATH's python3"
 
 
-def test_with_no_venv_it_refuses_in_one_line_naming_the_floor(scratch):
+@pytest.mark.parametrize("decoy", ["none", "uv-tool-dir-wins-over-home"])
+def test_with_no_venv_and_no_tool_it_refuses_in_one_line_naming_an_install_fix(scratch, tmp_path, decoy):
     tree, env, marker = scratch
+    if decoy != "none":     # a kit under the HOME default does not count once UV_TOOL_DIR is set
+        _recorder(Path(env["HOME"]) / ".local/share/uv/tools/sessionkit/bin/python", tmp_path / "decoy")
+        env = {**env, "UV_TOOL_DIR": str(tmp_path / "empty-tools")}
     p = _run(tree / "bin" / "mouth-timeline", env)
     assert p.returncode == 2, p.stderr
     assert p.stdout == ""
     lines = p.stderr.splitlines()
     assert len(lines) == 1, p.stderr
-    for part in ("mouth-timeline: no python at", "3.10", "uv sync", "MOUTH_PYTHON"):
+    for part in ("mouth-timeline: no python found", "3.10", "uv tool install --python 3.14 sessionkit",
+                 "uv sync", "MOUTH_PYTHON"):
         assert part in lines[0], (part, lines[0])
+    # the fix that applies to a stranger's install comes first; `uv sync` is the checkout's
+    assert lines[0].index("uv tool install") < lines[0].index("uv sync"), lines[0]
     assert "Traceback" not in p.stderr
     assert not marker.exists(), "it fell back to PATH's python3"
+    assert not (tmp_path / "decoy").exists()
+
+
+def _recorder(path: Path, log: Path) -> Path:
+    """A fake python at `path` that writes its argv and PYTHONPATH to `log`, then runs the real
+    interpreter with the same argv, so the reader still answers."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'''#!/bin/sh\nprintf '%s\\n' "$@" "PYTHONPATH=$PYTHONPATH" > '{log}'\nexec '{sys.executable}' "$@"\n''')
+    path.chmod(0o755)
+    return path
+
+
+def _tool_env(env: dict, tmp_path: Path, where: str) -> tuple[dict, Path]:
+    """(env, tools): the env that makes uv's tool dir `tools`, by the variable named `where`."""
+    if where == "UV_TOOL_DIR":
+        tools = tmp_path / "uvtools"
+        return {**env, "UV_TOOL_DIR": str(tools)}, tools
+    if where == "XDG_DATA_HOME":
+        return {**env, "XDG_DATA_HOME": str(tmp_path / "xdg")}, tmp_path / "xdg" / "uv" / "tools"
+    return env, Path(env["HOME"]) / ".local" / "share" / "uv" / "tools"     # the HOME default
+
+
+@pytest.mark.parametrize("where,tool", [("UV_TOOL_DIR", "sessionkit"), ("UV_TOOL_DIR", "sessionvoice"),
+                                        ("XDG_DATA_HOME", "sessionkit"), ("HOME", "sessionkit")])
+def test_with_no_venv_it_runs_the_installed_tools_python_on_its_own_src(scratch, tmp_path, where, tool):
+    """The stranger's install (EARS-440): a plugin copy with no .venv, and the kit's uv tool."""
+    tree, env, marker = scratch
+    env, tools = _tool_env(env, tmp_path, where)
+    log = tmp_path / "tool-python-ran"
+    _recorder(tools / tool / "bin" / "python", log)
+    p = _run(tree / "bin" / "mouth-timeline", env)
+    assert p.returncode == 0, p.stderr
+    assert json.loads(p.stdout)["v"] == 1
+    argv = log.read_text().splitlines()
+    assert argv[:3] == ["-S", "-m", "mouth.timeline"], argv          # still no site-packages
+    first = argv[-1].removeprefix("PYTHONPATH=").split(":")[0]     # the suite's fences follow it
+    assert first == f"{tree}/bin/../src", argv                         # the copy's own src/
+    assert not marker.exists()
+
+
+def test_the_kit_tool_wins_over_a_lone_sessionvoice_tool(scratch, tmp_path):
+    tree, env, marker = scratch
+    env, tools = _tool_env(env, tmp_path, "UV_TOOL_DIR")
+    _recorder(tools / "sessionkit" / "bin" / "python", tmp_path / "kit")
+    _recorder(tools / "sessionvoice" / "bin" / "python", tmp_path / "voice")
+    p = _run(tree / "bin" / "mouth-timeline", env)
+    assert p.returncode == 0, p.stderr
+    assert (tmp_path / "kit").exists() and not (tmp_path / "voice").exists()
+
+
+def test_a_checkout_venv_wins_over_the_installed_tool(scratch, tmp_path):
+    tree, env, marker = scratch
+    env, tools = _tool_env(env, tmp_path, "UV_TOOL_DIR")
+    _recorder(tree / ".venv" / "bin" / "python", tmp_path / "venv")
+    _recorder(tools / "sessionkit" / "bin" / "python", tmp_path / "kit")
+    p = _run(tree / "bin" / "mouth-timeline", env)
+    assert p.returncode == 0, p.stderr
+    assert (tmp_path / "venv").exists() and not (tmp_path / "kit").exists()
+
+
+def test_mouth_python_beats_the_venv_and_the_tool(scratch, tmp_path):
+    tree, env, marker = scratch
+    env, tools = _tool_env(env, tmp_path, "UV_TOOL_DIR")
+    _recorder(tree / ".venv" / "bin" / "python", tmp_path / "venv")
+    _recorder(tools / "sessionkit" / "bin" / "python", tmp_path / "kit")
+    mine = _recorder(tmp_path / "mine" / "python", tmp_path / "mine-ran")
+    p = _run(tree / "bin" / "mouth-timeline", {**env, "MOUTH_PYTHON": str(mine)})
+    assert p.returncode == 0, p.stderr
+    assert (tmp_path / "mine-ran").exists()
+    assert not (tmp_path / "venv").exists() and not (tmp_path / "kit").exists()
+
+
+def test_a_missing_mouth_python_is_refused_never_fallen_through(scratch, tmp_path):
+    tree, env, marker = scratch
+    env, tools = _tool_env(env, tmp_path, "UV_TOOL_DIR")
+    _recorder(tools / "sessionkit" / "bin" / "python", tmp_path / "kit")
+    gone = tmp_path / "no-such-python"
+    p = _run(tree / "bin" / "mouth-timeline", {**env, "MOUTH_PYTHON": str(gone)})
+    assert p.returncode == 2, p.stderr
+    assert p.stdout == ""
+    lines = p.stderr.splitlines()
+    assert len(lines) == 1, p.stderr
+    assert f"MOUTH_PYTHON={gone}" in lines[0] and "3.10" in lines[0], lines[0]
+    assert not (tmp_path / "kit").exists(), "an explicit MOUTH_PYTHON fell through to the tool"
 
 
 def test_mouth_python_is_an_explicit_override(scratch):

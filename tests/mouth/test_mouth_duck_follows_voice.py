@@ -120,10 +120,17 @@ def test_recover_zero_springs_back_at_the_offset(ears):
 
 
 @pytest.mark.parametrize("mode,want", [(None, 2.5), ("final", 2.5), ("nemotron", 1.0), ("whisper", 2.5)])
-def test_the_recovery_default_follows_the_partials_mode(ears, partials, mode, want):
+def test_the_recovery_default_follows_the_partials_mode(ears, partials, mode, want, monkeypatch):
     """s9a (Q9): 1.0 s after the offset with streaming partials (nemotron),
     2.5 s with chunked (final, the code default; a mode it does not know is
-    final, as the ears read it)."""
+    final, as the ears read it).
+
+    The test steps the duck by hand on its own clock (0.0, 0.2, ...), so the
+    duck ``for_line`` hands back must not also be started: its poll thread
+    steps the same duck every ``POLL_S`` on ``time.monotonic``, hours past
+    0.0, and one such step taking the offset (or landing after the onset)
+    recovered the line early or never (EARS-453 do-004)."""
+    monkeypatch.setattr(onset.BargeDuck, "start", lambda self: self)
     if mode is not None:
         partials(mode)
     pol = hold.barge_policy()
@@ -136,7 +143,7 @@ def test_the_recovery_default_follows_the_partials_mode(ears, partials, mode, wa
         duck = d
     bd = onset.for_line(Out(), "airpods", settings={})
     try:
-        assert bd.recover_s == want
+        assert bd.recover_s == want and bd._thread is None    # stepped by this test alone
         ears.vad()
         bd.step(now=0.0)
         ears.vad(speech=False)

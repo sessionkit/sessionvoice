@@ -22,6 +22,14 @@ is held, and given at most ``row_wait_s``), SIGKILL to the streaming child the c
 (a stopped nemotron child would not exit on its own), a flush of stdout and stderr
 (at most ``FLUSH_WAIT_S``), then ``os._exit(3)``.
 
+A trip owns the exit code. Its SIGKILL can free the very call the frame loop was stuck in
+(a blocking write to the child's stdin), and the capture then finishes in the moment before
+``os._exit(3)``. So a capture that ends while a trip is under way does not go on to exit 0:
+:meth:`Watchdog.run_ended` waits for the trip's exit (at most :meth:`trip_wait_s`), and the
+CLI returns 3 whenever its watchdog tripped. ``run_ended`` and the start of a
+trip take one lock, so each sees the other whole: once the capture has ended, only the
+``exit`` trip is left.
+
 ``capture()`` runs without one unless given one: a library caller (and the test suite) is
 never ``os._exit``-ed. The CLI gives one only when it owns its process (``main()`` called
 with no argv, as ``python -m ears.listen capture`` and the ``ears`` script do).
@@ -148,6 +156,8 @@ class Watchdog:
         self._stop_seen: Optional[float] = None
         self._ended: Optional[float] = None
         self._halt = threading.Event()
+        self._lock = threading.Lock()  # run_ended vs the start of a trip: one or the other first
+        self._trip_done = threading.Event()  # set only if the trip's ``exit`` returns (a test's)
         self._thread: Optional[threading.Thread] = None
         self.tripped: Optional[str] = None
         self._stop_requested: Callable[[], bool] = lambda: False
@@ -182,11 +192,30 @@ class Watchdog:
 
     def run_ended(self) -> None:
         """The capture has finished. With no ``exit_grace_s`` the watchdog stops now (a
-        library caller goes on). With one (the CLI), the process has that long to be gone."""
-        if self.exit_grace_s is None:
+        library caller goes on). With one (the CLI), the process has that long to be gone.
+
+        If a trip is already under way, the capture finished because the trip's SIGKILL
+        freed it: wait for the trip's exit (3) instead, at most :meth:`trip_wait_s`, so the
+        process never ends 0 after a trip. In a capture's own process ``os._exit(3)`` ends
+        this wait, and the process with it; with an injected ``exit`` (a test), it returns
+        once the trip's ``exit`` has returned."""
+        with self._lock:
+            tripped = self.tripped
+            if tripped is None:
+                if self.exit_grace_s is None:
+                    self._halt.set()  # under the lock: no trip can start after this
+                else:
+                    self._ended = self._clock()  # from now on only the ``exit`` trip is left
+        if tripped is not None:
+            self._trip_done.wait(self.trip_wait_s())
+        elif self.exit_grace_s is None:
             self.stop()
-        else:
-            self._ended = self._clock()
+
+    def trip_wait_s(self) -> float:
+        """The longest :meth:`run_ended` waits for a trip under way to exit: the trip's own
+        bounded steps (the row, then the flush) and a second for the stack dump. Past it the
+        caller goes on, and the CLI still returns 3 (``tripped`` is set)."""
+        return self.row_wait_s + FLUSH_WAIT_S + 1.0
 
     def stop(self) -> None:
         self._halt.set()
@@ -202,12 +231,12 @@ class Watchdog:
         except Exception:  # noqa: BLE001 - a stop check that fails asks for nothing
             return False
 
-    def _verdict(self) -> Optional[tuple[str, float]]:
+    def _verdict(self, asked: bool) -> Optional[tuple[str, float]]:
         now = self._clock()
         if self._ended is not None:
             waited = now - self._ended
             return ("exit", waited) if waited >= self.exit_grace_s else None
-        if self._stop_seen is None and self._asked_to_stop():
+        if self._stop_seen is None and asked:
             self._stop_seen = now
         if self._stop_seen is not None and now - self._stop_seen >= self.stop_grace_s:
             return "stop-ignored", now - self._stop_seen
@@ -217,13 +246,18 @@ class Watchdog:
 
     def _watch(self) -> None:
         while not self._halt.wait(self.poll_s):
-            verdict = self._verdict()
+            asked = self._stop_seen is None and self._asked_to_stop()  # a file stat: not under the lock
+            with self._lock:  # a trip starts whole, before or after run_ended, never during
+                if self._halt.is_set():
+                    return
+                verdict = self._verdict(asked)
+                if verdict is not None:
+                    self.tripped = verdict[0]
             if verdict is not None:
                 self._trip(*verdict)
                 return
 
     def _trip(self, why: str, waited: float) -> None:
-        self.tripped = why
         stalled = self._clock() - self._last
         _say(f"{why} ({waited:.1f}s; no frame for {stalled:.1f}s); every thread's stack follows, "
              f"then any streaming child is killed and the capture exits {EXIT_CODE}")
@@ -241,7 +275,10 @@ class Watchdog:
             except Exception:  # noqa: BLE001
                 pass
         _flush_std(FLUSH_WAIT_S)
-        self._exit(EXIT_CODE)
+        try:
+            self._exit(EXIT_CODE)
+        finally:  # reached only when ``exit`` returns (a test's): os._exit ends the wait itself
+            self._trip_done.set()
 
     def _child_pids(self) -> list[int]:
         try:

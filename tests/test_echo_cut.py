@@ -333,9 +333,12 @@ def test_a_cut_is_flagged_per_line_with_its_count(seq):
 
 @pytest.mark.parametrize("seq", sorted(ECHO))
 def test_a_cut_leaves_the_speaker_alone(seq):
-    """speaker_of() is EARS-110's; the cut does not touch Ears-Speaker. The same turn with
-    no mouth line in the room (nothing to cut) mints the speaker the cut must keep,
-    whatever speaker_of's default is (theo@ before EARS-110, unknown@ since)."""
+    """speaker_of() is EARS-110's; the cut leaves Ears-Speaker alone unless the turn's
+    label names a seat whose line was cut (EARS-467, heard_rec: then the words left are
+    the user's and get the default; tests/test_echo_speaker.py). These fixtures carry no
+    label, so the same turn with no mouth line in the room (nothing to cut) mints the
+    speaker the cut must keep, whatever speaker_of's default is (theo@ before EARS-110,
+    unknown@ since)."""
     mail = device_mail(seq)
     assert echo_entries(mail["headers"]), "the fixture must be cut for this to mean anything"
     bare = [r for r in rows_of(seq) if r.get("kind") not in ("saying", "said")]

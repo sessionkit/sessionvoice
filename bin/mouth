@@ -1,11 +1,24 @@
 #!/usr/bin/env bash
 # bin/mouth - the plugin's copy of the verb, on the Bash tool's PATH while the plugin is
 # enabled (Claude Code: "Executables | bin/ | added to the Bash tool's PATH"). Finds
-# the package from its own location; needs only uv, which builds the package's venv
-# (with the capture extras) on first use and reuses it after. Same pattern as the
+# the package from its own location. A checkout (<root>/.venv exists) runs through uv,
+# which builds the package's venv (with the capture extras) on first use and reuses it
+# after. With no .venv, as in a plugin's copy (the plugin cache, or a clone loaded in
+# place), the installed uv tool's own mouth runs instead: the kit's
+# (<tools>/sessionkit/bin/mouth, sessionvoice[capture]), else sessionvoice's own
+# (<tools>/sessionvoice/bin/mouth), where <tools> is uv's tool dir,
+# ${UV_TOOL_DIR:-${XDG_DATA_HOME:-~/.local/share}/uv/tools}. That spares a second venv
+# built inside the plugin cache. Neither: uv run, as before. Same pattern as the
 # deltachat plugin's bin/deltachat.
 set -euo pipefail
 here="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
 root="$(cd "$here/.." && pwd)"
+if [ ! -e "$root/.venv" ]; then
+  tools=${UV_TOOL_DIR:-${XDG_DATA_HOME:-${HOME:-}/.local/share}/uv/tools}
+  for t in "$tools/sessionkit/bin/mouth" "$tools/sessionvoice/bin/mouth"; do
+    # -ef: never exec this script back into itself
+    if [ -x "$t" ] && ! [ "$t" -ef "$here/mouth" ]; then exec "$t" "$@"; fi
+  done
+fi
 command -v uv >/dev/null 2>&1 || { echo "mouth: uv is not on the PATH - install it: https://docs.astral.sh/uv/" >&2; exit 2; }
 exec uv run --quiet --project "$root" --extra capture mouth "$@"

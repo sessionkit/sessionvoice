@@ -4,7 +4,10 @@
 A notifier runs that command after every tool batch, so the budget is p95 <= 100 ms
 wall from a cold process, interpreter start included. This times the WRAPPER, not
 the function: each run is a fresh `bin/mouth-timeline` (bash, then the checkout's own
-.venv/bin/python, the interpreter the wrapper pins for the package's 3.10 floor).
+.venv/bin/python, the interpreter the wrapper pins for the package's 3.10 floor). With no
+.venv the wrapper runs the installed uv tool's python instead (sessionkit's, else
+sessionvoice's), on the same -S and the same src/; this bench times the checkout path, so
+the python it reports is .venv's.
 
 Everything it runs against is scratch, built fresh in a temp dir:
 

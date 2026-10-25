@@ -1,0 +1,6 @@
+# Packages dropped from the speech lock's resolution: a compile input only. requirements.in's
+# command passes it as `uv pip compile --excludes excludes.txt`; install never reads it.
+# webrtcvad: mlx-audio's server extra asks for `webrtcvad>=2.0.10`, whose newest release ships
+# only an sdist with a C extension, so installing it needs a compiler (on a Mac, the Command Line
+# Tools). requirements.in pins webrtcvad-wheels instead, which provides the same modules.
+webrtcvad

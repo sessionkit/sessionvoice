@@ -202,7 +202,10 @@ def main(argv: list[str] | None = None, *, own_process: bool | None = None) -> i
     """``own_process``: this call is the whole process (``python -m ears.listen``, the
     ``ears`` script), so the capture gets its watchdog, which may ``os._exit`` it. The
     default is True only when ``argv`` is None, as from a command line. A caller that
-    passes ``argv`` in-process (a test) gets no watchdog and is never exited."""
+    passes ``argv`` in-process (a test) gets no watchdog and is never exited.
+
+    Returns 3 when its watchdog tripped, even if the capture then finished: the trip's
+    SIGKILL can free the call the capture was stuck in, and that capture was still wedged."""
     if own_process is None:
         own_process = argv is None
     args = build_parser().parse_args(argv)
@@ -226,6 +229,9 @@ def main(argv: list[str] | None = None, *, own_process: bool | None = None) -> i
     _register_stack_dumps()
     stt = make_stt(args)
     switch = _switch(args)
+    # STOP and SIGTERM are honoured off the main thread; a wedge, a stop
+    # not honoured, or an exit that hangs ends the process (exit 3), after a dump
+    dog = _watchdog.Watchdog(exit_grace_s=_watchdog.STOP_GRACE_S) if own_process else None
     try:
         result = capture(
             source,
@@ -246,13 +252,13 @@ def main(argv: list[str] | None = None, *, own_process: bool | None = None) -> i
             partials=Partials(args.partials),
             missed_reply=_missed_reply(args, switch),
             record=switch,
-            # STOP and SIGTERM are honoured off the main thread; a wedge, a stop
-            # not honoured, or an exit that hangs ends the process (exit 3), after a dump
-            watchdog=_watchdog.Watchdog(exit_grace_s=_watchdog.STOP_GRACE_S) if own_process else None,
+            watchdog=dog,
         )
     finally:
         stt.close()
     print(json.dumps(result.to_dict(), ensure_ascii=False))
+    if dog is not None and dog.tripped is not None:
+        return _watchdog.EXIT_CODE
     return 1 if result.reason == "error" else 0
 
 

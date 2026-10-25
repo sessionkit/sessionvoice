@@ -34,9 +34,9 @@ fixed when its plist is written, so a change to one takes a fresh
 
 ## sessionvoice's home
 
-The heard log, `heard.lock`, the speakers rows, the mouth's folder
-(`mouth/`), talk's token (`talk/`) and the ears' state (`state/`) all live
-under one folder, the home. It is the first of:
+The heard log, `heard.lock`, the speakers rows, the install log
+(`logs/install.log`), the mouth's folder (`mouth/`), talk's token (`talk/`)
+and the ears' state (`state/`) all live under one folder, the home. It is the first of:
 
 1. `$SESSIONVOICE_HOME`, if it is set;
 2. `$VOICEMODE_BASE_DIR`, if it is set (the old name, still read);
@@ -63,7 +63,8 @@ with no restart.
   `~/.sessionkit/voice/settings/stt.key` (a fixed path; `EARS_CONF` does not move it).
 - **The models:** `ears install` puts the Silero model at
   `~/.cache/ears/silero_vad.onnx`; `EARS_SILERO_ONNX`, when set, is read
-  first. The Smart
+  first. `ears services install` fetches it too when it is missing, to
+  `EARS_SILERO_ONNX` when that is set, else the same path. The Smart
   Turn gate's ONNX file is read from `~/.cache/ears/`, or the path in
   `EARS_SMART_TURN_ONNX` ([models.md][models]).
 

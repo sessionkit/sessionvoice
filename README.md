@@ -32,143 +32,13 @@ streams transcription, and decides when the speaker has finished.
 
 ## Requirements
 
-- **macOS** for the always-on parts. The keeper follows devices through
-  CoreAudio (it builds `keeper/input-watch.swift` with `swiftc`,
-  `keeper/ears-keeper.sh:134`, when the Command Line Tools are installed;
-  without them it polls `system_profiler` and never runs the `swiftc`
-  install stub), and `ears services install` writes launchd
-  agents to `~/Library/LaunchAgents` (`src/ears/services.py:93`). The
-  `apple` backend needs macOS 27, Xcode's `swift` and a source checkout
-  (`uv run ears install --apple`: the wheel does not ship `swift/`, and
-  `--apple` without it refuses). The engine alone (`ears file`, `ears
-  listen` with `whisper`) needs no Mac.
-- **Python 3.10-3.14** (`requires-python` in `pyproject.toml`) and
-  **[uv](https://docs.astral.sh/uv/)**: `make test` runs `uv run --locked`.
-- **A speech server on `127.0.0.1:8890`**: mlx-audio's server, which serves
-  both STT and TTS. It is the ears' default STT (Parakeet;
-  `src/ears/listen/stt.py:86`, `src/ears/services.py:530`) and the
-  mouth's Kokoro voices (`src/mouth/backends.py:289`). `ears services
-  install` finds one or installs its own (`src/ears/speech.py`), and asks
-  before it acts, in this order:
-  - **Opt-out.** `final.url` in `~/.sessionkit/voice/settings/ears.json` (or
-    `EARS_STT_URL` at install) names another engine, and the mouth is not
-    being installed: `:8890` is not sessionvoice's to manage.
-  - **Use.** Something listens on `:8890` and says it is mlx-audio: `GET /`
-    returns mlx-audio's welcome line, or `/openapi.json` lists its audio
-    routes. sessionvoice uses that server, whoever installed it (VoiceMode,
-    for example), and starts nothing.
-  - **Refuse.** Something else holds `:8890`, or holds it and does not
-    answer. Install starts nothing, replaces nothing, and names the holder.
-    When the ears hear through `:8890` it exits 2 and says what to run;
-    when only the mouth does, it warns and the mouth uses `say`. Free the
-    port, or point `final.url` at another speech server.
-  - **Never a second.** Nothing answers on `:8890`, but a loaded launch
-    agent runs `mlx_audio.server` (under any label, so another installer's
-    job between restarts counts). Install starts nothing. When that job is
-    sessionvoice's own, run `ears services uninstall --only speech`, then
-    install again.
-  - **Install.** Nothing on `:8890` and no such job. On an Apple-silicon
-    Mac (macOS 14 or later), install builds sessionvoice's own venv,
-    `~/.local/share/ears/speech/venv`, from the shipped
-    `speech/requirements.lock` (`mlx-audio==0.5.8`), and loads it as the
-    launch agent `dev.sessionkit.voice.mlx-audio`. `EARS_SPEECH_PY` names a
-    python that already has it, and no venv is built. On any other host it
-    installs nothing: it refuses and says what to run when the ears need
-    `:8890`, and warns when only the mouth does.
+- [x] macOS (tested on Apple silicon)
+- [ ] Linux
+- [ ] WSL
+- [ ] Windows
 
-  `--dry-run` says which of these install would take, and builds and writes
-  nothing. `ears services status` has a `speech` row that names who serves
-  `:8890`. `ears services uninstall --only speech` removes only
-  `dev.sessionkit.voice.mlx-audio`, never a server someone else installed, and
-  keeps its venv. While sessionvoice's own server runs, a re-install just
-  uses it, so to upgrade it, uninstall it and install again: install
-  re-applies the lock's pins to the venv it finds. The lock carries a hash
-  for every pin, and install refuses an artifact that does not match it.
-  Two pins, `docopt` and `webrtcvad`, ship only as source, so uv builds them,
-  and the setuptools it builds them with is hash-checked too, from the
-  shipped `speech/build-constraints.txt`. A new venv is checked in full. A
-  re-apply checks only what it installs, not what is already in the venv, so
-  to check an existing venv, remove it and install again. Install then
-  fetches the server's weights, about 2.9 GB, so the first call does not wait
-  on them. It prints the size first, skips any already cached and prints
-  progress while it fetches. `--no-prefetch` (or `EARS_NO_PREFETCH=1`) skips
-  this on a host that must not download, and `--dry-run` prints the size and
-  fetches nothing. A fetch that fails does not fail the install. It says why
-  and how much is left. Whatever is not fetched at install is downloaded by
-  the server on first use: the first transcription waits on Parakeet, and the
-  first line spoken waits on Kokoro and its voices.
-
-  **These weights are not pinned.** mlx-audio's server takes whatever is on
-  Hugging Face `main` at first use, and it has no way to ask for a revision,
-  so a later first use (a new Mac, a cleared cache) can load different
-  weights. `ears services weights` (and the `weight` rows of `ears services
-  status`) reads the three, `mlx-community/parakeet-tdt-0.6b-v3`,
-  `mlx-community/Kokoro-82M-bf16` and `prince-canuma/Kokoro-82M` (the
-  voices), from the Hugging Face cache: `cached`, `downloading 412 MB of
-  2.5 GB`, or `not cached`, and `DIFFERS` when the cache's `main` is not the
-  commit sessionvoice expects (`SPEECH_WEIGHTS` in `src/ears/services.py`).
-  `--json` prints the same for a program, schema `ears.weights/1`
-  ([docs/models.md](docs/models.md)). It reads the cache's files and never
-  fetches. It only reports; it does not stop or change what the server loads.
-  A real pin, fixed at install, is not built yet.
-
-  sessionvoice can promise "never two servers" only from its own side:
-  VoiceMode's installer does not ask, so `voicemode service install
-  mlx-audio` run after sessionvoice's install loads a second mlx-audio job,
-  and one of the two crash-loops.
-
-  Without a speech server, point the ears at another OpenAI-compatible STT
-  (`EARS_LISTEN_STT_URL`, or `url` in `~/.sessionkit/voice/settings/ears.json`;
-  `src/ears/listen/stt.py:105`) and the mouth at another TTS
-  (`MOUTH_KOKORO_URL`, or `tts` in `~/.sessionkit/voice/settings/mouth.json`),
-  a hosted one included, with `MOUTH_TTS_KEY` or the key file
-  `~/.sessionkit/voice/settings/tts.key` for a keyed one: see
-  [A hosted speech endpoint](docs/models.md#a-hosted-speech-endpoint-instead).
-  On a Mac the mouth's `auto` falls back to `say`
-  (`src/mouth/backends.py:200`).
-- **ffmpeg** on `PATH`: `mouth play` (`src/mouth/backends.py:261`), the
-  mouth's `.mp3`/`.m4a` output (`src/mouth/audio.py:137`), `ears file`
-  (`src/ears/cli.py:92`) and `ears eval` (`src/ears/eval.py:169`).
-- **SwitchAudioSource** on `PATH` (Homebrew `switchaudio-osx`): the keeper
-  sets the default output with it, and reads with it only as a fallback
-  (`keeper/ears-keeper.sh`): `check_output` reads the default output and the
-  output list from input-watch's JSON file (`docs/audio-devices.md`) and asks
-  SwitchAudioSource only when that file is missing or stale; `default_input`
-  reads the legacy `input-watch.state` while the watcher is running and asks
-  SwitchAudioSource only when it is not. `keeper/speak:13-17` still reads with it.
-- **sessionmail's `message`** only if you use mail: the mouth's notices and
-  the keeper's turn mail (`keeper/ears-mail.py`) go out by `message send`,
-  never straight to an MTA. With no `sendmail` key in
-  sessionmail's settings file (`~/.sessionkit/mail/settings/mail.json`)
-  and no `SESSIONMAIL_SENDMAIL`, sessionmail (0.2.0 and later) delivers
-  by its mail drop: it writes each mail straight into your own mailbox,
-  as you, with no mail server. That is how the launch agents deliver on
-  a Mac with no postfix. The drop never makes a mailbox, so the `heard`
-  box must exist first: `message setup --box heard` makes it. A turn
-  mailed to a box that is not there is refused, nothing is delivered,
-  and the turn is lost. To send by postfix instead, set
-  `"sendmail": "/usr/sbin/sendmail"` in that file: the launch agents do
-  not see a `SESSIONMAIL_SENDMAIL` set in your shell.
-  On a drop host, `ears services install` runs sessionmail's first-run setup, `message setup --box heard`.
-  Mail to `mouth@<host>` reaches the speech queue only if sessionmail
-  delivers it there (`src/mouth/box.py`). The mouth's notices go through
-  `MOUTH_SENDMAIL` (`src/mouth/notice.py`): only the mouth service (`mouth serve`, `mouth mail`,
-  `mouth retract`, `mouth again`) uses the default `message`; any other process
-  must name its own. ears-mail's command is `EARS_MAIL_MESSAGE`, else
-  `message` on PATH, else where uv installs it (`~/.local/bin`, then uv's
-  tool dir; `src/ears/message_bin.py`).
-- **Models.** `ears install` fetches only Silero VAD, to
-  `~/.cache/ears/silero_vad.onnx`, pinned to one upstream commit and checked
-  against its SHA-256 (`install()` in `src/ears/cli.py`; the pin is in
-  `src/ears/vad.py`, and `docs/models.md` names it). **It does not
-  fetch the Smart Turn model** that `--turns smart` needs
-  (`src/ears/smartturn.py:48-72`). With mlx-audio installed, the `mlx`
-  backend loads `~/.cache/ears/smart-turn-v3-mlx` if it is there, and
-  otherwise `mlx-community/smart-turn-v3` from Hugging Face on first use.
-  Without mlx-audio, the `onnx` backend needs `smart-turn-v3.2-gpu.onnx` at
-  `~/.cache/ears/` (or the path in `EARS_SMART_TURN_ONNX`). Download it
-  yourself from
-  [pipecat-ai/smart-turn-v3](https://huggingface.co/pipecat-ai/smart-turn-v3).
+What sessionvoice depends on, what needs each one, and how to upgrade it:
+[dependencies](docs/dependencies.md).
 
 ## Components
 
@@ -234,6 +104,12 @@ pair of ears on a Mac (depth in [docs/architecture.md](docs/architecture.md)):
   one whose label is empty or names nobody, keeps `--speaker`
   (`$EARS_SPEAKER`, else `unknown@<host>`: a voice the matcher could not
   place is never mailed under a person's name).
+  When the user speaks over a seat's line, the capture may label the whole
+  turn with that seat, since the line's voice fills most of its audio. Once
+  the echo cut has taken that seat's line out and left the user's words, the
+  label is dropped: the remaining words get `--speaker` (else
+  `unknown@<host>`), never the seat whose echo was cut, and they can be a
+  reply to that seat. A label naming anyone else is kept.
   `Ears-Echo` says a mouth line heard back through the mic was cut out of
   the turn. On the speakers the mic hears the mouth, so a line's
   words are cut wherever they sit in the user's turn: at its start (up to `3 + 5
@@ -392,6 +268,15 @@ import that needs one fails naming it, as `pip install 'sessionvoice[EXTRA]'`.
     ears services install --only sounds    # opt-in: the ears and mouth sounds
     ears services install --only talk      # opt-in: talk serve, the live view
 
+A phone-only Mac (for example one that runs a Delta bot, with no agent
+seat to wake) installs with `--no-agent`: nobody is woken when you speak,
+and the keeper's notices go to the log. `--agent NAME` is for a Mac where
+an agent seat should be woken when you speak. Before it writes anything,
+install says how big the speech models are (about 2.9 GB, fetched once,
+after the speech server loads) and that the speech server runs as a login
+service; `--dry-run` prints the same line, and `--no-prefetch` leaves the
+download to the first call.
+
 ### The proof of a working install: you speak, and the agent WAKES and answers
 
 **Not "a heard line appears".** The keeper alone writes the heard line, and
@@ -403,11 +288,19 @@ agent deaf to its person, and one that retires room mode on that proof goes
 deaf for good. So the proof is: say "hey NAME", and NAME wakes and
 answers.
 
-`ears services install` (`--dry-run` lists the same checks and writes nothing):
+`ears services install` (`--dry-run` lists the same checks and writes nothing).
+Before it writes anything, it checks every prerequisite it can check without
+building or fetching. When any are missing, it lists them all in one run, each
+with its fix, writes nothing and exits 2. A launch agent that fails to load
+also makes it exit 2, once every other service has been tried: one block on
+stderr names each service that did not load, the install log and `ears
+services status`. Every real run appends its output and launchctl's answers,
+timestamped, to `<sessionvoice's home>/logs/install.log`, and prints that path
+as its `log` row ([logs](docs/logs.md#the-log-files)). It then:
 
 - first finds the mlx-audio speech server on `:8890`, or installs its own
-  (`dev.sessionkit.voice.mlx-audio`), as "A speech server" under Requirements
-  says, and prints which step it took. When it loads its own, the new
+  (`dev.sessionkit.voice.mlx-audio`), as [the speech server](docs/speech-server.md)
+  page says, and prints which step it took. When it loads its own, the new
   `final` below is written without the probe: that server has not started
   yet;
 - installs `dev.sessionkit.voice.ears-mail` beside the mouth and the keeper, unless
@@ -459,8 +352,11 @@ answers.
   elsewhere). Without it, and when the wake file names no seat, nobody would
   be woken, so an install that includes `mail` REFUSES (exit 2, before
   anything is written; `--dry-run` says `REFUSED`, still lists, and exits 2
-  too). The refusal prints both forms, `ears services install --agent NAME`
-  and `ears services install --no-agent`, and `ears wake add NAME`. Inside
+  too). The refusal prints both forms and what each means:
+  `ears services install --agent NAME` for a Mac where an agent seat should
+  be woken when you speak, and `ears services install --no-agent` for a
+  phone-only Mac (for example a Delta bot), where nobody is woken and the
+  notices go to the log; then `ears wake add NAME`, to add a seat later. Inside
   an agent seat (`TM_AGENT_ADDRESS` set) it suggests that address's local
   part as NAME; it never installs on the suggestion. `--no-agent` installs
   anyway, and install warns that NOBODY is woken. A wake file that already
@@ -475,9 +371,13 @@ answers.
   missing: a checkout's `settings/`, else the wheel's `ears/_settings/`. It
   then copies each beside its settings file as a dot file
   (`.ears.schema.json`, `.ears-sounds.schema.json`, `.mouth.schema.json`);
-- refuses, before any plist is written, when the Silero VAD model is missing,
-  unless VoiceMode's copy (`~/.voicemode/models/silero/`) is there to link.
-  Run `ears install` first. A keeper that finds no model says so once and
+- fetches the Silero VAD model, before any plist is written, when it is
+  missing and VoiceMode's copy (`~/.voicemode/models/silero/`) is not there to
+  link. It is the file `ears install` fetches, from the same pinned source,
+  checked against the same SHA-256, and install names the version, the source
+  and the destination. A failed fetch or a checksum mismatch is refused, and no
+  file is left behind. `--dry-run` says what it would fetch (the version and
+  the size) and fetches nothing. A keeper that finds no model says so once and
   holds, and does not restart its capture every few seconds;
 - probes a new `final` engine with one short clip before writing it to
   `ears.json`, and falls back to whisper `:2022` (and says so) when it does

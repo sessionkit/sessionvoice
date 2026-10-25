@@ -238,10 +238,10 @@ def test_a_test_that_tries_ffmpeg_and_passes_is_counted(tmp_path):
     got = run_inner(tmp_path, "test_tries_ffmpeg_and_passes")
     assert got["test_tries_ffmpeg_and_passes"][0] == "passed", got
     outcome, message = got[ITEM]
-    assert outcome == "skipped", got[ITEM]          # a documented prerequisite: a loud SKIP (EARS-402)
+    assert outcome == "skipped", got[ITEM]          # a missing ffmpeg: a loud SKIP (EARS-402)
     assert "no test in this run needed it" not in message
     assert "1 test(s) tried to launch it" in message and "1 passed or skipped anyway" in message
-    assert "README.md:120" in message and "brew install ffmpeg" in message, message
+    assert "docs/dependencies.md" in message and "brew install" not in message, message
 
 
 def test_a_run_that_never_needs_ffmpeg_skips_the_item(tmp_path):
@@ -249,16 +249,16 @@ def test_a_run_that_never_needs_ffmpeg_skips_the_item(tmp_path):
     assert got["test_never_touches_ffmpeg"][0] == "passed"
     assert got["test_fails_on_some_other_missing_file"][0] == "failure"
     assert got[ITEM][0] == "skipped" and "no test in this run needed it" in got[ITEM][1], got[ITEM]
-    assert "ffmpeg: a documented prerequisite is missing" not in got[""][1]   # no summary line
+    assert "ffmpeg: not on PATH" not in got[""][1]   # no summary line
 
 
 def test_the_terminal_summary_repeats_the_skip_without_rs(whole):
     """The loud half (EARS-402): the run's own summary carries the reason in an "ffmpeg"
-    section, so a run without -rs still says which prerequisite is missing."""
+    section, so a run without -rs still says ffmpeg is missing."""
     out = whole[""][1]
-    assert "ffmpeg: a documented prerequisite is missing" in out, out[-2000:]
-    section = out.split("ffmpeg: a documented prerequisite is missing", 1)[1]
-    assert "README.md:120" in section and "8 test(s) tried to launch it" in section, section[:1000]
+    assert "ffmpeg: not on PATH" in out, out[-2000:]
+    section = out.split("ffmpeg: not on PATH", 1)[1]
+    assert "docs/dependencies.md" in section and "8 test(s) tried to launch it" in section, section[:1000]
 
 
 def test_the_whole_run_gives_true_counts(whole):
@@ -280,7 +280,8 @@ def test_the_whole_run_gives_true_counts(whole):
     }
     outcome, message = whole[ITEM]
     assert outcome == "skipped", whole[ITEM]        # never a failure, even with 3 FAILED (EARS-402)
-    assert "a documented prerequisite (README.md:120; brew install ffmpeg)" in message, message
+    assert "ffmpeg is not on PATH (docs/dependencies.md says what uses it)" in message, message
+    assert "prerequisite" not in message and "brew install" not in message, message
     for part in ("8 test(s) tried to launch it", "4 skipped here as", "3 FAILED for another reason",
                  "1 passed or skipped anyway", "1 marked needs_ffmpeg skipped at setup",
                  "1 skip themselves for ffmpeg"):

@@ -164,6 +164,13 @@ def test_the_service_entry_points_still_use_the_default(tmp_path, argv):
             one_drop()
             return {{"utt": utt}}
         mouth.again = one_again
+        # `again` asks PortAudio before it queues (mouth.canplay): a fake host
+        # with one output, never the real sounddevice
+        from types import SimpleNamespace
+        from mouth import canplay
+        canplay._sd = lambda: SimpleNamespace(
+            query_devices=lambda: [{{"name": "Speakers", "max_output_channels": 2}}],
+            default=SimpleNamespace(device=[-1, 0]))
         sys.argv = ["mouth", *{argv!r}]
         try:
             runpy.run_module("mouth", run_name="__main__", alter_sys=True)

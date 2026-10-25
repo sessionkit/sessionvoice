@@ -454,13 +454,31 @@ def segbot(env, monkeypatch):
     b.close()
 
 
+class MixBlocks:
+    """Each block the mixer's pacing thread wrote, as ``[bed frames, line frames]``:
+    what its lanes' ``_pull`` gave it (a spy on :meth:`output.MixLane._pull`)."""
+
+    def __init__(self, monkeypatch):
+        self.rows: list = []
+        real = output.MixLane._pull
+
+        def pull(lane, n):
+            x, filled = real(lane, n)
+            if lane.kind == "bed" or lane.mixer.bed is None or not self.rows:
+                self.rows.append([0, 0])   # the bed's pull opens a block; a line alone opens its own
+            self.rows[-1][0 if lane.kind == "bed" else 1] = filled
+            return x, filled
+        monkeypatch.setattr(output.MixLane, "_pull", pull)
+
+
 def never_two_at_once(conns: list) -> None:
     for a, b in zip(conns, conns[1:]):
         assert a["t_end"] is not None and a["t_end"] <= b["t_open"], f"{b['text']!r} opened before {a['text']!r} ended"
 
 
 @pytest.mark.needs_ffmpeg
-def test_a_line_over_music_on_a_call_resegments_and_back(env, segbot):
+def test_a_line_over_music_on_a_call_resegments_and_back(env, segbot, monkeypatch):
+    blocks = MixBlocks(monkeypatch)
     f = play(env, seconds=2.5, device="call:5531")
     line = say(env, "over the call music", device="call:5531")
     run(env).join(12)
@@ -471,10 +489,19 @@ def test_a_line_over_music_on_a_call_resegments_and_back(env, segbot):
     assert texts == ["[sound song.wav]", "over the call music", "[sound song.wav]"]
     assert [c["ended"] for c in segbot.conns] == ["done", "done", "done"]
     never_two_at_once(segbot.conns)
+    # The bed once, with the line inside it (not after it). A line joins once the bed's
+    # mixer is open, not at the song's first decoded block (player._next), so it can
+    # play alone first, for as long as ffmpeg takes to start: scheduler time, unbounded
+    # under load (EARS-453). Count the mixer's blocks instead of bounding wall-clock.
+    rows = blocks.rows
+    bed = [i for i, (b, _) in enumerate(rows) if b]
+    assert sum(b for b, _ in rows) == int(2.5 * RATE), "the bed played other than once, whole"
+    assert any(rows[0]), "the mixer started on silence, before either lane wrote"
+    assert not any(s for _, s in rows[bed[-1] + 1:]), "the line played on after the bed"
+    assert any(b and s for b, s in rows), "the line never played over the bed"
     total = sum(c["samples"] for c in segbot.conns) / output.CALL_RATE
-    # the bed once, with the line inside it (not after it). The line can start up to the
-    # call's lead before the song's first decoded block reaches the mixer.
-    assert 2.45 < total < 2.5 + output.CallOut.latency + 2 * output.MIX_BLOCK_S
+    # the call heard the mixer's blocks, each once: the bed's 2.5 s plus the line alone before it
+    assert total == pytest.approx(len(rows) * output.MIX_BLOCK_S, abs=2 / output.CALL_RATE)
 
 
 @pytest.mark.needs_ffmpeg

@@ -291,6 +291,88 @@ def test_a_failed_build_is_refused_before_any_plist(sx, capsys, monkeypatch):
     assert not services.AGENTS.exists() or not list(services.AGENTS.iterdir())
 
 
+# What uv printed when the webrtcvad sdist built with no compiler (setuptools' line), and what the
+# Command Line Tools' cc stub prints on a Mac that has none (xcrun, xcode-select).
+NO_CC = ("error: Failed to build `webrtcvad==2.0.10`\n  cause: The build backend returned an error\n"
+         "         error: command '/usr/bin/cc' failed with exit code 1\n\n"
+         "hint: Build failures usually indicate a problem with the package or the build environment")
+XCRUN = ("xcrun: error: invalid active developer path (/Library/Developer/CommandLineTools), "
+         "missing xcrun at: /Library/Developer/CommandLineTools/usr/bin/xcrun")
+XCODE_SELECT = "xcode-select: note: No developer tools were found, requesting install."
+# With the Command Line Tools in place the compiler RUNS and the code fails (here a missing
+# header), and setuptools prints the same `command ... failed` line (measured with a one-file C
+# extension whose only line includes a header that does not exist).
+CLT_RAN = ("error: Failed to build `badext @ file:///tmp/badext`\n"
+           "         bad.c:1:10: fatal error: 'no_such_header.h' file not found\n"
+           "         error: command '/usr/bin/cc' failed with exit code 1\n\n"
+           "hint: Build failures usually indicate a problem with the package or the build environment")
+
+
+def _pip_fails(monkeypatch, sx, stderr, stdout=""):
+    monkeypatch.delenv("EARS_SPEECH_PY")
+    py = sx["home_speech"] / "venv/bin/python"
+
+    def run(argv):
+        if argv[1] == "venv":
+            py.parent.mkdir(parents=True)
+            py.write_text("")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return subprocess.CompletedProcess(argv, 1, stdout, stderr)
+    monkeypatch.setattr(services, "_uv", lambda: "/fake/uv")
+    monkeypatch.setattr(services, "_speech_sh", run)
+
+
+@pytest.mark.parametrize("stderr", [NO_CC, XCRUN, XCODE_SELECT, f"{NO_CC}\n{XCRUN}", CLT_RAN])
+def test_a_build_with_no_compiler_names_the_command_line_tools_beside_the_ways_out(
+        sx, capsys, monkeypatch, stderr):
+    _pip_fails(monkeypatch, sx, stderr)
+    assert services.install(["speech", "mouth", "keeper"]) == 2
+    err = capsys.readouterr().err
+    refused, rest = err.split("\n", 1)
+    assert refused.startswith("ears services install: REFUSED: speech: uv pip install --require-hashes")
+    assert refused.endswith("; " + services.NO_COMPILER_HELP)
+    assert "Command Line Tools (`xcode-select --install`), then run this again" in refused
+    assert rest.startswith(services.no_stt_help())        # the three ways out, right after it
+    assert "mlx-audio" in rest and "ears install --apple" in rest and "hosted" in rest
+    assert not services.AGENTS.exists() or not list(services.AGENTS.iterdir())
+
+
+def test_the_line_is_true_whether_the_compiler_is_missing_or_ran_and_failed():
+    """The output reads the same either way (CLT_RAN against NO_CC), so the help never says no
+    compiler ran: it says how to check for the Command Line Tools, and to install them if absent."""
+    help = services.NO_COMPILER_HELP
+    assert "none ran" not in help and "its build failed" in help
+    assert "if `xcode-select -p` finds no developer tools on this Mac, install" in help
+
+
+def test_the_compiler_is_found_on_stdout_too(sx, capsys, monkeypatch):
+    _pip_fails(monkeypatch, sx, "hint: Build failures usually indicate a problem", stdout=NO_CC)
+    assert services.install(["speech"]) == 2
+    assert "xcode-select --install" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("stderr", [
+    "error: Failed to fetch: `https://pypi.org/simple/torch/`",
+    "error: Hash mismatch for `scipy==1.16.2`",
+    "error: Failed to build `docopt==0.6.2`\n  cause: No module named setuptools",
+])
+def test_a_failure_that_is_not_the_compiler_does_not_name_the_command_line_tools(
+        sx, capsys, monkeypatch, stderr):
+    _pip_fails(monkeypatch, sx, stderr)
+    assert services.install(["speech"]) == 2
+    err = capsys.readouterr().err
+    assert "REFUSED: speech: uv pip install" in err and stderr.splitlines()[-1] in err
+    assert "xcode-select" not in err and "Command Line Tools" not in err and "what to run" in err
+
+
+def test_the_why_itself_carries_the_line_so_a_warning_does_too(sx, monkeypatch):
+    """speech_step prints the same why as a WARNING when only the mouth wants :8890."""
+    _pip_fails(monkeypatch, sx, NO_CC)
+    why = services.speech_checks()
+    assert why.endswith("failed: hint: Build failures usually indicate a problem with the package or "
+                        "the build environment; " + services.NO_COMPILER_HELP)
+
+
 def test_no_uv_and_no_venv_is_refused(sx, capsys, monkeypatch):
     monkeypatch.delenv("EARS_SPEECH_PY")
     monkeypatch.setattr(services, "_uv", lambda: None)
@@ -405,13 +487,31 @@ def test_the_lock_is_compiled_pinned_and_says_where_it_runs():
     assert "arm64" in head and "macOS 14" in head and "REFUSES" in head and OURS in head
     reqs = [l.removesuffix(" \\") for l in text.splitlines() if l[:1].isalnum()]   # its hashes follow
     assert "mlx-audio==0.5.8" in reqs and services.SPEECH_PIN == "mlx-audio==0.5.8" == services.SPEAKER_PIN
-    for name in ("fastapi", "uvicorn", "python-multipart", "webrtcvad", "misaki", "spacy"):
+    for name in ("fastapi", "uvicorn", "python-multipart", "webrtcvad-wheels", "misaki", "spacy"):
         assert any(l.startswith(name + "==") for l in reqs), name
+    assert not any(l.startswith("webrtcvad==") for l in reqs)   # the sdist: it needs a compiler
     urls = [l for l in reqs if "://" in l]
     assert urls == ["en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/"
                     "en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"]   # one release wheel
     assert all("==" in l for l in reqs if l not in urls)    # compiled: every other package pinned
     assert "git+" not in text and "tool install" not in text
+
+
+def test_webrtcvad_comes_as_wheels_and_the_compile_command_says_how():
+    """mlx-audio's server extra asks for `webrtcvad`, an sdist with a C extension: on a Mac with
+    no Command Line Tools its build fails, and the install with it. The lock takes
+    webrtcvad-wheels (the same modules, prebuilt) because the compile excludes `webrtcvad`
+    (speech/excludes.txt) and requirements.in pins the wheels; install reads neither file."""
+    text = (REPO / "speech" / "requirements.in").read_text()
+    assert "\nwebrtcvad-wheels==2.0.14.post1\n" in text
+    assert "--excludes excludes.txt" in text
+    excluded = [l for l in (REPO / "speech" / "excludes.txt").read_text().splitlines()
+                if l and not l.startswith("#")]
+    assert excluded == ["webrtcvad"]
+    lock = services._speech_file("requirements.lock").read_text()
+    entry = lock.split("\nwebrtcvad-wheels==2.0.14.post1 \\\n", 1)[1].split("\n    #", 1)[0]
+    assert ("--hash=sha256:132ffb4ca996d321f0226d0e01aec229277306f3b86b1dada549b0b063601fce"
+            in entry)                                    # the cp312 macOS arm64 wheel, hashed
 
 
 def test_the_package_ships_the_lock_as_the_checkout_has_it():

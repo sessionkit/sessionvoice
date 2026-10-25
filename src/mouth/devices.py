@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from . import coreaudio, output
+from . import canplay, coreaudio, output
 
 
 def _portaudio_default() -> Optional[str]:
@@ -40,10 +40,20 @@ def _portaudio_default() -> Optional[str]:
 
 
 def devices() -> dict:
-    """Everything ``mouth devices`` reports, unknowns as None."""
-    outputs = output.output_names(rescan=False)
+    """Everything ``mouth devices`` reports, unknowns as None.
+
+    PortAudio is asked as the probe before an id asks it
+    (:func:`mouth.canplay.asking_portaudio`): fd 2 silenced, so ALSA's
+    ``ALSA lib ...`` lines stay off the terminal, and a ``PortAudioError``
+    raised as :class:`~mouth.canplay.AudioDidNotStart`. Without PortAudio it
+    raises :class:`~mouth.canplay.PortAudioMissing`."""
+    with canplay.asking_portaudio():
+        outputs = output.output_names(rescan=False)
     calls = [{"name": f"call:{c}", "who": who} for c, who, _ in output.live_calls()]
-    current = coreaudio.default_output_name() or _portaudio_default()
+    current = coreaudio.default_output_name()
+    if not current:
+        with canplay.asking_portaudio():
+            current = _portaudio_default()
     return {"outputs": outputs, "calls": calls,
             "current_output": current,
             "current_input": coreaudio.default_input_name(),

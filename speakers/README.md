@@ -360,11 +360,16 @@ it. After the swap, retiring `follow-capture` and the rest of
 ## Agent voices
 
 - **Same machine, no reference.** The mouth writes `saying`/`said` rows (agent, utt) into
-  the heard log the side-car follows. A heard line inside a playing mouth line (up to
-  `--mouth-tail` 1.5 s after it), whose words are at least half that line's, takes the
-  line's agent when the model said `other` (or an agent ref). A person talking over it
-  stays that person; a `mixed` line stays `mixed`, with its `other` share renamed. The
-  row gets `mouth_utt`.
+  the heard log the side-car follows. A heard line inside a playing mouth line, at least
+  half of whose words are in that line, takes the line's agent when the model said `other`
+  (or an agent ref). A person talking over it stays that person; a `mixed` line stays
+  `mixed`, with its `other` share renamed. The row gets `mouth_utt`.
+- **After the line ends** (up to `--mouth-tail` 1.5 s, judged by the heard line's
+  midpoint), only the line's ENDING can be its echo: at least half the heard words must be
+  an in-order run of the line's last words. "heard you." after "... I'll confirm I heard
+  you." is the agent; "Anything." after "... say anything ..." is the person who answered.
+- **A line whose `said` row was never seen** ends where the next mouth line starts, or,
+  with no next line, 10 s or 0.6 s a word after it started, whichever is longer.
 - **Other machines' agents** (heard through this machine's mic) need a reference like a
   person's. List them in `SPEAKER_AGENT_REFS=dave` so they, too, yield to this machine's mouth.
 - **Labels are named by reference**, not by arrival order: five references may come back

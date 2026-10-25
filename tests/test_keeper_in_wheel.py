@@ -9,6 +9,7 @@ the checkout first, then the package, and refuses when neither has it. The speak
 ships the same way, as ears/_speakers/ (EARS-258).
 """
 import io
+import subprocess
 import contextlib
 from importlib.resources import files
 from pathlib import Path
@@ -85,13 +86,20 @@ def _no_keeper_anywhere(monkeypatch, tmp_path):
     monkeypatch.setattr(importlib.resources, "files", lambda pkg: tmp_path / "pkg")
 
 
+def _look(*a):
+    """launchctl, read-only and with nothing loaded: it may only look (list, print), and never
+    the real one."""
+    if a[0] not in ("list", "print"):
+        raise AssertionError(f"launchctl called: {a}")
+    return subprocess.CompletedProcess(a, 113 if a[0] == "print" else 0, "", "")
+
+
 def test_no_keeper_anywhere_refuses_and_writes_nothing(monkeypatch, tmp_path):
     _no_keeper_anywhere(monkeypatch, tmp_path)
     monkeypatch.setattr(services, "AGENTS", tmp_path / "agents")
     monkeypatch.setattr(services, "LOGS", tmp_path / "logs")
-    def boom(*a):
-        raise AssertionError(f"launchctl called: {a}")
-    monkeypatch.setattr(services, "_launchctl", boom)
+    # a dry run goes on listing past the refusal: launchctl may only look
+    monkeypatch.setattr(services, "_launchctl", _look)
     for dry in (True, False):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
@@ -103,6 +111,7 @@ def test_no_keeper_anywhere_refuses_and_writes_nothing(monkeypatch, tmp_path):
 def test_no_keeper_refusal_spares_an_install_without_the_keeper(monkeypatch, tmp_path, capsys):
     _no_keeper_anywhere(monkeypatch, tmp_path)
     monkeypatch.setattr(services, "LOGS", tmp_path / "logs")
+    monkeypatch.setattr(services, "_launchctl", _look)
     assert services.install(["mouth"], dry_run=True) == 0
     assert "dev.sessionkit.voice.ears-mouth" in capsys.readouterr().out
 

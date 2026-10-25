@@ -10,6 +10,163 @@ All notable changes to sessionvoice are documented here. The format is
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-25
+
+### Added
+
+- `docs/dependencies.md`: the direct dependencies and the tools a user
+  meets, on one page, with a link to `uv.lock` for the full resolved set and
+  to the speech server's own hash-pinned lock. Each entry says
+  what needs it, by command, whether you need it, how it gets onto your Mac
+  and how you upgrade it: the required list, the optional list and the
+  upgrade lines come first, then the tables. Homebrew, tmux, notmuch and
+  ffmpeg say what uses each one today and wait on a ruling for their class.
+  The ffmpeg entry now names the mouth's loudness levelling, which goes
+  quiet without it. `docs/speech-server.md` holds how `ears services
+  install` finds or installs the speech server, and how to upgrade it:
+  uninstall it, then install again with the `--agent NAME` or `--no-agent`
+  the first install used.
+- `.github/dependabot.yml`: a daily look for updates to the Python
+  dependencies in `uv.lock`.
+
+### Changed
+
+- The README's Requirements are now the operating systems and a link to
+  `docs/dependencies.md`. The detail they held moved to that page and to
+  `docs/speech-server.md`.
+
+- `ears services install` says what each answer to its wake-seat refusal
+  means. `--agent NAME` is for a Mac where an agent seat should be woken
+  when you speak. `--no-agent` is for a phone-only Mac (for example one that
+  runs a Delta bot), where nobody is woken and the keeper's notices go to
+  the log. `ears services --help`, the README and `docs/ears.md` carry the
+  same short phone-only paragraph.
+- Before it writes any launch agent, `ears services install` now prints a
+  `speech heads-up:` line when it installs its own speech server: how big
+  the speech models are (the sum of the pinned sizes, about 2.9 GB today),
+  how much is still to fetch when some is cached, and that the speech
+  server runs as a login service. `--dry-run` prints the same line. When
+  every weight is already cached it says so and gives no heads-up. It warns
+  and goes on, and never stops to ask, so a scripted install never waits on
+  a prompt. The `--no-prefetch` help now computes its size too.
+- `ears services install` lists every missing prerequisite in one run. It
+  used to refuse at the first one, so a fresh Mac needed a run per
+  prerequisite: the wake seat, then a shipped file, then the model. It now
+  checks everything it can without building or fetching (the wake seat, the
+  shipped files, the speakers and the speech server prerequisites), prints
+  one refusal block with the fix for each, and exits 2 with nothing
+  written. A single refusal, with nothing else to name, reads exactly as it
+  did. `--dry-run` prints the same block.
+- `ears services install` fetches the Silero VAD model itself when it is
+  missing and VoiceMode's copy is not there to link. It no longer refuses
+  and sends you to `ears install`. It uses the same pinned source and
+  SHA-256 check as `ears install`, and says the version, the size, the
+  source and the destination. A failed fetch or a checksum mismatch is a
+  refusal (exit 2) with no file left behind, never a traceback. A refused
+  run fetches nothing and names the model as not fetched. `--dry-run` says
+  what it would fetch and fetches nothing. `--no-prefetch` does not cover
+  it: the keeper cannot hear without the model.
+
+### Fixed
+
+- A person's short answer right after an agent's spoken line is no longer
+  labelled as that agent. The speakers side-car renamed any `other` voice to
+  the line's agent when the heard words were in the line, so "Anything."
+  said 0.35 s after "... Say anything, and I'll confirm I heard you." was
+  mailed with the agent as its `Ears-Speaker` and woke nobody. A heard line
+  that lies mostly after the agent's line ended now counts as its echo only
+  if it is the line's ending ("heard you."). A line whose end row was never
+  seen ends at the next line's start, or 10 s (or 0.6 s a word, if longer)
+  after it began, so it no longer claims every later partial. Echo heard
+  while the line plays is still the agent's (EARS-469).
+- `ears services install` exits 2 when a launch agent fails to load. It
+  used to print `FAILED` for that service and still exit 0, so a fresh
+  install reported success with a service down. It now tries every service
+  first, then prints one block on stderr naming each one that did not load,
+  the install log and `ears services status`, and skips the `proof` line.
+- `ears services install` keeps an install log: every real run appends what
+  it printed and launchctl's answers, each timestamped, to
+  `<sessionvoice's home>/logs/install.log`, and prints that path as its
+  `log` row, its one new line on success. A dry run writes no log. A log
+  that cannot be written is one warning, never a stopped install.
+- A turn where the user spoke over a seat's line no longer goes out under
+  that seat's name. The capture can label such a turn with the seat, because
+  the line's voice fills most of its audio. The keeper cut the line's echo
+  out but kept the label, so `Ears-Speaker` named the seat on words that were
+  all the user's, and his reply to the line was dropped as the seat's own
+  voice: a pager rule that rides that seat's echo rode his answer, and
+  nobody woke. Now, after an echo cut that leaves words, a label naming a
+  seat whose line was cut is dropped: `Ears-Speaker` is `--speaker` (else
+  `unknown@<host>`), and the words can be a reply to that seat. A turn with
+  no cut, a turn that is all echo, and a label naming anyone else are
+  unchanged.
+
+- `ears services install` no longer leaves the ears on whisper for good
+  when it adopts a speech server that is already on `:8890` (VoiceMode's,
+  say) and that server has not loaded Parakeet yet. Its first Parakeet
+  request downloads about 2.5 GB, and the 30-second probe gave up first.
+  That probe now says it may download, waits up to 15 minutes, and prints a
+  line every 15 seconds while it waits. Ctrl-C skips it to whisper. A
+  fallback that still happens is recorded outside `ears.json`. It is
+  repeated as the install's last line and as an `ears services status` row,
+  each naming `ears services install --only keeper`. That command probes
+  Parakeet again, and once it answers the ears move back to it. When install
+  loads its own speech server, nothing changes.
+
+- A capture whose watchdog ended it now always exits 3. When the
+  watchdog's SIGKILL to the streaming child freed the write the capture
+  was stuck in, the capture could finish first and exit 0, against its
+  own `capture-wedged` row, which says `"exit": 3`.
+- On a host with no audio output device (a headless server, a VM with no
+  sound card, a Linux login outside the `audio` group), `mouth say`,
+  `mouth play` and `mouth again` no longer exit 0 with an id while nothing
+  plays. They exit 1 with one line that names the cause and the fix, and
+  print no id. `mouth devices` exits 1 with that line instead of an empty
+  list (`--json` still prints its object). Without the PortAudio library,
+  `mouth devices` no longer crashes with a traceback, and every verb that
+  plays says PortAudio is missing and how to install it.
+  If PortAudio is there but fails to start (or to list its devices), those
+  verbs and `mouth devices` say "the audio system did not start" in one
+  line, not a traceback. The check before the id, and `mouth devices`, keep
+  ALSA's own `ALSA lib ...` lines off the terminal, so a working `mouth say`
+  on desktop Linux prints only its id.
+
+- `ears services install --only speech` no longer needs a C compiler. The
+  speech server's venv used to build `webrtcvad` 2.0.10 from its sdist (a C
+  extension that mlx-audio's server extra asks for), so on a Mac with no
+  Command Line Tools the install was refused. The speech lock now takes
+  `webrtcvad-wheels==2.0.14.post1`, prebuilt wheels of the same `webrtcvad`
+  and `_webrtcvad` modules with the same API, hash-pinned like the rest of
+  the lock. How it is expressed: `speech/requirements.in` pins
+  `webrtcvad-wheels`, and the compile command passes
+  `--excludes excludes.txt`, which drops mlx-audio's `webrtcvad` from the
+  resolution. The lock was regenerated over the old one and changes in that
+  one entry; install reads only the lock, as before, and still imports
+  `mlx_audio.server` (and with it `webrtcvad`) before it calls the venv
+  good. The one sdist left in the speech lock, `docopt`, is pure Python.
+  `speech/build-constraints.txt` declares only it now.
+- When a package in the speech install does fail to build its C code, the
+  refusal now says to check for Apple's Command Line Tools
+  (`xcode-select -p`) and, if they are missing, to install them
+  (`xcode-select --install`) and run the install again, on the line before
+  the ways out it already listed.
+- `bin/mouth-timeline` runs on an installed kit. A plugin's copy of
+  `bin/` (the plugin cache, or a clone the plugin loads in place) has no
+  `.venv`, so the wrapper found no Python and exited 2, asking for a
+  `uv sync` in a directory the user never made. It now looks, in order,
+  at `$MOUTH_PYTHON`, the checkout's `.venv/bin/python`, then the Python
+  of the `sessionkit` uv tool, then the `sessionvoice` uv tool, in uv's
+  tool directory (`$UV_TOOL_DIR`, else `$XDG_DATA_HOME/uv/tools`, else
+  `~/.local/share/uv/tools`). It still runs the copy's own `src/` under
+  `-S`, so a cold call costs what it did. A `MOUTH_PYTHON` that is not
+  executable is still refused, not passed over. With none of them, the
+  one-line error names `uv tool install --python 3.14 sessionkit` first.
+- `bin/ears` and `bin/mouth`, with no `.venv` beside them, run the
+  installed `sessionkit` (else `sessionvoice`) uv tool's own `ears` or
+  `mouth` from the same tool directory. Before, `uv run` built a second
+  venv inside the plugin's copy on first use. A checkout, and a copy with
+  no tool installed, still use `uv run`.
+
 ## [0.3.0] - 2026-10-24
 
 ### Added

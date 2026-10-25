@@ -9,6 +9,7 @@ so the count of stream opens over a run is a number the tests assert.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -201,6 +202,35 @@ def test_a_stream_whose_device_went_quiet_is_rescanned_and_reopened(rig):
     assert [x["error"] for x in recs] == [None, None, None], recs
     assert [x["opens"] for x in recs] == [1, 2, 2], recs
     assert r.stop() == 0
+
+
+def test_the_fake_sees_every_sound_the_held_stream_starts(tmp_path, monkeypatch):
+    """The rig's fake against the real HeldStream, in-process (EARS-453).
+
+    The fake looks for a sound about to start (to note it, or to kill the stream on an
+    "F" step), then calls back. Looked at bare, a sound queued between the look and the
+    callback was taken unseen, and the step meant for it fell on the next sound: the
+    test above's [1, 1, 2]. A 1 us switch interval puts thread switches everywhere,
+    that gap included; every sound written must still be one the fake saw start."""
+    monkeypatch.setenv("FAKE_SD_LOG", str(tmp_path / "sd.log"))
+    monkeypatch.setenv("FAKE_SD_FAIL", "")
+    for k in ("FAKE_SD_DEVICES", "FAKE_SD_DEFAULT"):
+        monkeypatch.delenv(k, raising=False)
+    spec = importlib.util.spec_from_file_location("fake_sd_in_process", FAKE / "sounddevice.py")
+    fake = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fake)
+    h = HeldStream(fake, slack_s=5)
+    n, before = 300, sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        for _ in range(n):
+            h.write(None, "Fake Speakers", 48000, np.ones(48, np.float32))   # 1 ms each
+    finally:
+        sys.setswitchinterval(before)
+        h.close()
+    sd_log = (tmp_path / "sd.log").read_text().splitlines()
+    assert h.opens == 1 and opens(sd_log) == ["open:Fake Speakers"], sd_log[:5]
+    assert sd_log.count("play:Fake Speakers") == n, (sd_log.count("play:Fake Speakers"), n)
 
 
 def test_an_open_that_fails_is_rescanned_and_tried_once_more(rig):

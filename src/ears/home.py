@@ -32,7 +32,7 @@ log. Otherwise whichever writes first decides: converse first, and sessionvoice 
 warning names this fix (:data:`FIX`). Nothing here detects VoiceMode.
 
 Under the root nothing changes: ``logs/conversations/heard_*.jsonl``, ``heard.lock``,
-``speakers_*``, ``mouth/``, ``talk/`` and ``state/``. VoiceMode's own files in
+``speakers_*``, ``logs/install.log``, ``mouth/``, ``talk/`` and ``state/``. VoiceMode's own files in
 ``~/.voicemode`` (``voicemode.env``, ``voices/``, ``services/``, ``exchanges_*``) are
 VoiceMode's, and this module never names them.
 

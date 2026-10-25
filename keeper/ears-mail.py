@@ -10,7 +10,9 @@ decides wake or ride from the headers. Every finished turn goes, addressed or
 not. The headers carry no X-: Ears-Kind, Ears-Rule, Ears-Seq,
 Ears-Start, Ears-End, Ears-Source, Ears-Device, Ears-Speaker. Ears-Speaker is
 the turn's own `speaker` label as <label>@<host> when the capture named the turn
-(a split, or its partials' labels; speaker_of), else --speaker, unknown@<host> by default. Ears-Rule is keyed
+(a split, or its partials' labels; speaker_of), else --speaker, unknown@<host> by default.
+After an echo cut that left words, a label naming a seat whose line was cut is
+dropped (heard_rec): the words left are the user's, so they get the default. Ears-Rule is keyed
 by ADDRESS: alice@<host>=call for "hey Alice", everyone=everyone for "hey
 everyone"; reply, light and first entries ride (only call and everyone wake).
 Ears-Audio names the turn's kept WAV when the record has `audio` (recording
@@ -434,7 +436,9 @@ class Room:
         turn's span; a headphone line has no acoustic path and is never cut (152937).
         The best-matched line is cut first and the rest re-matched on what is left. A
         turn that is all echo gives ("", None, cuts). The user's words begin when a leading
-        echo's line finished, so a reply is judged against the room the user answered."""
+        echo's line finished, so a reply is judged against the room the user answered.
+        It reads and changes words only, never REC's `speaker`; heard_rec() drops a label
+        that names a seat whose line was cut."""
         text, began, stop = str(rec.get("text") or ""), _start(rec), _t(rec)
         self.echoed = set()
         start, end_r, real = self.span(rec)
@@ -708,7 +712,10 @@ def verdicts(rec, rules, room, text=None, start=None, playing=None):
     does not answer itself (a seat's own line on the laptop speakers,
     labelled with its name, came back as a reply and woke it). The dropped reply
     leaves the line answerable, for the user's real reply. Calls stand: they come from
-    words that name the seat, and a label that is wrong must not lose a call."""
+    words that name the seat, and a label that is wrong must not lose a call.
+    The keeper passes REC as heard_rec() made it: once an echo cut has taken a seat's
+    line out of the turn, a label naming that seat is gone, so the user's words left
+    over are his, and can be a reply to that seat."""
     text = str(rec.get("text") or "") if text is None else text
     own = speaker_label(rec)
     out = {}
@@ -857,9 +864,27 @@ def speaker_of(rec, default, domain):
     the label lower-cased and anything outside [a-z0-9._-] made "-" so it is one
     local part. A turn with no `speaker` (neutral-only or unlabelled), or a label that is
     empty, not a string or names nobody (NEUTRAL_SPEAKERS), keeps DEFAULT:
-    --speaker / $EARS_SPEAKER / unknown@<domain> (never a person's address by default)."""
+    --speaker / $EARS_SPEAKER / unknown@<domain> (never a person's address by default).
+    The keeper passes REC as heard_rec() made it, so the words an echo cut left are
+    never mailed under the seat whose line was cut out of them."""
     local = speaker_label(rec)
     return f"{local}@{domain}" if local else default
+
+
+def heard_rec(rec, his, cuts):
+    """REC as the words HIS (what trim_echo left) are heard: who said them. A turn
+    the user spoke over a seat's line is labelled with that seat (the capture names a
+    turn once, and the line's voice filled most of its audio), but the cut took the
+    seat's words out: what is left is the user's. So when a cut LEFT words and the
+    label names a seat whose line was cut (CUTS, [(agent, utt, n)]; compared as
+    speaker_label does, so " Vera " is vera), this is a shallow copy without
+    `speaker`: the remainder is the default speaker (speaker_of) and is not the
+    seat's own voice (verdicts()). Any other turn is REC itself: nothing cut, all
+    echo, or a label naming someone else (a person's label over the echo is kept)."""
+    own = speaker_label(rec)
+    if not his or not own or own not in {_local(agent) for agent, _, _ in cuts}:
+        return rec
+    return {k: v for k, v in rec.items() if k != "speaker"}
 
 
 def rule_header(hit, domain):
@@ -1468,18 +1493,20 @@ def main(argv=None):
                 his, began, cuts = room.trim_echo(rec)
                 if not his:
                     continue
+                # who said HIS: never the seat whose echo was just cut out (heard_rec)
+                his_rec = heard_rec(rec, his, cuts)
                 if slug:                # EVERY finished turn of the user, To and From its device
-                    hit = act(verdicts(rec, rules, room, his, began, kodi and kodi.playing),
+                    hit = act(verdicts(his_rec, rules, room, his, began, kodi and kodi.playing),
                               rec, his)
                     if room.held:
                         skip("film", rec, seats=room.held["seats"], rules=room.held["rules"],
                              media=room.held["media"], mailed="without those rules")
                     addr = f"{a.sender}+{slug}"   # the box's name is configuration
                     deliver(mail_for(rec, [addr], hit, his=his, rule=rule_header(hit, a.domain),
-                                     frm=addr, speaker=speaker_of(rec, speaker, a.domain),
+                                     frm=addr, speaker=speaker_of(his_rec, speaker, a.domain),
                                      whole=False, cuts=cuts), rec)
                     continue
-                hit = {s: r for s, r in verdicts(rec, rules, room, his, began,
+                hit = {s: r for s, r in verdicts(his_rec, rules, room, his, began,
                                                  kodi and kodi.playing).items() if s in mailto}
                 held = room.held and [s for s in room.held["seats"] if s in mailto]
                 if held:

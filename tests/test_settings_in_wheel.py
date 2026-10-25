@@ -14,6 +14,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 from importlib.resources import files
 from pathlib import Path
 
@@ -93,6 +94,14 @@ def test_one_schema_missing_refuses_before_copying_the_others(monkeypatch, tmp_p
     assert not ears_dir.exists() and not mouth_dir.exists()
 
 
+def _look(*a):
+    """launchctl, read-only and with nothing loaded: it may only look (list, print), and never
+    the real one."""
+    if a[0] not in ("list", "print"):
+        raise AssertionError(f"launchctl called: {a}")
+    return subprocess.CompletedProcess(a, 113 if a[0] == "print" else 0, "", "")
+
+
 def test_services_install_refuses_without_schemas_and_writes_nothing(monkeypatch, tmp_path):
     _wheel_layout(monkeypatch, tmp_path, with_schemas=False)
     monkeypatch.setattr(services, "keeper_script", lambda: tmp_path / "ears-keeper.sh")   # the keeper is found
@@ -101,7 +110,14 @@ def test_services_install_refuses_without_schemas_and_writes_nothing(monkeypatch
 
     def boom(*a, **kw):
         raise AssertionError(f"install went past the refusal: {a}")
-    for name in ("_launchctl", "silero", "seed_stt", "install_schema"):
+
+    def look(*a):
+        """A dry run goes on listing past the refusal (EARS-449): launchctl may only look."""
+        if a[0] not in ("list", "print"):
+            boom(*a)
+        return subprocess.CompletedProcess(a, 113 if a[0] == "print" else 0, "", "")
+    monkeypatch.setattr(services, "_launchctl", look)
+    for name in ("silero", "seed_stt", "install_schema"):
         monkeypatch.setattr(services, name, boom)
     for dry in (True, False):
         out, err = io.StringIO(), io.StringIO()
@@ -115,5 +131,6 @@ def test_services_install_refuses_without_schemas_and_writes_nothing(monkeypatch
 def test_the_schema_refusal_spares_an_install_without_the_keeper(monkeypatch, tmp_path, capsys):
     _wheel_layout(monkeypatch, tmp_path, with_schemas=False)
     monkeypatch.setattr(services, "LOGS", tmp_path / "logs")
+    monkeypatch.setattr(services, "_launchctl", _look)
     assert services.install(["mouth"], dry_run=True) == 0
     assert "dev.sessionkit.voice.ears-mouth" in capsys.readouterr().out

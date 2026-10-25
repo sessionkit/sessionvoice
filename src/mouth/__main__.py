@@ -27,7 +27,29 @@ line per live call (call:N). Notes ride after a TAB as '# ...':
 
 The current output is marked with its volume ('(muted)' when muted). The last
 line names the current input; it starts with '#' and is not a --device name.
-All three are asked of CoreAudio live; what is unknown is left out."""
+All three are asked of CoreAudio live; what is unknown is left out.
+
+With no output device it exits 1 with one line on stderr naming the cause
+and the fix (--json still prints its object). With no PortAudio it exits 1
+with one line naming how to install it."""
+
+
+def _can_play(device) -> bool:
+    """Before a line gets an id: False, with one line on stderr, when this host can play
+    nothing on the device the line would resolve to (no PortAudio, no output device, or
+    PortAudio raised at initialize or listing its devices).
+
+    The device is resolved as ``say()`` resolves it (``resolve_device``). ``null`` and
+    ``call:<N>`` always pass, and so does a named device that is merely absent while
+    other outputs exist: the player still refuses that one (``mouth.canplay``)."""
+    from . import canplay, resolve_device
+
+    try:
+        canplay.check(resolve_device(device)[0])
+    except (canplay.PortAudioMissing, canplay.NoOutputDevice, canplay.AudioDidNotStart) as e:
+        print(f"mouth: {e}", file=sys.stderr)
+        return False
+    return True
 
 
 def main(argv=None) -> int:
@@ -241,6 +263,8 @@ def main(argv=None) -> int:
     if a.cmd == "say":
         text = sys.stdin.read() if a.text == ["-"] else " ".join(a.text)
         pan = a.channel or a.pan
+        if not a.wait and not _can_play(a.device):   # a waiter hears the player's own refusal
+            return 1
         try:
             r = say(text.strip(), voice=a.voice, speed=a.speed, backend=a.backend, device=a.device,
                     pan=pan, log_dir=a.log_dir, wait=a.wait, priority=a.priority,
@@ -257,6 +281,8 @@ def main(argv=None) -> int:
             print(notice.cli_line(text.strip(), r), file=sys.stderr)
         return 0 if not a.wait or r.get("reason") == "done" else 1
     if a.cmd == "play":
+        if not a.wait and not _can_play(a.device):
+            return 1
         try:
             r = play(a.source, start=a.start, end=a.end, device=a.device, pan=a.channel or a.pan,
                      log_dir=a.log_dir, wait=a.wait, priority=a.priority, volume=a.volume,
@@ -280,6 +306,8 @@ def main(argv=None) -> int:
         print(json.dumps(r))
         return 0
     if a.cmd == "again":
+        if not _can_play(a.device):
+            return 1
         try:
             r = again(a.utt, seq=a.seq, heard_text=a.heard, volume=a.volume, text=a.text,
                       voice=a.voice, agent=a.agent, session=a.session, device=a.device)
@@ -316,10 +344,20 @@ def main(argv=None) -> int:
     if a.cmd == "timeline":
         return _timeline.run(a)
     if a.cmd == "devices":
+        from . import canplay
         from .devices import devices, devices_text
 
-        d = devices()
-        print(json.dumps(d, ensure_ascii=False) if a.json else devices_text(d))
+        try:
+            d = devices()
+        except (canplay.PortAudioMissing, canplay.AudioDidNotStart) as e:
+            print(f"mouth: {e}", file=sys.stderr)
+            return 1
+        out = json.dumps(d, ensure_ascii=False) if a.json else devices_text(d)
+        if out:
+            print(out)
+        if not d["outputs"]:   # nothing PortAudio can play on: a state, never an empty success
+            print(f"mouth: {canplay.no_output_line()}", file=sys.stderr)
+            return 1
         return 0
     if a.cmd == "voices":
         from ears import heard

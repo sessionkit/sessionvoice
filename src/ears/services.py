@@ -78,7 +78,8 @@ talk, which is dev.sessionkit.voice.talk:
 Before anything is written, install checks what the services need and says so (--dry-run
 lists the same checks, changing nothing):
 - the Silero VAD model the keeper's capture runs on: present, linked from VoiceMode's copy,
-  or MISSING, and then install REFUSES (run `ears install` first);
+  or fetched by the pin `ears install` uses once nothing else refuses (a failed fetch
+  REFUSES; a refused run names it as not fetched);
 - for mail: sessionmail's `message` and its carrier, postfix or the mail drop (checked,
   never configured), the nested `heard` box under the store dir
   that carries .tm-store (made when there is exactly one, then vmailbox-gen routes it), and
@@ -87,7 +88,13 @@ lists the same checks, changing nothing):
   home (built with uv from the shipped requirements.lock, mlx-audio==0.5.8; EARS_SPEAKER_PY
   skips the build), the modules it imports (the first missing is named, and install
   REFUSES), and the diarizer model (fetched here, the one download; the job never fetches);
-- a new ``final`` engine answers one short clip (else whisper :2022, said so);
+- a new ``final`` engine answers one short clip (else whisper :2022, said so). A speech
+  server on :8890 that this install does not load (VoiceMode's, adopted) may have to
+  download and load Parakeet before it can answer, so its probe says so first and waits
+  up to COLD_PROBE_S, saying it is still waiting; Ctrl-C skips to whisper. A fallback is
+  recorded (state/stt-fallback.json under sessionvoice's home, never ears.json), repeated
+  as the install's last line and as a `status` row, both naming the one command that
+  probes the engine again; that later install moves the ears back once it answers;
 - --agent NAME: the wake seat (`ears wake add NAME`) and the keeper's notices (EARS_NOTIFY)
   go to the installing agent; --notify ADDR sends the notices elsewhere. An install with
   mail in it and no --agent REFUSES (exit 2, nothing written; a --dry-run says REFUSED,
@@ -98,7 +105,15 @@ lists the same checks, changing nothing):
   warns that NOBODY is woken and the notices are log-only. A wake file that already names
   a seat (a re-run, the upgrade path) is not refused: install says which seat it wakes.
   --only without mail (speakers, speech, mouth, keeper) wakes nobody either way and is
-  never refused for it.
+  never refused for it. The refusal says what each choice means: --agent NAME for a Mac
+  where an agent seat should be woken when you speak; --no-agent for a phone-only Mac (for
+  example a Delta bot), where nobody is woken and the notices go to the log (PHONE_ONLY, the
+  same paragraph, closes --help);
+- the speech weights, when install installs its own speech server: before any plist is
+  written, one heads-up line (speech_heads_up) gives the whole download, summed from
+  SPEECH_WEIGHT_SIZES, and says the speech server runs as a login service. --dry-run prints
+  the same line; every weight already cached says so instead. It warns and goes on, never
+  asks: a scripted install never waits on a prompt.
 
 Whose plist: ONE label per job, whoever installs it, and install tells its own plist from a
 hand render by CONTENT, never by name. The hand templates in launchd/ render to the same
@@ -181,6 +196,7 @@ import re
 import shlex
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import envnames, maildir, speech   # speech: the server on :8890, found or ours
@@ -741,6 +757,29 @@ def _last_line(r: subprocess.CompletedProcess) -> str:
     return out[-1] if out else f"exit {r.returncode}"
 
 
+def speakers_refusal() -> str | None:
+    """Why speakers cannot be installed on this host as it stands, read-only and offline, or
+    None: speakers_checks' first failure among the host, EARS_SPEAKER_PY, the shipped lock and
+    a uv to build the venv with (or a venv already there). The one-pass preflight asks this
+    before anything is written; speakers_checks asks it first, so the two say the same words.
+    The build, the module imports and the model download come later, in speakers_checks."""
+    bad = _speakers_platform()
+    if bad:
+        return bad
+    py = speaker_py()
+    if os.environ.get("EARS_SPEAKER_PY"):
+        return None if py.exists() else f"EARS_SPEAKER_PY={py}: no such python"
+    try:
+        _speakers_file("requirements.lock")
+    except NoSpeakers as e:
+        return str(e)
+    if not _uv() and not py.exists():
+        return (f"no uv on PATH: speakers builds its own venv ({py.parent.parent}) with uv. Install uv "
+                "(https://docs.astral.sh/uv/), or set EARS_SPEAKER_PY to a python that has "
+                "mlx-audio>=0.5.6")
+    return None
+
+
 def speakers_checks(dry_run: bool = False) -> bool:
     """Before any plist: the host, the service python, its modules, the model.
     Prints what it found or did; a refusal is ONE line on stderr, and False (install exits 2
@@ -760,26 +799,20 @@ def speakers_checks(dry_run: bool = False) -> bool:
         print(f"ears services install: REFUSED: {msg}", file=sys.stderr)
         return False
 
-    bad = _speakers_platform()
+    bad = speakers_refusal()  # 1, and 2's checks: read-only, the preflight asks the same
     if bad:
         return refuse(bad)
     py = speaker_py()
     if os.environ.get("EARS_SPEAKER_PY"):
-        if not py.exists():
-            return refuse(f"EARS_SPEAKER_PY={py}: no such python")
         print(f"{'speakers':6s} python {py} (EARS_SPEAKER_PY: no venv built)")
     else:
         venv = py.parent.parent
         try:
             lock = _speakers_file("requirements.lock")
-        except NoSpeakers as e:
+        except NoSpeakers as e:   # gone since speakers_refusal() found it
             return refuse(str(e))
         pins = sum(1 for l in lock.read_text().splitlines() if l[:1].isalnum())
         uv = _uv()
-        if not uv and not py.exists():
-            return refuse(f"no uv on PATH: speakers builds its own venv ({venv}) with uv. Install uv "
-                          "(https://docs.astral.sh/uv/), or set EARS_SPEAKER_PY to a python that has "
-                          "mlx-audio>=0.5.6")
         if dry_run:
             if not py.exists():
                 print(f"{'speakers':6s} would build {venv} (python {SPEAKER_PYTHON}, {SPEAKER_PIN}, "
@@ -984,9 +1017,51 @@ def no_stt_help() -> str:
             f"ears services install`, its key in {stt_key_path()} (or $EARS_LISTEN_STT_KEY)")
 
 
+# What a failed C build prints: setuptools' `command '/usr/bin/cc' failed`, and on a Mac with
+# no Command Line Tools the cc stub's xcrun error or its xcode-select prompt. setuptools prints
+# the same line when the compiler ran and the code failed (a missing header, say), and the
+# output cannot tell the two apart, so the help is conditional: true with the CLT or without.
+# The speech lock builds no C extension (webrtcvad comes as webrtcvad-wheels), so this is for
+# a lock or host that brings one back.
+_NO_COMPILER = re.compile(r"command '[^']*\b(?:cc|gcc|clang|c\+\+|g\+\+|clang\+\+)' failed|"
+                          r"xcrun: error|xcode-select|CommandLineTools", re.I)
+NO_COMPILER_HELP = ("a package built from source needs a C compiler, and its build failed: if "
+                    "`xcode-select -p` finds no developer tools on this Mac, install Apple's "
+                    "Command Line Tools (`xcode-select --install`), then run this again")
+
+
+def _needs_compiler(r: subprocess.CompletedProcess) -> bool:
+    """True when R's output says a C build failed: no compiler, or a compiler that failed."""
+    return bool(_NO_COMPILER.search(f"{r.stdout or ''}\n{r.stderr or ''}"))
+
+
 def speech_missing_module(py) -> str | None:
     """The first of SPEECH_MODULES that PY cannot import, offline, or None."""
     return _missing_module(py, SPEECH_MODULES)
+
+
+def speech_refusal() -> str | None:
+    """Why the speech server cannot be installed on this host as it stands, read-only and
+    offline, or None: speech_checks' first failure among the host, EARS_SPEECH_PY, the shipped
+    lock and build constraints, and a uv to build the venv with (or a venv already there). The
+    one-pass preflight asks this before anything is written; speech_checks asks it first, so
+    the two say the same words. The build and the module imports come later, in speech_checks."""
+    bad = _speech_platform()
+    if bad:
+        return bad
+    py = speech_py()
+    if os.environ.get("EARS_SPEECH_PY"):
+        return None if py.exists() else f"EARS_SPEECH_PY={py}: no such python"
+    try:
+        _speech_file("requirements.lock")
+        _speech_file("build-constraints.txt")
+    except NoSpeech as e:
+        return str(e)
+    if not _uv() and not py.exists():
+        return (f"no uv on PATH: the speech server gets its own venv ({py.parent.parent}), built with uv. "
+                "Install uv (https://docs.astral.sh/uv/), or set EARS_SPEECH_PY to a python that "
+                f"has {SPEECH_PIN} with its server and stt extras")
+    return None
 
 
 def speech_checks(dry_run: bool = False) -> str | None:
@@ -1001,29 +1076,24 @@ def speech_checks(dry_run: bool = False) -> str | None:
        requirements.lock`; a fresh build checks every artifact against the lock's hashes, a
        re-apply only what it installs). `-b` hash-pins the backend uv fetches to build the
        lock's sdist-only pins: --require-hashes alone does not reach build dependencies.
-       No uv to build with: refused;
+       A failed install whose output shows a C build failing says how to check for, and
+       install, the Command Line Tools (NO_COMPILER_HELP). No uv to build with: refused;
     3. the modules, each imported on its own, offline: the first missing is named."""
-    bad = _speech_platform()
+    bad = speech_refusal()    # 1, and 2's checks: read-only, the preflight asks the same
     if bad:
         return bad
     py = speech_py()
     if os.environ.get("EARS_SPEECH_PY"):
-        if not py.exists():
-            return f"EARS_SPEECH_PY={py}: no such python"
         print(f"{'speech':6s} python {py} (EARS_SPEECH_PY: no venv built)")
     else:
         venv = py.parent.parent
         try:
             lock = _speech_file("requirements.lock")
             build = _speech_file("build-constraints.txt")     # the sdists' backend, hashed
-        except NoSpeech as e:
+        except NoSpeech as e:  # gone since speech_refusal() found them
             return str(e)
         pins = sum(1 for l in lock.read_text().splitlines() if l[:1].isalnum())
         uv = _uv()
-        if not uv and not py.exists():
-            return (f"no uv on PATH: the speech server gets its own venv ({venv}), built with uv. "
-                    "Install uv (https://docs.astral.sh/uv/), or set EARS_SPEECH_PY to a python that "
-                    f"has {SPEECH_PIN} with its server and stt extras")
         if dry_run:
             if not py.exists():
                 print(f"{'speech':6s} would build {venv} (python {SPEAKER_PYTHON}, {SPEECH_PIN}, "
@@ -1043,7 +1113,7 @@ def speech_checks(dry_run: bool = False) -> str | None:
                             "-b", build, "-r", lock])
             if r.returncode != 0:
                 return (f"uv pip install --require-hashes -b {build} -r {lock} into {venv} failed: "
-                        f"{_last_line(r)}")
+                        f"{_last_line(r)}" + (f"; {NO_COMPILER_HELP}" if _needs_compiler(r) else ""))
             print(f"{'speech':6s} venv {py}: {pins} packages pinned ({SPEECH_PIN})")
         else:
             print(f"WARNING: no uv on PATH: the venv at {venv} is used as it is, its pins not re-applied")
@@ -1054,19 +1124,31 @@ def speech_checks(dry_run: bool = False) -> str | None:
     return None
 
 
-def speech_step(names, dry_run: bool = False) -> tuple[bool, bool]:
+def _speech_said(d) -> tuple[str, str]:
+    """(head, said): the step D took, and what it found, as install prints them."""
+    return (f"{'speech':6s} step {speech.STEP[d.kind]}, {d.kind}: ",
+            d.line.removeprefix("speech: ").removeprefix("REFUSED: "))
+
+
+def _speech_decide(names, url, port):
+    """speech.py's steps 1-4, decided read-only: who holds PORT, and what install does there."""
+    return speech.decide(speech.probe(AGENTS, _listed(_launchctl("list").stdout.splitlines()), port=port),
+                         url, mouth="mouth" in names)
+
+
+def speech_step(names, dry_run: bool = False, d: speech.Decision | None = None) -> tuple[bool, bool]:
     """speech.py's steps 1-4 for `install`, before anything is written: (ok, installs).
     It prints which step it took and why. ``installs`` is True only on step 4 when the checks
     pass (the plist loop writes and loads ours; a dry run prints it). ``ok`` is False when the
     ears would be deaf (they hear through :8890 and nothing there will serve them): install
     exits 2 before any plist, and says what to run. When only the mouth wants :8890, a refusal
-    is a WARNING: the mouth falls back to `say`, and the rest installs."""
+    is a WARNING: the mouth falls back to `say`, and the rest installs. D: the decision the
+    preflight already made (so :8890 is probed once per install); None probes here."""
     url, port = speech.final_url(), _speech_port()
     here = speech.ears_here(url, port=port)
-    d = speech.decide(speech.probe(AGENTS, _listed(_launchctl("list").stdout.splitlines()), port=port),
-                      url, mouth="mouth" in names)
-    said = d.line.removeprefix("speech: ").removeprefix("REFUSED: ")
-    head = f"{'speech':6s} step {speech.STEP[d.kind]}, {d.kind}: "
+    if d is None:
+        d = _speech_decide(names, url, port)
+    head, said = _speech_said(d)
     if d.kind != "install":
         if d.fatal:
             print(f"ears services install: REFUSED: {head}{said}", file=sys.stderr)
@@ -1195,6 +1277,35 @@ def _fetch_one(w: dict, patterns, plan: list[str], tty: bool, cache: Path) -> st
         return f"exit {rc}" + (f": {lines[-1][:200]}" if lines else "")
 
 
+def speech_weights_total() -> int:
+    """Every SPEECH_WEIGHTS entry's pinned size, summed from SPEECH_WEIGHT_SIZES: the whole
+    download, in bytes. Never a hand-typed number: re-measure a size and this follows."""
+    return sum(size for _, _, size, _, _ in SPEECH_WEIGHT_SIZES)
+
+
+def speech_heads_up(off: str | None = None, cache: Path | None = None) -> str:
+    """The line install prints once it knows it installs the speech server (step 4), before any
+    plist is written and so before the prefetch starts: the total size (speech_weights_total),
+    what is still to fetch, and that the server runs as a login service. A dry run prints the
+    same line. OFF (prefetch_off): the download waits for the first call, and the line says so.
+    Every weight already cached in CACHE (default: speech_hf_cache): it says so instead, and
+    gives no heads-up."""
+    cache = speech_hf_cache() if cache is None else cache
+    ws = weights_reading(cache)["weights"]
+    todo = [w for w in ws if w["state"] != "cached"]
+    if not todo:
+        return (f"{'speech':6s} weights: all {len(ws)} already cached in {cache}: no download, so "
+                "no heads-up")
+    total = _size(speech_weights_total())
+    left = "" if len(todo) == len(ws) else f"; {_left(todo)} of it is still to fetch"
+    when = (f"not fetched now ({off}): the first call fetches it, and waits" if off else
+            f"fetched once, into {cache}, after the plists load (Ctrl-C stops the fetch; the "
+            "install goes on)")
+    return (f"{'speech':6s} heads-up: the speech models are a {total} download{left}, {when}. "
+            f"The speech server runs as a login service ({_label('speech')}): launchd starts it "
+            "now and at every login")
+
+
 def prefetch(dry_run: bool = False, off: str | None = None) -> None:
     """The install-time prefetch of the speech server's three weights (docs/models.md). It
     prints the size first (from the reader), skips and names the weights already cached, and
@@ -1261,6 +1372,117 @@ def _stt_model() -> str | None:
 
 
 WHISPER_URL = "http://127.0.0.1:2022/v1"   # VoiceMode's whisper.cpp: the fallback a failed probe takes
+#: How long the probe waits for a speech server on :8890 that this install does not load (an
+#: adopted one, VoiceMode's): if it has never loaded Parakeet, its first request downloads the
+#: weights (SPEECH_WEIGHT_SIZES' stt row, about 2.5 GB) and loads them before it answers, which
+#: no 30 s probe meets on a home link. Every other probe keeps probe_stt's 30 s.
+COLD_PROBE_S = 900.0
+#: While that probe waits, a line says so this often (seconds)
+COLD_TICK_S = 15.0
+#: The one command that probes a fallen-back engine again (seed_stt re-probes on a record)
+RETRY_STT = "ears services install --only keeper"
+
+
+def _fallback_path() -> Path:
+    """The record of a whisper :2022 fallback: the ears' own state, under sessionvoice's home
+    (beside state/heard-cursor), never the settings folder: ears.json's schema has no room
+    for it, and a chosen whisper must stay distinguishable from a fallen-back one."""
+    from .home import sessionvoice_home
+    return Path(sessionvoice_home()) / "state" / "stt-fallback.json"
+
+
+def stt_fallback() -> dict | None:
+    """The fallback record, ``{"final": {url, model?}, "why": str, "at": str}``: the engine the
+    install wanted, why its probe failed and when. None when there is none, or it is unreadable."""
+    import json
+    try:
+        d = json.loads(_fallback_path().read_text())
+    except Exception:
+        return None
+    f = d.get("final") if isinstance(d, dict) else None
+    if not isinstance(f, dict) or not isinstance(f.get("url"), str):
+        return None
+    return {"final": f, "why": str(d.get("why", "")), "at": str(d.get("at", ""))}
+
+
+def _fallback_write(final: dict, why: str) -> None:
+    """Record that FINAL fell back to whisper :2022 (atomic). Never fatal: the fallback line
+    was already said; a record that cannot be written only loses the later re-probe."""
+    import json
+    from datetime import datetime
+    path = _fallback_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps({"final": final, "why": why,
+                                   "at": datetime.now().astimezone().isoformat(timespec="seconds")},
+                                  indent=2) + "\n")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _fallback_clear() -> None:
+    """Drop the fallback record, when there is one (no record: nothing is touched)."""
+    path = _fallback_path()
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def _is_whisper(final) -> bool:
+    return isinstance(final, dict) and str(final.get("url", "")).rstrip("/") == WHISPER_URL
+
+
+def retry_stt(notify: str | None = None) -> str:
+    """RETRY_STT, carrying the keeper's notices address (NOTIFY, else the one our keeper plist
+    holds) so the re-install does not drop it."""
+    import shlex
+    if notify is None:
+        notify = (_plist_env(AGENTS / f"{_label('keeper')}.plist") or {}).get("EARS_NOTIFY")
+    return RETRY_STT + (f" --notify {shlex.quote(notify)}" if notify else "")
+
+
+def fallback_said(fb: dict, notify: str | None = None) -> str:
+    """The loud line a fallback earns: the install's last line, and a `status` row."""
+    f = fb["final"]
+    what = f"{f['model']} on {f['url']}" if f.get("model") else f["url"]
+    since = f" since {fb['at']}" if fb.get("at") else ""
+    return (f"{'stt':6s} FALLBACK{since}: the ears hear through whisper :2022, NOT {what}: it "
+            f"FAILED its probe ({fb['why']}). When it can answer, `{retry_stt(notify)}` probes it "
+            "again and moves the ears back")
+
+
+def _cold_heads_up(url: str, model: str | None) -> str:
+    size = next(s for u, _, s, _, _ in SPEECH_WEIGHT_SIZES if u == "stt")
+    what = (f"Parakeet (about {_size(size)})" if model in (None, DEFAULT_STT_MODEL)
+            else f"{model}")
+    return (f"{'speech':6s} {url} is a speech server this install does not load: if it has not "
+            f"loaded {what} yet, its first request downloads and loads it. Waiting up to "
+            f"{COLD_PROBE_S / 60:g} min for the probe's answer; Ctrl-C skips to whisper :2022")
+
+
+def _cold_probe(url: str, model: str | None = None) -> str | None:
+    """probe_stt with COLD_PROBE_S, a line every COLD_TICK_S while it waits, and Ctrl-C taken
+    as a skip (a reason, so the whisper fallback goes on) instead of the end of the install."""
+    import threading, time
+    stop, t0 = threading.Event(), time.monotonic()
+
+    def tick():
+        while not stop.wait(COLD_TICK_S):
+            print(f"probing still waiting for {url}: {time.monotonic() - t0:.0f}s of "
+                  f"{COLD_PROBE_S:g}s (Ctrl-C skips to whisper :2022)", flush=True)
+    beat = threading.Thread(target=tick, daemon=True)
+    beat.start()
+    try:
+        return probe_stt(url, model, timeout=COLD_PROBE_S)
+    except KeyboardInterrupt:
+        return "skipped by Ctrl-C"
+    finally:
+        stop.set()
+        beat.join()
 
 
 def _probe_clip() -> bytes:
@@ -1317,7 +1539,8 @@ def probe_stt(url: str, model: str | None = None, timeout: float = 30.0) -> str 
     return None
 
 
-def seed_stt(dry_run: bool = False, no_probe: str | None = None) -> str:
+def seed_stt(dry_run: bool = False, no_probe: str | None = None,
+             fell_back: list | None = None) -> str:
     """Write ``final`` into ears.json: from EARS_STT_URL/EARS_STT_MODEL when given (they
     replace it), else the default (Parakeet on mlx-audio) only when the file has none. An
     old ``stt`` counts as one (it is ``final``'s old name); a written ``final`` drops it, so
@@ -1326,17 +1549,32 @@ def seed_stt(dry_run: bool = False, no_probe: str | None = None) -> str:
 
     A NEW final is probed first (probe_stt): one that does not answer is not written, and
     whisper :2022 is, said loudly with the failure (a new host's ears.json once named a
-    Parakeet the installed mlx-audio could not load, and the capture went deaf). A kept final is not
-    re-probed. ``no_probe`` (a reason) skips the probe: the server is one this install has
-    not loaded yet. ``dry_run``: says what it would write, writes nothing (it still probes).
+    Parakeet the installed mlx-audio could not load, and the capture went deaf). A speech
+    server on :8890 that this install does not load is probed cold-aware (_cold_probe): it may
+    have to download and load Parakeet first. A fallback is recorded (stt_fallback); a kept
+    final is not re-probed, except a kept whisper :2022 with that record, whose wanted engine
+    is probed again and written back once it answers. ``no_probe`` (a reason) skips the
+    probe: the server is one this install has not loaded yet. ``dry_run``: says what it would
+    write, writes nothing, records nothing (it still probes). ``fell_back`` (a list): the
+    fallback the ears end on, if any, is appended to it (stt_fallback's shape), for install's
+    closing line; install calls this, never _seed_stt, so a test's stand-in for it holds.
     A STRANDED ears.json (``ears.home.stranded``) is not written, nor probed for."""
+    said, fb = _seed_stt(dry_run, no_probe)
+    if fb and fell_back is not None:
+        fell_back.append(fb)
+    return said
+
+
+def _seed_stt(dry_run: bool = False, no_probe: str | None = None) -> tuple[str, dict | None]:
+    """seed_stt, and the fallback it ends on (stt_fallback's shape, None when the ears do not
+    end on a fallback), for install's closing line."""
     import json
     from .home import refuse_stranded
     from .listen.stt import conf_path
     path = Path(conf_path())
     why = refuse_stranded(path, "ears.json", "ears services")   # a 0.1.0 file not moved yet
     if why:
-        return f"final NOT set: {why}"
+        return f"final NOT set: {why}", None
     try:
         d = json.loads(path.read_text())
     except Exception:
@@ -1351,40 +1589,76 @@ def seed_stt(dry_run: bool = False, no_probe: str | None = None) -> str:
         tmp.write_text(json.dumps(d, indent=2) + "\n")
         os.replace(tmp, path)
 
+    def probe(url, model=None):
+        # said BEFORE every request, the dry run's too: a check may ask the user's own STT, but
+        # never silently
+        cold = speech.ears_here(url, port=_speech_port())   # not loaded here (else no_probe)
+        if cold:
+            print(_cold_heads_up(url, model), flush=True)
+        print(f"probing {url} (read-only)", flush=True)
+        return _cold_probe(url, model) if cold else probe_stt(url, model)
+
+    def record(final, why):
+        if not dry_run:
+            _fallback_write(final, why)
+        return {"final": final, "why": why, "at": ""}
+
+    def forget():
+        if not dry_run:
+            _fallback_clear()
+
     given = bool(os.environ.get("EARS_STT_URL") or os.environ.get("EARS_STT_MODEL"))
     have = d.get("final") or d.get("stt")
     if have and not given:
         if "stt" not in d:
-            return f"final kept: {have}"
+            fb = stt_fallback()
+            if fb is None:
+                return f"final kept: {have}", None
+            if not _is_whisper(have):     # set by hand since: whisper was no fallback any more
+                forget()
+                return f"final kept: {have}", None
+            want = fb["final"]            # the fallen-back engine: probe it again
+            if no_probe and want["url"].rstrip("/") == _stt_url().rstrip("/"):
+                said, why = f" (not probed: {no_probe})", None
+            else:
+                why = probe(want["url"], want.get("model"))
+                said = " (probe: it answers)"
+            if why is not None:
+                fb = record(want, why)
+                return (f"final kept: {have} - still the FALLBACK: {want} FAILED its probe again "
+                        f"({why})"), fb
+            d["final"] = want
+            write()
+            forget()
+            return (f"final {'would be set' if dry_run else 'set'}: {want}{said}, back from the "
+                    "whisper :2022 fallback"), None
         # the old name goes: the schema no longer draws it, and refuses a file that has it.
         # Beside final it is dead (final wins in every reader); alone it becomes final.
         old = d.pop("stt")
         how = "dropped stt, final wins" if "final" in d else "renamed from stt"
         d.setdefault("final", old)
         write()
-        return f"final kept: {d['final']} ({would}{how})"
+        return f"final kept: {d['final']} ({would}{how})", None
     stt = {"url": _stt_url()}
     if _stt_model():
         stt["model"] = _stt_model()
 
-    def probe(url, model=None):
-        # said BEFORE every request, the dry run's too: a check may ask the user's own STT, but
-        # never silently
-        print(f"probing {url} (read-only)", flush=True)
-        return probe_stt(url, model)
-
-    said = ""
+    said, fb = "", None
     if no_probe:
         said = f" (not probed: {no_probe})"
+        forget()
     else:
         why = probe(stt["url"], stt.get("model"))
         if why is None:
             said = " (probe: it answers)"
+            forget()
         elif stt["url"].rstrip("/") == WHISPER_URL:
             said = (f" (FAILED its probe: {why}; start whisper :2022, or set final in {path})\n"
                     + no_stt_help())
+            forget()                      # whisper was chosen: nothing to move back to
         else:
             failed, stt = stt, {"url": WHISPER_URL}
+            fb = record(failed, why)
             why2 = probe(WHISPER_URL)
             said = (f" - FALLBACK: {failed} FAILED its probe ({why}), so whisper :2022 instead"
                     + (f", which did not answer either ({why2}): start whisper :2022, or set final "
@@ -1393,7 +1667,7 @@ def seed_stt(dry_run: bool = False, no_probe: str | None = None) -> str:
     d.pop("stt", None)
     d["final"] = stt
     write()
-    return f"final {'would be set' if dry_run else 'set'}: {stt}{said}"
+    return f"final {'would be set' if dry_run else 'set'}: {stt}{said}", fb
 
 
 def spec(name: str, notify: str | None = None) -> dict:
@@ -1668,14 +1942,23 @@ def _silero_copy() -> Path:
     return Path.home() / ".voicemode/models/silero/silero_vad.onnx"
 
 
+# How install fetches a missing Silero model: None is urllib's opener (vad.fetch_silero's own
+# default). Tests set it to a fake, and the install tests' fence to one that refuses the network.
+SILERO_OPENER = None
+
+
 def silero(dry_run: bool = False) -> tuple[bool, str]:
     """(ok, line): the Silero VAD model the keeper's capture needs. Present: ok. Missing, and
-    VoiceMode's copy is there: link it (dry run: would link). Neither: not ok, and install
-    REFUSES before any plist is written (without it the capture dies every 4 s)."""
+    VoiceMode's copy is there: link it (dry run: would link). Neither: fetch it by the pin
+    `ears install` fetches by (vad.SILERO_URL, SHA-256 checked; dry run: would fetch, and
+    fetches nothing), saying where from and to before it starts. A failed fetch is not ok, and
+    install REFUSES before any plist is written (without it the capture dies every 4 s);
+    fetch_silero leaves nothing behind."""
+    from . import vad
     want, copy = _silero_want(), _silero_copy()
-    if want.is_file() and want.stat().st_size > 0:
+    if _nonempty(want):
         return True, f"silero present: {want}"
-    if copy.is_file() and copy.stat().st_size > 0:
+    if _nonempty(copy):
         if dry_run:
             return True, f"silero would link {want} -> {copy} (VoiceMode's copy)"
         want.parent.mkdir(parents=True, exist_ok=True)
@@ -1683,9 +1966,33 @@ def silero(dry_run: bool = False) -> tuple[bool, str]:
             want.unlink()                  # a dangling link, or an empty file: never the model
         want.symlink_to(copy)
         return True, f"silero linked {want} -> {copy} (VoiceMode's copy)"
-    return False, (f"silero MISSING: no Silero VAD model at {want} (nor VoiceMode's {copy}); the "
-                   "keeper's capture cannot start without it. Run `ears install` (it fetches it), "
-                   "then `ears services install` again")
+    what = f"Silero VAD {vad.SILERO_TAG} ({_size(vad.SILERO_SIZE)}) from {vad.SILERO_URL} -> {want}"
+    if dry_run:
+        return True, f"silero would fetch {what}"
+    print(f"silero fetching {what}", flush=True)
+    try:   # the pin read now, so a test can pin a fake's sha; a dangling link or empty file is replaced
+        vad.fetch_silero(want, url=vad.SILERO_URL, sha256=vad.SILERO_SHA256, opener=SILERO_OPENER)
+    except vad.SileroFetchError as e:
+        return False, f"silero: {e}; the keeper's capture cannot start without it"
+    return True, (f"silero fetched: {want} matches the pin ({vad.SILERO_TAG}, "
+                  f"sha256 {vad.SILERO_SHA256[:12]})")
+
+
+def silero_not_fetched() -> str | None:
+    """The line a refused install says about a Silero model it would have fetched, or None when
+    the model (or VoiceMode's copy) is there. A refused run fetches nothing: this is the fetch
+    it would make once the refusals are fixed. Read-only."""
+    from . import vad
+    want, copy = _silero_want(), _silero_copy()
+    if _nonempty(want) or _nonempty(copy):
+        return None
+    return (f"ears services install: not fetched: Silero VAD {vad.SILERO_TAG} "
+            f"({_size(vad.SILERO_SIZE)}) is missing at {want} (nor VoiceMode's {copy}); install "
+            "fetches it once the refusals above are fixed")
+
+
+def _nonempty(path: Path) -> bool:
+    return path.is_file() and path.stat().st_size > 0
 
 
 def _postconf(param: str) -> str | None:
@@ -2031,6 +2338,21 @@ def wake_checks(agent: str | None, dry_run: bool = False) -> list[str]:
             "no seat). Run `ears services install --agent NAME`, or `ears wake add NAME`"]
 
 
+# What each answer to the refusal means, in plain words: the refusal, --help and docs/ears.md
+# ("A phone-only Mac") say the same (PHONE_ONLY).
+AGENT_MEANS = ("a Mac where an agent seat should be woken when you speak: NAME is that seat, and "
+               "it gets the keeper's notices")
+NO_AGENT_MEANS = ("a phone-only Mac (for example a Delta bot): nobody is woken, and the notices go "
+                  "to the log")
+PHONE_ONLY = ("A phone-only Mac (for example one that runs a Delta bot, with no agent seat to wake): "
+              "install with --no-agent. Nobody is woken when you speak, and the keeper's notices go "
+              "to the log. --agent NAME is for a Mac where an agent seat should be woken when you "
+              "speak. The speech models are a one-time download of about "
+              "{size}, fetched by install after the speech server loads (--dry-run shows the size "
+              "first; --no-prefetch leaves the download to the first call); the speech server runs "
+              "as a login service.")
+
+
 def seat_hint() -> str | None:
     """The seat this shell appears to be: $TM_AGENT_ADDRESS's local part, WHOLE (a wake seat
     is the address's local part: dave, sessionmail+engineer). A hint for the refusal only:
@@ -2054,11 +2376,11 @@ def agent_refusal(names, agent: str | None, no_agent: bool) -> str | None:
     except Exception:         # unreadable: it names nobody ears-mail could wake
         pass
     lines = [f"ears services install: REFUSED: no --agent NAME, and {wake.target()} names no seat: "
-             "the mail service would install, and NOBODY would be woken when you speak. Say who:",
-             "    ears services install --agent NAME   # NAME becomes the wake seat "
-             "(and gets the keeper's notices)",
-             "    ears services install --no-agent     # install anyway; nobody is woken until "
-             "`ears wake add NAME`"]
+             "the mail service would install, and NOBODY would be woken when you speak. "
+             "Choose the one that fits this Mac:",
+             f"    ears services install --agent NAME   # {AGENT_MEANS}",
+             f"    ears services install --no-agent     # {NO_AGENT_MEANS}",
+             "either way, `ears wake add NAME` adds a seat to wake later"]
     seat = seat_hint()
     if seat:
         lines.append(f"you appear to be seat {seat}: ears services install --agent {seat}")
@@ -2350,37 +2672,325 @@ def _say_skipped(uid: int, dry_run: bool, name: str, hand: tuple[str, Path]) -> 
     print(_retire_ours_beside(uid, dry_run, name, hand[0], hand_loaded=loaded))
 
 
-def install(names, dry_run=False, agent=None, notify=None, no_prefetch=False) -> int:
-    names = jobs(names)       # sounds: its two agents
+REFUSED = "ears services install: REFUSED: "
+
+
+@dataclass
+class Preflight:
+    """What install found missing before writing anything (preflight()).
+
+    ``items``: each refused item as install prints it on stderr (one may be several lines), in
+    the order agent, shipped files, speakers, speech. ``later``: the lines for steps that need
+    every item cleared first (the Silero fetch), said only inside a refused block. ``drop``: the services a dry
+    run stops listing, because their own item refused. ``decision``: the speech server's, so
+    :8890 is probed once per install. ``agent``: the first item is the agent refusal."""
+    items: list[str] = field(default_factory=list)
+    later: list[str] = field(default_factory=list)
+    drop: set[str] = field(default_factory=set)
+    decision: speech.Decision | None = None
+    agent: bool = False
+
+    @property
+    def refused(self) -> bool:
+        return bool(self.items)
+
+
+def _shipped_refusals(names) -> list[tuple[str, str]]:
+    """(service, why) for EVERY shipped file NAMES' agents run that is missing, not only the
+    first: the files a plist would point at (never a plist that cannot start)."""
+    out = []
     for n, find in (("keeper", keeper_script), ("keeper", schema_files), ("mail", mail_script),
                     ("speakers", lambda: _speakers_file("run.sh")),
                     ("ears-sounds", lambda: sounds_script("ears-sounds")),
                     ("mouth-sounds", lambda: sounds_script("mouth-sounds")),
                     ("talk", talk_bin)):
-        if n in names:        # before anything is written: never a plist that cannot start
+        if n in names:
             try:
                 find()
             except NoKeeper as e:
-                print(f"ears services install: REFUSED: {e}", file=sys.stderr)
-                return 2
+                out.append((n, str(e)))
+    return out
+
+
+def preflight(names, agent_why: str | None = None) -> Preflight:
+    """Every check install can make before it writes anything, all of them, in one pass:
+    read-only, offline (the speech probe asks only this host's :8890) and silent. Each failure
+    is one item, with its fix, worded exactly as install's single refusal was. AGENT_WHY: the
+    agent refusal main() found (agent_refusal), the first item; install() called directly
+    never checks it. The same whether or not it is a dry run.
+
+    A check that needs another to pass first is not asked when that one failed: speakers'
+    host, python, lock and uv once its run.sh is found (and only when no hand-made speakers is
+    on this host, as install skips them then); speech's once the probe chose step 4 and the
+    ears hear through it. Builds, downloads and module imports are never asked here: they
+    write or fetch, and stay late, single refusals. A missing Silero model is not an item:
+    install fetches it once nothing refuses, so a refused block names it as not fetched (a
+    refused run fetches nothing)."""
+    pre = Preflight(agent=bool(agent_why))
+    if agent_why:
+        pre.items.append(agent_why)
+    for n, why in _shipped_refusals(names):
+        pre.items.append(REFUSED + why)
+        pre.drop.add(n)
+    if "keeper" in names:   # never a refusal now: install fetches it once nothing else refuses
+        line = silero_not_fetched()
+        if line:
+            pre.later.append(line)
+    if "speakers" in names and "speakers" not in pre.drop and not _hand(os.getuid(), "speakers"):
+        why = speakers_refusal()
+        if why:
+            pre.items.append(REFUSED + why)
+            pre.drop.add("speakers")
+    if "speech" in names:
+        url, port = speech.final_url(), _speech_port()
+        d = pre.decision = _speech_decide(names, url, port)
+        why = None
+        if d.kind != "install":
+            if d.fatal:
+                head, said = _speech_said(d)
+                why = head + said
+        elif speech.ears_here(url, port=port):   # not here: a late WARNING, and the rest installs
+            why = speech_refusal()
+            why = why and f"speech: {why}"
+        if why:
+            pre.items.append(f"{REFUSED}{why}\n{no_stt_help()}")
+            pre.drop.add("speech")
+    return pre
+
+
+def _refused_block(pre: Preflight) -> None:
+    """PRE's refusals as ONE block on stderr: each item, then each later line, then (more than
+    one) how many and that nothing was written. A block of one item is that single refusal,
+    byte for byte."""
+    items = list(pre.items)
+    many = len(items) + len(pre.later) > 1
+    if many and pre.agent:    # said once, by the footer
+        items[0] = items[0].removesuffix("\nnothing was written")
+    for line in items + pre.later:
+        print(line, file=sys.stderr)
+    if many:
+        print(f"ears services install: {len(items)} refused above, from one run; nothing was "
+              "written, fetched or built. Fix each, then run it again", file=sys.stderr)
+
+
+def install_log_path() -> Path:
+    """The install log, ``<sessionvoice's home>/logs/install.log``: every real run of
+    ``ears services install`` appends what it printed and what launchctl answered to it,
+    each line timestamped. Under ``logs/`` beside the heard log's ``conversations/``; the
+    home's resolver keys on the heard log alone, so this file never decides the root."""
+    from .home import sessionvoice_home
+    return Path(sessionvoice_home()) / "logs" / "install.log"
+
+
+def _log_now() -> str:
+    from datetime import datetime
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+class _InstallLog:
+    """One install run's log. Each line is stamped when it is printed and held until arm(),
+    the run's first write to the host; from then on it is written through, so a run that
+    stops part-way still leaves what it printed. A run that never arms (a dry run, a refusal
+    before anything is written) leaves no file, as it says. launchctl's answers are logged
+    for every call that changes a job (bootstrap, bootout, ...); its read-only questions
+    (print, list) are asked many times while a job goes and are not.
+
+    The log never stops an install: a log that cannot be made or written (an OSError at any
+    point) says so once on stderr, naming its path, and the run goes on unlogged. Its exit
+    code is the services' alone."""
+
+    QUIET = ("print", "list")
+
+    def __init__(self, names):
+        self.names = list(names)
+        self.path: Path | None = None
+        self.said = False             # its path printed
+        self._start = _log_now()
+        self._fh = None
+        self._held: list[str] = []
+        self._part = {"stdout": "", "stderr": ""}
+        self.err = sys.stderr         # where the one warning goes: the stream before any tee
+        self.lost = False             # it could not be written: the run goes on unlogged
+
+    @property
+    def armed(self) -> bool:
+        return self._fh is not None
+
+    def row(self) -> str:
+        self.said = True
+        return f"{'log':6s} {self.path}"
+
+    def _lose(self, e: OSError) -> None:
+        """Give the log up, once: one warning, then nothing more is held or written."""
+        fh, self._fh, self._held = self._fh, None, []
+        if fh:
+            try:
+                fh.close()
+            except OSError:
+                pass
+        if not self.lost:
+            self.lost = True
+            where = self.path or "logs/install.log, under sessionvoice's home,"
+            print(f"ears services install: WARNING: the install log {where} cannot be written "
+                  f"({e.strerror or e}); installing on without it", file=self.err)
+
+    def _line(self, kind: str, text: str) -> None:
+        if self.lost:
+            return
+        line = f"{_log_now()} {kind} {text}\n"
+        if self._fh:
+            try:
+                self._fh.write(line)
+                self._fh.flush()
+            except OSError as e:
+                self._lose(e)
+        else:
+            self._held.append(line)
+
+    _ESC = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")   # a terminal control sequence (erase-line)
+
+    @classmethod
+    def _plain(cls, text: str) -> str:
+        """TEXT as a terminal leaves it: a carriage return redraws the line (the prefetch's
+        progress does, on a tty), so only the last state is kept; control sequences go."""
+        return next((s for s in reversed(cls._ESC.sub("", text).split("\r")) if s), "")
+
+    def feed(self, kind: str, text: str) -> None:
+        *lines, part = (self._part[kind] + text).split("\n")
+        for line in lines:
+            self._line(kind, self._plain(line))
+        # a line still being redrawn holds only its last state, however long the redraw runs
+        self._part[kind] = "\r" + self._plain(part) if "\r" in part else part
+
+    def launchctl(self, inner):
+        def launchctl(*a: str) -> subprocess.CompletedProcess:
+            r = inner(*a)
+            if a and a[0] not in self.QUIET:
+                why = (r.stderr or "").strip().replace("\n", " | ")
+                self._line("launchctl", f"{' '.join(a)} -> rc {r.returncode}" + (f": {why}" if why else ""))
+            return r
+        return launchctl
+
+    def arm(self) -> None:
+        if self._fh or self.lost:
+            return
+        try:
+            self.path = install_log_path()
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._fh = self.path.open("a", encoding="utf-8")
+            self._fh.write(f"=== {self._start} ears services install {' '.join(self.names)}\n")
+            self._fh.writelines(self._held)
+            self._held = []
+            self._fh.flush()
+        except OSError as e:
+            self._lose(e)
+
+    def close(self, end: str) -> None:
+        for kind, part in self._part.items():   # a last line with no newline, as it ended
+            if self._plain(part):
+                self._line(kind, self._plain(part))
+        if self._fh:
+            try:
+                self._fh.write(f"=== {_log_now()} {end}\n")
+                self._fh.close()
+                self._fh = None
+            except OSError as e:
+                self._lose(e)
+
+
+class _Tee:
+    """A stream that also feeds an install log: what the user sees, byte for byte, is what it
+    was."""
+
+    def __init__(self, inner, log: _InstallLog, kind: str):
+        self._inner, self._log, self._kind = inner, log, kind
+
+    def write(self, text: str) -> int:
+        n = self._inner.write(text)
+        self._log.feed(self._kind, text)
+        return n
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+_RUN_LOG: _InstallLog | None = None     # the running install's log, armed by install()
+
+
+def _arm_install_log() -> None:
+    if _RUN_LOG is not None:
+        _RUN_LOG.arm()
+
+
+def _logged(run):
+    """install(), teed to the install log for its whole run: its stdout and stderr, and
+    launchctl's answers through the module's one launchctl seam (so a faked launchctl is what
+    a test's log shows). An armed run that returned before its own log row prints the row
+    last; the log's last line is the run's exit code."""
+    import functools
+
+    @functools.wraps(run)
+    def install(names, *a, **kw):
+        global _RUN_LOG, _launchctl
+        log = _InstallLog(jobs(names))
+        saved = _RUN_LOG, _launchctl, sys.stdout, sys.stderr
+        _RUN_LOG, _launchctl = log, log.launchctl(_launchctl)
+        sys.stdout, sys.stderr = _Tee(sys.stdout, log, "stdout"), _Tee(sys.stderr, log, "stderr")
+        end = "raised"
+        try:
+            rc = run(names, *a, **kw)
+            if log.armed and not log.said:
+                print(log.row())
+            end = f"rc {rc}"
+            return rc
+        except BaseException as e:
+            end = f"raised {type(e).__name__}: {e}"
+            raise
+        finally:
+            _RUN_LOG, _launchctl, sys.stdout, sys.stderr = saved
+            log.close(end)
+    return install
+
+
+def _failed_block(failed: list[tuple[str, str]], log: Path | None) -> None:
+    """The services that did not load, as ONE block on stderr: each with launchctl's reason,
+    then where to look next. Printed once every service has been tried."""
+    for n, why in failed:
+        print(f"ears services install: FAILED: {n} did not load: {why}", file=sys.stderr)
+    where = f"read the install log ({log}), then " if log else ""
+    print(f"ears services install: {len(failed)} service{'s' if len(failed) > 1 else ''} did not "
+          f"load (above), from one run; every service was tried. Next: {where}run "
+          "`ears services status`", file=sys.stderr)
+
+
+@_logged
+def install(names, dry_run=False, agent=None, notify=None, no_prefetch=False, agent_why=None) -> int:
+    names = jobs(names)       # sounds: its two agents
+    refused = False
+    pre = preflight(names, agent_why)   # before anything is written: every refusal, in one run
+    if pre.refused:
+        _refused_block(pre)
+        if not dry_run:
+            return 2
+        names = [n for n in names if n not in pre.drop]   # a dry run lists the rest
+        refused = True        # ...and exits 2 as install would
     if "speakers" in names:   # its state as `status` gives it, before anything changes
         print(f"{'speakers':6s} {_speakers_row(_listed(_launchctl('list').stdout.splitlines()))}")
-    refused = False
     if "keeper" in names:     # the model, before any plist: a keeper without it loops deaf
         ok, line = silero(dry_run)
-        if not ok:
-            print(f"ears services install: REFUSED: {line}", file=sys.stderr)
-            if not dry_run:
-                return 2
-            refused = True    # a dry run goes on listing, and exits 2 as install would
+        if not ok:            # the fetch failed (a dry run fetches nothing, so never here):
+            print(f"{REFUSED}{line}", file=sys.stderr)   # a block of one; nothing written yet
+            return 2
         else:
             print(line)
     if not dry_run:           # a dry run changes nothing, not even an empty log dir
         LOGS.mkdir(parents=True, exist_ok=True)
+        _arm_install_log()    # the install log too: from here on the run changes the host
     uid = os.getuid()
     hands: dict[str, tuple[str, Path] | None] = {}   # service -> the hand-made one: ours is skipped
     hand = None
     stuck = False
+    failed: list[tuple[str, str]] = []   # (service, why): did not load, after every one is tried
     if "mail" in names:
         hand = hands["mail"] = _hand_mailer(uid)
         if hand:
@@ -2412,19 +3022,24 @@ def install(names, dry_run=False, agent=None, notify=None, no_prefetch=False) ->
                     return 2                   # before any plist: never a job that cannot start
                 refused = True                 # a dry run goes on listing, and exits 2 as install would
     speech_installs = False
+    fell_back = []
     if "speech" in names:     # steps 1-4: only step 4 builds or writes anything
-        ok, speech_installs = speech_step(names, dry_run)
+        ok, speech_installs = speech_step(names, dry_run, d=pre.decision)
         if not ok:
             if not dry_run:
                 return 2                       # before any plist: the ears would be deaf
             refused = True
+        if speech_installs:   # the size, before any plist and so before the download
+            print(speech_heads_up(prefetch_off(no_prefetch)), flush=True)
     to = notify_to(agent, notify)
     if "keeper" in names:
         print(_notices_line(to))
-        print(seed_stt(dry_run=dry_run, no_probe=_no_probe(names, speech_installs)))
+        print(seed_stt(dry_run=dry_run, no_probe=_no_probe(names, speech_installs),
+                       fell_back=fell_back))
         if not dry_run:
             print(install_schema())
-    listed = _listed(_launchctl("list").stdout.splitlines())   # the old labels' first sign
+    # the old labels' first sign (a dry run whose every service refused has none to look up)
+    listed = _listed(_launchctl("list").stdout.splitlines()) if names else {}
     for n in names:           # the rest: a hand render at our label (or the keeper's old name)
         if n in hands or (n == "speech" and not speech_installs):
             continue
@@ -2472,14 +3087,24 @@ def install(names, dry_run=False, agent=None, notify=None, no_prefetch=False) ->
             print(f"ears services install: {n} FAILED: {e}", file=sys.stderr)
             print(f"{n:6s} FAILED: {e.label} would not go; {_label(n)} NOT loaded  {path}")
             stuck = True
+            failed.append((n, f"{e.label} would not go; {_label(n)} NOT loaded"))
             continue
         print(f"{n:6s} {'loaded' if r.returncode == 0 else 'FAILED: ' + r.stderr.strip()}  {path}")
+        if r.returncode != 0:                # the next service is still tried: every failure, one run
+            failed.append((n, r.stderr.strip() or f"launchctl bootstrap exit {r.returncode}"))
     if speech_installs:       # its weights, so the first call does not wait on them: never fatal
         prefetch(dry_run, prefetch_off(no_prefetch))
-    if "mail" in names and not dry_run:
+    log = _RUN_LOG if _RUN_LOG is not None and _RUN_LOG.armed else None
+    if failed:                # after every service was tried: never a proof of a job not loaded
+        _failed_block(failed, log and log.path)
+    if "mail" in names and not dry_run and not failed:
         print("proof  speak to the agent: it WAKES and answers. A heard line alone proves only the "
               "keeper; the mail is what pages it")
-    return 2 if refused or stuck else 0
+    if log:
+        print(log.row())
+    for fb in fell_back:      # the last line, so it is not missed among the rest: exit unchanged
+        print(fallback_said(fb, to))
+    return 2 if refused or stuck or failed else 0
 
 
 def uninstall(names, dry_run: bool = False) -> int:
@@ -2556,6 +3181,23 @@ def keeper_mode_line(run: Path | None = None) -> str | None:
     return f"{'':6s} mode: {mode}"
 
 
+def _fallback_status_row() -> str | None:
+    """`status`'s FALLBACK row: only while ears.json's final IS whisper :2022 and the record
+    says it fell back (a final set by hand since makes the record stale, and says nothing)."""
+    import json
+    from .listen.stt import conf_path
+    fb = stt_fallback()
+    if fb is None:
+        return None
+    try:
+        d = json.loads(Path(conf_path()).read_text())
+    except Exception:
+        return None
+    if not isinstance(d, dict) or not _is_whisper(d.get("final") or d.get("stt")):
+        return None
+    return fallback_said(fb)
+
+
 def status() -> int:
     listed = _listed(_launchctl("list").stdout.splitlines())
     old = [o for o in OLD if any(_there(listed, l) for l in _labels(o))]
@@ -2601,6 +3243,10 @@ def status() -> int:
     for o in _old_labels("speech"):
         if _there(listed, o):
             print(_old_line(listed, "speech", o, _label("speech")))
+    # the ears on a whisper :2022 fallback: said until a later install moves them back
+    line = _fallback_status_row()
+    if line:
+        print(line)
     # the weights that server fetches, against the expected shas: read-only, never fetched
     # and never a failure: drift is reported, status still exits 0
     for row in weights_status():
@@ -2614,7 +3260,9 @@ def status() -> int:
 
 def main(argv=None) -> int:
     import argparse
-    p = argparse.ArgumentParser(prog="ears services", description=__doc__.split("\n")[0])
+    import textwrap
+    p = argparse.ArgumentParser(prog="ears services", description=__doc__.split("\n")[0],
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("verb", choices=["install", "uninstall", "status", "weights"])
     p.add_argument("--only", default=None, help="comma list of: " + ",".join(ALL) + " (call, room: keeper;"
                    + " sounds: " + " and ".join(GROUPS["sounds"]) + ")"
@@ -2622,22 +3270,27 @@ def main(argv=None) -> int:
     p.add_argument("--apple", action="store_true",
                    help="install the Apple stt server (:2023) too; needs `ears install --apple`")
     who = p.add_mutually_exclusive_group()
-    who.add_argument("--agent", default=None, help="the installing agent: its wake seat (`ears wake add`) "
-                     "and the keeper's notices (EARS_NOTIFY). Installing mail needs it or --no-agent, "
-                     "unless the wake file already names a seat")
-    who.add_argument("--no-agent", action="store_true", help="install mail with no wake seat: nobody is "
-                     "woken when you speak until `ears wake add NAME` (install warns)")
+    who.add_argument("--agent", default=None, help="for a Mac where an agent seat should be woken "
+                     "when you speak: NAME is that seat (`ears wake add`), and gets the keeper's "
+                     "notices (EARS_NOTIFY). Installing mail needs it or --no-agent, unless the wake "
+                     "file already names a seat")
+    who.add_argument("--no-agent", action="store_true", help="for a phone-only Mac (for example a "
+                     "Delta bot): install mail with no wake seat; nobody is woken when you speak, and "
+                     "the notices go to the log (install warns). `ears wake add NAME` adds a seat later")
     p.add_argument("--notify", default=None, help="where the keeper's notices go instead of --agent")
     p.add_argument("--json", action="store_true", help="weights: one line of JSON, schema "
                    + WEIGHTS_SCHEMA + " (docs/models.md)")
     p.add_argument("--dry-run", action="store_true", help="print the checks and the plists, change nothing "
-                   "(install: also the size of the speech weights it would fetch, fetching nothing; "
+                   "(install: also the size of the speech weights and of a missing Silero model it "
+                   "would fetch, fetching nothing; "
                    "uninstall: the labels it would boot out and the plists it would delete)")
     p.add_argument("--no-prefetch", action="store_true", help="install: do not fetch the speech "
-                   "server's weights (about 2.9 GB) now; the first call fetches them, and waits. "
+                   f"server's weights (about {_size(speech_weights_total())}) now; the first call fetches them, "
+                   "and waits. "
                    f"{PREFETCH_ENV}=1 does the same")
     from .home import STRANDED_HELP, warn_stranded
-    p.epilog = STRANDED_HELP
+    p.epilog = "\n\n".join(textwrap.fill(t, 78) for t in   # two paragraphs, each wrapped
+                           (PHONE_ONLY.format(size=_size(speech_weights_total())), STRANDED_HELP))
     warn_stranded("ears services")   # once per process: status and install alike
     a = p.parse_args(argv)
     if a.only:
@@ -2657,13 +3310,11 @@ def main(argv=None) -> int:
         return weights(a.json)
     if a.verb == "install":
         why = agent_refusal(names, a.agent, a.no_agent)
-        if why:               # before install(): nothing written, nothing fetched
-            print(why, file=sys.stderr)
-            if not a.dry_run:
-                return 2
-            install(names, True, agent=None, notify=a.notify, no_prefetch=a.no_prefetch)
-            return 2          # a dry run goes on listing, and exits 2 as install would
-        return install(names, a.dry_run, agent=a.agent, notify=a.notify, no_prefetch=a.no_prefetch)
+        if why and not a.dry_run:   # refused, before install(): with everything else missing
+            _refused_block(preflight(names, why))   # in the same block; nothing written
+            return 2
+        kw = {"agent_why": why} if why else {}      # a dry run lists on, and exits 2
+        return install(names, a.dry_run, agent=a.agent, notify=a.notify, no_prefetch=a.no_prefetch, **kw)
     return uninstall(names, a.dry_run)
 
 

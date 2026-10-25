@@ -81,6 +81,7 @@ def launchd(monkeypatch, tmp_path):
     agents.mkdir()
     monkeypatch.setattr(services, "AGENTS", agents)
     monkeypatch.setattr(services, "LOGS", tmp_path / "logs")
+    monkeypatch.setenv("SESSIONVOICE_HOME", str(tmp_path / "sessionvoice"))   # the install log's root
     monkeypatch.setattr(services, "seed_stt", lambda **kw: "stt kept")
     monkeypatch.setattr(services, "silero", lambda dry_run=False: (True, "silero present"))
     monkeypatch.setattr(services, "install_schema", lambda: "schema")

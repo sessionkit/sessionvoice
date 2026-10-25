@@ -14,10 +14,12 @@ PARAKEET = {"url": "http://127.0.0.1:8890/v1", "model": "mlx-community/parakeet-
 
 
 @pytest.fixture(autouse=True)
-def _no_live_stt(monkeypatch):
+def _no_live_stt(monkeypatch, tmp_path):
     # seed_stt probes a new final (EARS-222 item 7): never this host's live servers here;
     # the probe itself is tested on a stub server (test_services_install_checks.py)
     monkeypatch.setattr(services, "probe_stt", lambda url, model=None, timeout=30.0: None)
+    # ...and reads (and may write) its fallback record under sessionvoice's home: never the live one
+    monkeypatch.setenv("SESSIONVOICE_HOME", str(tmp_path / "sessionvoice"))
 
 
 def test_agents_carry_no_engine(monkeypatch):

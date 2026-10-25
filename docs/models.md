@@ -9,7 +9,7 @@ are not loaded by sessionvoice. They run on the [mlx-audio] server at
 `127.0.0.1:8890`, and sessionvoice asks for them by name over HTTP. `ears
 services install` uses an mlx-audio server that is already there (one
 VoiceMode installed, for example), or installs its own,
-`dev.sessionkit.voice.mlx-audio` (the README's Requirements say how). Silero
+`dev.sessionkit.voice.mlx-audio` ([the speech server](speech-server.md) says how). Silero
 and the diarizer run inside sessionvoice's own processes. Every other model
 on this page is opt-in. Talk loads no model at all.
 
@@ -143,6 +143,16 @@ revision="main", allow_patterns=...)`, with the patterns from
 `voices/*.safetensors` for the voices). The cache then holds what the server
 looks for, and `refs/main` is written.
 
+- **A heads-up before anything is written.** Once install knows it installs
+  its own speech server, and before any plist is written, it prints one
+  `speech heads-up:` line: the whole download (the sum of
+  `SPEECH_WEIGHT_SIZES`, about 2.9 GB), how much of it is still to fetch when
+  some is cached, and that the speech server runs as a login service
+  (launchd starts it now and at every login). `--dry-run` prints the same
+  line. Under the opt-out it says the first call fetches it instead. When
+  every weight is already cached it says so, and gives no heads-up. Install
+  does not stop to ask: it warns and goes on, so a scripted install never
+  waits on a prompt.
 - **The size comes first.** One line gives the total still to fetch, from
   the reader (each weight's size minus what is already on disk). Weights
   already cached are named and skipped.
@@ -171,6 +181,54 @@ elsewhere (because `HF_HUB_CACHE` or `HF_HOME` is set), install says so in
 one line. Weights cached only there are fetched again, because the server
 cannot see them. When the server on `:8890` is someone else's (install's
 step 2, which installs nothing), install fetches nothing for it either.
+
+### An adopted speech server: the cold probe
+
+When the server on `:8890` is someone else's (VoiceMode's, say), install
+does not load it, so it fetches nothing for it. Install still probes the
+new `final` before it writes it: one short clip sent to
+`/audio/transcriptions`. That server may serve only Kokoro and never have
+loaded Parakeet. If so, its first Parakeet request downloads Parakeet's
+weights (most of the speech download) and loads them before it answers. A 30-second probe cannot
+wait that long, so this probe is cold-aware:
+
+- **It says so first.** One `speech` line, printed before the `probing`
+  line, says that the server may download and load Parakeet, with its size
+  from the `stt` row of `SPEECH_WEIGHT_SIZES`. It says how long install waits, and that
+  Ctrl-C skips to whisper.
+- **It waits up to 15 minutes** (`COLD_PROBE_S`). Every 15 seconds it
+  prints a `probing still waiting` line, so a long wait never looks like a
+  hang. The download is the server's own, into the server's own cache. If
+  the probe gives up, the download goes on anyway.
+- **Ctrl-C skips** the wait: whisper on `:2022` is probed and written, and
+  install goes on to the services.
+- Every other probe keeps 30 seconds: whisper on `:2022`, a hosted
+  `final`, and Apple's `:2023`.
+
+**If it still falls back**, whisper on `:2022` is written to `final`, as
+before. Install also records the fallback outside `ears.json`, in
+`state/stt-fallback.json` under sessionvoice's home. The record names the
+engine install wanted, why its probe failed, and when. Install then says it
+three times:
+
+- in the `FALLBACK` line where the probe failed;
+- in a closing `stt    FALLBACK` line, the last line of the install;
+- in a `stt    FALLBACK since ...` row of `ears services status`, until it
+  is fixed.
+
+The closing line and the status row name one command,
+`ears services install --only keeper`. If the keeper's notices go to an
+agent, it adds `--notify NAME`, so the reinstalled keeper keeps sending
+them there. That command probes the wanted engine again. Once it answers,
+`final` moves back to it and the record goes. While it still fails, the
+fallback and the record stay, and install says so again. The fallback
+never becomes permanent without a word. Install still exits 0 on whisper,
+because the install did work.
+
+A `final` you set by hand afterwards is never touched. The record is then
+stale: status ignores it, and the next install deletes it. When install
+loads its own speech server, nothing above applies. The prefetch runs, and
+the new `final` is not probed (the server is still starting).
 
 ## Parakeet TDT 0.6B v3
 
@@ -233,7 +291,10 @@ step 2, which installs nothing), install fetches nothing for it either.
 - **Model:** `silero_vad.onnx` from [snakers4/silero-vad][silero], as ONNX,
   pinned to release `v6.2.3` (commit
   `5cd7945676eb32225748052e2e6a0580e4686a08`). `ears install` downloads it
-  from that commit to `~/.cache/ears/silero_vad.onnx`, and checks it against
+  from that commit to `~/.cache/ears/silero_vad.onnx`. `ears services install`
+  downloads it too when the model is missing and there is no VoiceMode copy to
+  link, to where the keeper reads it: `EARS_SILERO_ONNX` when that is set, else
+  the same path. Both check it against
   sha256
   `1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3`. The pin
   is set once, in `src/ears/vad.py` (`SILERO_TAG`, `SILERO_COMMIT`,
@@ -242,6 +303,9 @@ step 2, which installs nothing), install fetches nothing for it either.
     model path only when the sum matches. On a mismatch, or if the fetch
     fails, the temp file is deleted and nothing is written at the model path.
     `ears install` then prints one line naming the URL and exits non-zero.
+    `ears services install` refuses with that line and exits 2, before it
+    writes any plist. Its `--dry-run` fetches nothing and says what it would
+    fetch.
   - A model already on disk is left alone. It may be your own
     `EARS_SILERO_ONNX`, or the VoiceMode copy that `ears services install`
     links. `ears install` hashes it and prints one line saying whether it

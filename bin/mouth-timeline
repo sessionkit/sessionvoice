@@ -10,10 +10,19 @@
 # - -S: no site-packages; the reader needs the standard library only (~4 ms);
 # - no subshell unless the script is reached through a symlink (~5 ms);
 # - `-m mouth.timeline`, the verb's own parser, not every mouth subcommand's.
-# The python is this checkout's own, <repo>/.venv/bin/python (README, Install: `uv venv`;
-# bin/ears and bin/mouth make the same one), never PATH's python3: on a clean Mac that is
-# Apple's 3.9, below the package's 3.10 floor. $MOUTH_PYTHON overrides it.
-# No such python: one line naming the floor and the fix, exit 2.
+# The python, never PATH's python3 (on a clean Mac that is Apple's 3.9, below the
+# package's 3.10 floor), is the first of:
+#   1. $MOUTH_PYTHON, when set: explicit, so if it is not executable that is exit 2, no
+#      fall-through;
+#   2. <repo>/.venv/bin/python, a checkout's own (README, Install: `uv venv`; bin/ears and
+#      bin/mouth make the same one);
+#   3. <tools>/sessionkit/bin/python, the kit's uv tool (`uv tool install sessionkit`);
+#   4. <tools>/sessionvoice/bin/python, sessionvoice installed as a uv tool on its own;
+#   where <tools> is uv's tool dir, ${UV_TOOL_DIR:-${XDG_DATA_HOME:-~/.local/share}/uv/tools},
+#   computed here with no `uv tool dir` process. A plugin's copy of bin/ (the plugin cache, or
+#   a clone loaded in place) has no .venv, and the kit's tool is where its python is. Only
+#   the interpreter is borrowed: the source is still <repo>/src, under -S.
+# None of them: one line naming the floor and a fix for this install, exit 2.
 #
 #   bin/mouth-timeline --future --json      # what the notifier reads
 #   bin/mouth-timeline --words              # the current call, for a human
@@ -22,9 +31,21 @@ src=$0
 if [ -L "$src" ]; then src=$(readlink -f "$src"); fi
 case $src in */*) bin=${src%/*} ;; *) bin=. ;; esac
 export PYTHONPATH="$bin/../src${PYTHONPATH:+:$PYTHONPATH}"
-py=${MOUTH_PYTHON:-$bin/../.venv/bin/python}
-if [ ! -x "$py" ]; then
-  echo "mouth-timeline: no python at $py; it needs Python 3.10 or later: run \`uv sync\` in $bin/.., or set MOUTH_PYTHON" >&2
-  exit 2
+if [ -n "${MOUTH_PYTHON:-}" ]; then
+  py=$MOUTH_PYTHON
+  if [ ! -x "$py" ]; then
+    echo "mouth-timeline: MOUTH_PYTHON=$py is not an executable python; point it at Python 3.10 or later, or unset it" >&2
+    exit 2
+  fi
+else
+  tools=${UV_TOOL_DIR:-${XDG_DATA_HOME:-${HOME:-}/.local/share}/uv/tools}
+  py=
+  for c in "$bin/../.venv/bin/python" "$tools/sessionkit/bin/python" "$tools/sessionvoice/bin/python"; do
+    if [ -x "$c" ]; then py=$c; break; fi
+  done
+  if [ -z "$py" ]; then
+    echo "mouth-timeline: no python found (no $bin/../.venv, no sessionkit or sessionvoice tool in $tools); it needs Python 3.10 or later: run \`uv tool install --python 3.14 sessionkit\` (or \`uv sync\` in a checkout), or set MOUTH_PYTHON" >&2
+    exit 2
+  fi
 fi
 exec "$py" -S -m mouth.timeline "$@"

@@ -1,10 +1,11 @@
 # Troubleshooting
 
 What to check when sessionvoice misbehaves, one symptom to a section.
-Today there are two. **The mouth's voice chops**, which has three causes (the
+Today there are three. **The mouth's voice chops**, which has three causes (the
 Mac is starved, a clone voice streams slower than real time, or the
-Bluetooth link loses audio), each with its own check and remedy. And **the
+Bluetooth link loses audio), each with its own check and remedy. **The
 ears hear nothing**, which the keeper reports by mail, one cause at a time.
+And **install says a service did not load**.
 
 ## Mouth: the voice chops
 
@@ -225,3 +226,24 @@ The keeper log, `~/Library/Logs/ears/ears-keeper.log`, has a
 - `cover` (the speakers side-car): its mic stream hears nothing while the
   room does. The keeper only reports this; the side-car's own reopen is
   separate.
+
+## Install: a service did not load
+
+`ears services install` printed a row with `FAILED:` and exited 2. It tried
+every service, and the block at the end of its stderr names each one that did
+not load, with launchctl's reason.
+
+**Check.** Read the install log: the path is the run's `log` row,
+`<sessionvoice's home>/logs/install.log` (`~/.sessionvoice/logs/install.log`
+on a new host). Each run is one block, from its `=== ... ears services install`
+header to its `=== ... rc N` footer. Its `launchctl bootstrap ... -> rc N`
+lines are launchctl's own answers. Then run `ears services status`, which says
+what is loaded now.
+
+**Remedy.** `Bootstrap failed: 5: Input/output error` most often means the old
+job had not gone yet; install already retried it once. Run `ears services
+install --only NAME` for each one named: NAME is the name in the block, but
+`sounds` for `ears-sounds` or `mouth-sounds` (`--only` takes the service,
+not its job). If it fails the same way, the
+service's own log in `~/Library/Logs/ears/` (`EARS_LOG_DIR` moves it) may say
+why it would not start.

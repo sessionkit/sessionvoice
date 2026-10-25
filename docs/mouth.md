@@ -123,6 +123,26 @@ line names. A sound from `mouth play` plays on its own lane beside them
   another one. On a machine with no default output at all, a line that
   reached the last rung gets the same, with the detail "no default output
   device" (`src/mouth/output.py`).
+- **A host that can play nothing is refused before the id.** `mouth say`,
+  `mouth play` and `mouth again` ask PortAudio in the caller's own process
+  before a line is queued (`src/mouth/canplay.py`). If PortAudio is not
+  installed, if it sees no output device at all, or if a line on `default`
+  finds no default output, they exit 1 with one line on stderr and print no
+  id. The line names the cause and the fix: PortAudio's package
+  (`portaudio` on Fedora, `libportaudio2` on Debian and Ubuntu), or, on
+  Linux, the `audio` group, because a login outside it cannot open
+  `/dev/snd`. The Linux line says how to check (`id -nG`, `ls -l /dev/snd`)
+  and names the fix (`sudo usermod -aG audio $USER`, then log in again);
+  mouth runs neither. `null` and `call:<N>` are never asked. A named device that is
+  merely absent while other outputs exist is still queued and gets
+  `said reason=device-absent` at play, as above. `--wait` is not probed: the
+  waiter already hears the player's own refusal, exit 1.
+  If PortAudio is installed but raises `PortAudioError` as it starts or lists
+  its devices, they exit 1 with one line, `mouth: the audio system did not
+  start: <PortAudio's message>`. While it asks, the probe points fd 2 at the
+  null device (and puts it back after), because on Linux ALSA writes
+  `ALSA lib ...` lines straight to fd 2 as PortAudio starts; the one line
+  prints after. The player is never silenced this way.
 - **A room line waits for the user's turn.** A line on a room device (any
   output that is not `call` or `call:<N>`) that asks no hold is held as
   `--hold turn-end` is, with the same release and the same safety net: it
@@ -309,6 +329,17 @@ current one, how loud it is, and which input is current:
   not answer, there is no volume and no input line. The output is still
   marked if PortAudio names a default (see below); if nothing names one,
   the list is as it always was.
+- **No output device is an exit 1, never an empty list.** When PortAudio
+  lists no output, `mouth devices` prints one line on stderr naming the
+  cause and the fix (on Linux, often the `audio` group) and exits 1. Any
+  live call lines still print, and `--json` still prints its object, with
+  `"outputs": []`. With no PortAudio library at all it prints one line
+  naming PortAudio and how to install it, and exits 1. If PortAudio raises
+  `PortAudioError` as it starts or lists its devices, it prints
+  `mouth: the audio system did not start: <PortAudio's message>` and
+  exits 1. It asks PortAudio as `mouth say`'s probe does, with fd 2 pointed
+  at the null device, so ALSA's `ALSA lib ...` lines never reach the
+  terminal; its own line prints after fd 2 is back.
 - **A current output not in the list gets no mark.** The list is
   PortAudio's and the current output is CoreAudio's. When CoreAudio names
   a device the list does not hold under the same name, the text marks

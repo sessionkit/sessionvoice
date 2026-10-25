@@ -237,7 +237,10 @@ woken by mail. Code: `src/ears/`, `keeper/`, `bin/`.
   finished, it ends the capture itself. It writes every thread's stack to
   stderr and a `capture-wedged` row to the heard log, which it skips when
   another writer holds `heard.lock`. It SIGKILLs the capture's streaming
-  child, then exits 3. So a wedged capture ends itself before the
+  child, then exits 3. The exit is 3 even when that kill frees the call
+  the capture was stuck in and the capture then finishes: a capture that
+  ends while the watchdog is ending it waits for that exit. So a wedged
+  capture ends itself before the
   keeper's TERM and its 300 s kill, which stay as the second line. The
   watchdog runs only in a capture launched from the command line. A
   program that calls `capture()` itself gets none, unless it passes one.
@@ -258,7 +261,8 @@ woken by mail. Code: `src/ears/`, `keeper/`, `bin/`.
 
 Set up on a Mac:
 
-    ears install                         # fetch the Silero VAD model
+    ears install                         # fetch the Silero VAD model (optional:
+                                         # services install fetches it too)
     ears services install --agent NAME   # speech server, mouth, keeper and
                                          # mail agents; NAME becomes a wake seat
 
@@ -266,6 +270,36 @@ With neither `--agent NAME` nor `--no-agent`, and no seat in the wake file,
 install refuses (exit 2, nothing written): the mail would wake nobody.
 `--no-agent` installs anyway, with that warning; a wake file that already
 names a seat is not refused.
+
+Install checks every prerequisite it can check without building or fetching
+before it writes anything. When several are missing (the wake seat, a shipped
+file, the speakers or speech server prerequisites), it lists them all in one
+run, each with its fix, and exits 2 with nothing written. A missing Silero VAD
+model is not one of them: once nothing else is missing, install fetches it
+itself, by the pin `ears install` uses ([models](models.md#silero-vad)), and
+says the version, the source and the destination. A refused run fetches
+nothing and names the model as not fetched yet. A failed fetch or a checksum
+mismatch is refused (exit 2), and no file is left behind. `--dry-run` says
+what it would fetch and fetches nothing.
+
+A launch agent that fails to load (launchctl's bootstrap answers an error)
+makes install exit 2, after it has tried every other service, so one run
+shows every failure. Its row says `FAILED:` and launchctl's reason, and one
+block on stderr names each service that did not load, the install log and
+`ears services status` as the next step. The `proof` line is not printed
+then. Every real run appends what it printed, and launchctl's answers, each
+timestamped, to the install log, `<sessionvoice's home>/logs/install.log`
+([logs](logs.md#the-log-files)), and prints that path as its `log` row. A
+dry run writes no log.
+
+A phone-only Mac (for example one that runs a Delta bot, with no agent
+seat to wake) installs with `--no-agent`: nobody is woken when you speak,
+and the keeper's notices go to the log. `--agent NAME` is for a Mac where
+an agent seat should be woken when you speak. Before it writes anything,
+install says how big the speech models are (about 2.9 GB, fetched once,
+after the speech server loads) and that the speech server runs as a login
+service; `--dry-run` prints the same line, and `--no-prefetch` leaves the
+download to the first call.
 
 The speech server is the mlx-audio server on `127.0.0.1:8890`. Install
 uses one that is already running and says it is mlx-audio, and starts
@@ -275,7 +309,7 @@ replaces another process on `:8890`. `--dry-run` says which it would do.
 A legacy mail or mouth job (`dev.voicemode.ears-mail`,
 `dev.voicemode.mouth-mail`, `com.failmode.mouth-mail`) is replaced: it is
 booted out and its plist is moved aside, never deleted.
-The README's Requirements give every case.
+[The speech server](speech-server.md) gives every case.
 
 The proof of an install: say "hey NAME", and NAME wakes and answers. A
 heard line alone proves only the capture. The README's Install section

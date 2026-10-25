@@ -36,6 +36,9 @@ def fence(monkeypatch, tmp_path):
     monkeypatch.setenv("MAIL_ROOT", str(home / ".mail"))
     monkeypatch.setenv("EARS_WAKE", str(home / SETTINGS / "wake.json"))
     monkeypatch.setenv("EARS_CONF", str(home / SETTINGS / "ears.json"))
+    # sessionvoice's home (seed_stt's fallback record) by HOME, never a root this shell names
+    for k in ("SESSIONVOICE_HOME", "VOICEMODE_BASE_DIR"):
+        monkeypatch.delenv(k, raising=False)
     for k in ("EARS_SILERO_ONNX", "EARS_NOTIFY", "EARS_STT_URL", "EARS_STT_MODEL", "EARS_AGENT", "EARS_STT_PORT",
               "SESSIONMAIL_SENDMAIL"):
         monkeypatch.delenv(k, raising=False)
@@ -95,6 +98,11 @@ def fence(monkeypatch, tmp_path):
     # ...nor fetches its weights (EARS-419): the prefetch is off (env_fence) and its seam
     # refuses, and the reader it prints reads the server's cache, under the temp HOME, never the host's
     monkeypatch.setattr(services, "_prefetch_sh", lambda argv, out, cache: pytest.fail(f"a fenced test fetched {argv}"))
+    # ...nor the Silero model (EARS-449): install fetches a missing one through this opener, and
+    # here it refuses, so a test that removes the model and gives no fake opener fails offline
+    def no_network(url, timeout=None):
+        raise OSError("network refused by the fence")
+    monkeypatch.setattr(services, "SILERO_OPENER", no_network)
     # (HF_HOME, the weakest of huggingface_hub's names: a test that sets another still wins)
     for k in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
         monkeypatch.delenv(k, raising=False)
@@ -723,21 +731,27 @@ def test_silero_linked_from_voicemodes_copy(fence):
     assert ok and "linked" in line and want.is_symlink() and want.resolve() == copy.resolve()
 
 
-def test_silero_missing_refuses_before_any_plist(fence, capsys):
+def test_silero_missing_and_unfetchable_refuses_before_any_plist(fence, capsys):
+    """Install fetches a missing model (EARS-449); the fence's opener refuses the network, so
+    the fetch fails, and that failure is the refusal: rc 2, nothing written, no traceback."""
     _no_model(fence)
     assert services.install(["mouth", "keeper", "mail"]) == 2
     err = capsys.readouterr().err
-    assert "REFUSED" in err and "silero MISSING" in err and "ears install" in err
+    assert "REFUSED: silero: could not fetch" in err and "network refused by the fence" in err
+    assert "Traceback" not in err
     assert not services.AGENTS.exists() and not services.LOGS.exists()
+    assert not services._silero_want().exists()
     assert not fence["calls"]["launchctl"]
 
 
-def test_dry_run_lists_the_missing_model_and_exits_as_install_would(fence, capsys):
+def test_dry_run_says_it_would_fetch_the_missing_model_and_fetches_nothing(fence, monkeypatch, capsys):
     _no_model(fence)
-    assert services.install(["keeper"], dry_run=True) == 2
+    monkeypatch.setattr(services, "SILERO_OPENER", lambda *a, **kw: pytest.fail("a dry run fetched"))
+    assert services.install(["keeper"], dry_run=True) == 0
     cap = capsys.readouterr()
-    assert "silero MISSING" in cap.err and "dev.sessionkit.voice.ears-keeper" in cap.out   # still listed
-    assert not services.AGENTS.exists()
+    assert "silero would fetch Silero VAD" in cap.out and "dev.sessionkit.voice.ears-keeper" in cap.out
+    assert cap.err == ""
+    assert not services.AGENTS.exists() and not services._silero_want().exists()
 
 
 def test_the_model_install_checked_is_the_one_the_keeper_reads(fence, monkeypatch):

@@ -1,6 +1,6 @@
 [project]
 name = "sessionvoice"
-version = "0.3.0"
+version = "0.3.1"
 description = "One listening engine for coding agents and the Delta bot: Apple / Nemotron / whisper -> one event stream -> VAD -> turns"
 readme = "README.md"
 license = "AGPL-3.0-or-later"

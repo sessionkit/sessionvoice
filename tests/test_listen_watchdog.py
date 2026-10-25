@@ -179,6 +179,61 @@ def test_a_failing_stop_check_and_a_gone_child_do_not_stop_the_exit(rig):
     assert [c for c in rig.calls if c[0] == "kill"] == [("kill", 1, signal.SIGKILL), ("kill", 2, signal.SIGKILL)]
 
 
+# -- a trip owns the exit code (EARS-453) -----------------------------------------------------
+
+
+@pytest.mark.parametrize("exit_grace_s", [None, 1.0], ids=["library", "cli"])
+def test_a_capture_the_trip_frees_waits_for_the_trips_exit_and_never_ends_first(rig, monkeypatch, exit_grace_s):
+    """F (pipe-full-blocking): the trip's SIGKILL frees the write the frame loop was stuck in,
+    so the capture finishes while the trip is still flushing. Before EARS-453 ``run_ended``
+    returned at once, and the CLI could exit 0 ahead of ``os._exit(3)`` (once in a full
+    gate under load). Here the trip's flush is held, so that window is wide open."""
+    flushing, held = threading.Event(), threading.Event()
+
+    def slow_flush(wait_s):
+        rig.calls.append(("flush",))
+        flushing.set()
+        held.wait(1.0)  # until the capture has ended, or 1 s
+
+    monkeypatch.setattr(wd_mod, "_flush_std", slow_flush)
+    monkeypatch.setattr(wd_mod, "FLUSH_WAIT_S", 10.0)  # trip_wait_s: far past the held 1 s
+    d = rig.dog(exit_grace_s=exit_grace_s)
+    d.start(stop_requested=lambda: False, write_row=rig.row, children=lambda: [4242])
+    assert flushing.wait(3)  # past the kill: the frame loop is free, and the capture ends now
+    d.run_ended()
+    rig.calls.append(("run_ended returned",))
+    held.set()
+    assert rig.names() == ["dump", "row", "kill", "flush", "exit", "run_ended returned"]
+    assert rig.calls[4] == ("exit", 3) and d.tripped == "wedge"
+
+
+def test_a_trip_that_never_exits_holds_the_capture_no_longer_than_trip_wait_s(rig, monkeypatch):
+    flushing, stuck = threading.Event(), threading.Event()
+    monkeypatch.setattr(wd_mod, "FLUSH_WAIT_S", 0.2)
+    monkeypatch.setattr(wd_mod, "_flush_std", lambda wait_s: (flushing.set(), stuck.wait(10)))
+    try:
+        d = rig.dog(exit_grace_s=1.0)
+        assert d.trip_wait_s() == d.row_wait_s + 0.2 + 1.0
+        d.start(stop_requested=lambda: False, children=lambda: [4242])
+        assert flushing.wait(3)
+        t = time.monotonic()
+        d.run_ended()  # it returns: the CLI then exits 3 itself (tripped is set)
+        assert time.monotonic() - t >= d.trip_wait_s() - 0.01
+        assert d.tripped == "wedge" and "exit" not in rig.names()
+    finally:
+        stuck.set()
+
+
+def test_once_the_capture_has_ended_only_the_exit_trip_is_left(rig):
+    asked = threading.Event()
+    d = rig.dog(wedge_s=60, stop_grace_s=0.05, exit_grace_s=0.4)
+    d.start(stop_requested=asked.is_set, write_row=rig.row)
+    d.run_ended()
+    asked.set()  # a stop after the end is not a stop ignored
+    assert rig.exited.wait(3)
+    assert rig.calls[1][1]["why"] == "exit" and d.tripped == "exit"
+
+
 def test_the_values_and_why(rig):
     # WEDGE_S above the longest bounded wait at one end of turn (do-002: ~40-50 s) and below
     # the keeper's 120 s beat-stale; STOP_GRACE_S below the keeper's 15 s STOP-to-TERM wait.
@@ -309,6 +364,28 @@ def test_the_cli_arms_a_watchdog_only_when_it_owns_the_process(monkeypatch, tmp_
         assert isinstance(dog, Watchdog) and dog.exit_grace_s == wd_mod.STOP_GRACE_S and dog._thread is None
     else:
         assert dog is None
+
+
+@pytest.mark.parametrize("tripped, rc", [(None, 0), ("stop-ignored", 3), ("wedge", 3)])
+def test_the_cli_exits_3_when_its_watchdog_tripped_even_if_the_capture_then_finished(monkeypatch, tmp_path, tripped, rc):
+    """The trip's SIGKILL can free the capture, which then returns a clean result: it was
+    still a wedged capture, so the exit is 3, not 0 (EARS-453)."""
+
+    def fake_capture(*a, watchdog=None, **kw):
+        watchdog.tripped = tripped
+        return CaptureResult(reason="stop", text="", cursor=0)
+
+    monkeypatch.setattr(cli, "capture", fake_capture)
+    wav = tmp_path / "x.wav"
+    import wave
+
+    with wave.open(str(wav), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"\0\0" * 1600)
+    args = ["capture", "--source", f"file:{wav}", "--no-pace", "--log-dir", str(tmp_path / "logs")]
+    assert cli.main(args, own_process=True) == rc
 
 
 def test_ears_capture_in_process_is_not_its_own_process(monkeypatch):

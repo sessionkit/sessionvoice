@@ -104,12 +104,12 @@ from tests.setup_fence import no_real_message_setup  # noqa: E402,F401
 #     bed/line race hid behind it). Such a report carries an "ffmpeg" section: the test tried
 #     ffmpeg, and if it needs it, it should be marked.
 #   - ONE collected item, tests/conftest.py::ffmpeg_on_path (the same node id every run), runs
-#     last and always SKIPS: ffmpeg is a documented prerequisite (README.md:120), so its absence
+#     last and always SKIPS: docs/dependencies.md names what uses ffmpeg, so its absence
 #     is a loud skip, never a failure (EARS-402, the GC's strict-shape ruling). Whenever a test
 #     in this run TRIED ffmpeg (the interpreter's "subprocess.Popen" audit event, from the main
 #     thread or from a thread started DURING that test; a thread leaked from an earlier test
 #     never marks the current one), was declared, or skipped itself for ffmpeg (at setup or in
-#     its body), the skip reason names ffmpeg, README.md:120, the fix and true counts, and the
+#     its body), the skip reason names ffmpeg, docs/dependencies.md and true counts, and the
 #     terminal summary repeats it in its own "ffmpeg" section, so it shows without -rs. A run
 #     with none of these skips it as "no test in this run needed it", with no summary line.
 #     What stays FAILED is unchanged: every failure that is not the missing binary (above),
@@ -185,8 +185,8 @@ def _ffmpeg_reason(nodeid: str) -> str:
     declared, own = len(f["declared"]), len(set(f["own"]))
     if not (tried or relabelled or declared or own):
         return ""
-    msg = (f"ffmpeg is not on PATH, a documented prerequisite (README.md:120; brew install "
-           f"ffmpeg): {tried} test(s) tried to launch it "
+    msg = (f"ffmpeg is not on PATH (docs/dependencies.md says what uses it): "
+           f"{tried} test(s) tried to launch it "
            f"({relabelled} skipped here as 'no ffmpeg on PATH: see {nodeid}' because the "
            f"missing binary failed them, {failed} FAILED for another reason, "
            f"{tried - relabelled - failed} passed or skipped anyway); {declared} marked "
@@ -199,7 +199,7 @@ def _ffmpeg_reason(nodeid: str) -> str:
 
 class FfmpegOnPath(pytest.Item):
     """Stands in for every test this run that needed ffmpeg and could not have it: a LOUD
-    skip naming the documented prerequisite, never a failure (EARS-402)."""
+    skip naming ffmpeg and docs/dependencies.md, never a failure (EARS-402)."""
 
     def runtest(self):
         msg = _ffmpeg_reason(self.nodeid)
@@ -271,7 +271,7 @@ def pytest_terminal_summary(terminalreporter):
     """The loud half of the ffmpeg skip: its reason again, in its own section, whenever a test
     in this run needed the missing ffmpeg. A bare `pytest -q` shows it without -rs."""
     if _ffmpeg["summary"]:
-        terminalreporter.write_sep("-", "ffmpeg: a documented prerequisite is missing", yellow=True)
+        terminalreporter.write_sep("-", "ffmpeg: not on PATH", yellow=True)
         terminalreporter.write_line(_ffmpeg["summary"], yellow=True)
     # ...and the private-word guards' skip, counted, when the private scan list is not set
     # (EARS-406, tests/_scanlist.py): a guard that cannot run says so, never passes quietly.

@@ -69,9 +69,9 @@ jq -c 'select(.kind == "event") | {seq, event, device}' "$LOG" | tail
 
 ### sessionvoice's home
 
-The heard log, `heard.lock`, the speakers rows, the mouth's folder (`mouth/`),
-talk's token (`talk/`) and the ears' state (`state/`) all live under one root,
-sessionvoice's home. `src/ears/home.py` finds it, in this order:
+The heard log, `heard.lock`, the speakers rows, the install log
+(`logs/install.log`), the mouth's folder (`mouth/`), talk's token (`talk/`) and
+the ears' state (`state/`) all live under one root, sessionvoice's home. `src/ears/home.py` finds it, in this order:
 
 1. `$SESSIONVOICE_HOME`, if it is set.
 2. `$VOICEMODE_BASE_DIR`, if it is set. This is the old name, and it is
@@ -496,6 +496,20 @@ Paths are master's. `EARS_LOG_DIR` moves `~/Library/Logs/ears`, for
 - **`heard_YYYY-MM-DD.jsonl`** in `<home>/logs/conversations/`
   ([sessionvoice's home](#sessionvoices-home); `~/.voicemode` in 0.1.0). Writer: `src/ears/heard.py:87-89`, `214-217`. It shows the heard log
   above. The same in 0.1.0.
+- **`install.log`** in `<home>/logs/`
+  ([sessionvoice's home](#sessionvoices-home)). Writer: `ears services
+  install` (`src/ears/services.py`, `install_log_path`). Every real run
+  appends to it: a `=== <time> ears services install <services>` header, one
+  line for each line the run printed (`<time> stdout ...` or `<time> stderr
+  ...`; a line the terminal redraws, the weights' progress, once, as it
+  ended), one `<time> launchctl <args> -> rc N: <stderr>` line for each
+  launchctl call that changes a job (bootstrap, bootout; the read-only
+  `print` and `list` are not logged), and a `=== <time> rc N` footer. The
+  time is local, ISO 8601, to the second. The run prints the path as its
+  `log` row. A dry run, and a refusal before anything is written, write no
+  log. Nothing rotates or trims it. The log never stops an install: when it
+  cannot be made or written, install prints one `WARNING` line naming it, and
+  goes on unlogged with no `log` row; the exit code is the services' alone.
 - **`speakers_YYYY-MM-DD.jsonl`**, beside the heard log. Writer: the
   speakers side-car, `speakers/speaker-sidecar2.py:281` (its installed copy
   is `src/ears/_speakers/`). One line per heard line that names who spoke:

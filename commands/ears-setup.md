@@ -12,6 +12,7 @@ Set up the sessionvoice plugin on this machine, step by step. Report each step's
    - `keeper` is every ear: the always-on room microphone, and an ear for each Delta Chat call when a Delta bot is installed. While a call is live, the room microphone is off. **Ask the user before installing it.** macOS will ask them to allow the microphone once. Without it: `ears services install --only speech,mouth`.
    - **Tell the user:** lid shut: the built-in mic is off in hardware; use Bluetooth buds or a USB mic. With the lid shut, the keeper does not listen on the built-in mic. It sends one mail, `ears: DEAF, lid shut, built-in mic off, holding at HH:MM EOM`, and holds until another input becomes the Mac's default or the lid opens.
    - `--apple` adds `stt`, Apple speech behind an OpenAI-compatible URL on 127.0.0.1:2023. Use it only after `ears install --apple`.
+   - If a launch agent fails to load, install still tries the others, then exits 2 and names each one that did not load. Report each to the user, read the install log it names (its `log` row), and run `ears services status`.
 4. **Check:** run `ears services status`, then `mouth say --device default "ears are up"`. The user should hear that line. `mouth say` plays on `--device NAME`, else `$MOUTH_DEVICE`, else `output` in `~/.sessionkit/voice/settings/mouth.json`, else the system default output. A mailed line takes the same order.
 5. **Tell the user in two lines:** what is running, and how to stop it (`ears services uninstall`).
 
