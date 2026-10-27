@@ -3,6 +3,7 @@
     ears services install [--only stt,speech,mouth,keeper,mail,speakers,sounds,talk] [--apple] [--agent NAME | --no-agent] [--notify ADDR] [--dry-run] [--no-prefetch]
     ears services status
     ears services weights [--json]
+    ears services schema [--dry-run]
     ears services uninstall [--only ...]
 
 Eight services, each a macOS launch agent labelled dev.sessionkit.voice.ears-<name>, but speech,
@@ -32,12 +33,12 @@ talk, which is dev.sessionkit.voice.talk:
          as its child, `keeper/call-ears`: an ear per live Delta call (needs the Delta
          package's bot). The room mic is off while a call is live.
 - mail   `keeper/ears-mail.py --to device`: mails every finished turn To and From
-         heard+<device>@<host>, which is what PAGES an agent, and each finished turn of
-         a Delta call To that call's box, calls+<bot>-<N>@<host> (`--calls off` stops
-         it). The keeper alone writes the heard line and wakes nobody, so "a heard
-         line appears" is no proof of a working install: "you speak, and the agent
-         WAKES and answers" is. A hand-made
-         mailer (the shipped template, rendered by hand: see "Whose plist" below) already on
+         heard+room@<host> (Cc heard+<device>@<host>), which is what PAGES an
+         agent, and each finished turn of a Delta call To that call's box,
+         calls+<bot>-<N>@<host> (`--calls off` stops it). The keeper alone
+         writes the heard line and wakes nobody, so "a heard line appears" is
+         no proof of a working install: "you speak, and the agent WAKES and
+         answers" is. A hand-made mailer (the shipped template, rendered by hand: see "Whose plist" below) already on
          the host is left alone and ours is skipped: never two mailers (each turn would be
          mailed twice). Its PATH is what the `message` check reads then, never ours.
          The older dev.voicemode.ears-mail is a LEGACY render and is replaced (below).
@@ -83,7 +84,7 @@ lists the same checks, changing nothing):
 - for mail: sessionmail's `message` and its carrier, postfix or the mail drop (checked,
   never configured), the nested `heard` box under the store dir
   that carries .tm-store (made when there is exactly one, then vmailbox-gen routes it), and
-  the heard+<device> box an agent subscribes to;
+  the heard+room address an agent subscribes to;
 - for speakers: an arm64 Mac on macOS 14+ (else REFUSED), its own venv under the speakers
   home (built with uv from the shipped requirements.lock, mlx-audio==0.5.8; EARS_SPEAKER_PY
   skips the build), the modules it imports (the first missing is named, and install
@@ -187,6 +188,12 @@ stt service:
 The room and the call ear are one capture on two sources, so they share this one setting.
 ``partials`` beside it (``"final"`` or ``"nemotron"``) is never seeded: absent, the partials
 come from the final engine chunk by chunk, as before.
+
+`schema` brings the settings-schema copies (.ears.schema.json and the rest, install_schema)
+up to date with the schemas this install ships, by their bytes: after an upgrade, with no
+service reinstalled and no plist touched. A copy already equal is left alone. The keeper
+runs it with --quiet at its start, so a host that never runs it is brought up to date at
+the keeper's next start.
 """
 from __future__ import annotations
 
@@ -201,10 +208,13 @@ from pathlib import Path
 
 from . import envnames, maildir, speech   # speech: the server on :8890, found or ours
 from .home import SETTINGS as _VOICE_SETTINGS   # <kit root>/voice/settings
+from .home import log_dir
 
 ROOT = Path(__file__).resolve().parents[2]          # the package checkout (src/ears/ -> root)
 AGENTS = Path.home() / "Library/LaunchAgents"
-LOGS = Path(os.environ.get("EARS_LOG_DIR", Path.home() / "Library/Logs/ears"))
+#: every voice log install writes or a plist names: ears.home.log_dir() ($EARS_LOG_DIR, else
+#: the kit's log home). The logs' folder before 0.3.2 is never written, nor deleted
+LOGS = log_dir()
 PREFIX = "dev.sessionkit.voice.ears-"
 # every prefix an install-made agent carried before, newest first: what `install` MOVES a host
 # off. com.sessionvoice.ears- from the earlier rename to the label rename; com.voicemode.ears-
@@ -320,19 +330,48 @@ def _speakers_file(name: str) -> Path:
     return _shipped_file("speakers", "_speakers", name, NoSpeakers)
 
 
+#: what the keeper agent runs, and what must sit beside it, each with who needs it there:
+#: ears-keeper.sh starts call-ears from its own dir, and call-ears imports phone_roots.py
+#: from its own dir (stdlib; where a Delta bot keeps its call sockets)
+KEEPER_FILES = ("ears-keeper.sh", "call-ears", "phone_roots.py")
+_KEEPER_NEEDS = {"call-ears": "ears-keeper.sh runs it", "phone_roots.py": "call-ears imports it"}
+
+
 def keeper_script() -> Path:
     """The ears-keeper.sh the keeper agent runs: the checkout's keeper/ when run from one (a
     git checkout, an editable install), else the copy the wheel ships as package data,
     ears/_keeper/ (from the kit, ROOT is <venv>/lib/python3.X, and the plist
     pointed at a <venv>/lib/python3.X/keeper/ears-keeper.sh that no install made). Neither:
-    NoKeeper, so install refuses loudly instead of writing a keeper agent that cannot start."""
-    return _keeper_file("ears-keeper.sh", NoKeeper)
+    NoKeeper, so install refuses loudly instead of writing a keeper agent that cannot start.
+    Each file KEEPER_FILES names beside it (call-ears, phone_roots.py) must be there too, or
+    the keeper's call ears die on start: any one missing is NoKeeper as well."""
+    script, *beside = KEEPER_FILES
+    found = _keeper_file(script, NoKeeper)
+    for name in beside:
+        if not (found.parent / name).is_file():
+            raise NoKeeper(f"no {name} beside {found}: {_KEEPER_NEEDS[name]} from there. Reinstall "
+                           "sessionvoice from a wheel that ships ears/_keeper/, or run `ears services "
+                           "install` from a git checkout (uv run ears ...)")
+    return found
+
+
+#: what the mail agent runs, and what it imports from beside itself (stdlib only, both):
+#: phone_roots.py, where a Delta bot keeps its call sockets (call-ears shares it)
+MAIL_FILES = ("ears-mail.py", "phone_roots.py")
 
 
 def mail_script() -> Path:
-    """The ears-mail.py the mail agent runs, found as keeper_script() finds the keeper (it is
-    stdlib only and imports nothing beside it). Neither: NoMailer, and install refuses."""
-    return _keeper_file("ears-mail.py", NoMailer)
+    """The ears-mail.py the mail agent runs, found as keeper_script() finds the keeper. Each
+    file it imports from beside itself (MAIL_FILES: phone_roots.py) must be there too, or the
+    mailer dies on import. Any one missing: NoMailer, and install refuses."""
+    script, *beside = MAIL_FILES
+    found = _keeper_file(script, NoMailer)
+    for name in beside:
+        if not (found.parent / name).is_file():
+            raise NoMailer(f"no {name} beside {found}: {script} imports it from there. Reinstall "
+                           "sessionvoice from a wheel that ships ears/_keeper/, or run `ears services "
+                           "install` from a git checkout (uv run ears ...)")
+    return found
 
 
 #: what each sounds job runs: its script, and what that script imports from beside itself
@@ -869,6 +908,32 @@ SPEECH_PIN = "mlx-audio==0.5.8"            # the speakers pin: one mlx-audio for
 # what the server's python must import: the server, Kokoro's text front end (the mouth) and the
 # spaCy model it loads (absent, misaki fetches it with pip at the first line spoken)
 SPEECH_MODULES = ("mlx_audio.server", "misaki.en", "en_core_web_sm")
+# MLX's buffer cache: uncapped it may grow to 0.95 x RAM (a 12 GB footprint and a 23 GB peak
+# were seen), and mlx-audio has no flag or env var for it, so the job caps it in its own
+# process before the server starts. 512 MiB cut a long line's peak by about 4 GiB with no
+# measured loss of speed. MLX_AUDIO_CACHE_LIMIT (whole bytes) in the job's environment
+# overrides it; install copies it into the plist from its own environment, so the cap is the
+# plist's, not a hand-patched venv's. Anything else there warns and keeps the default: a
+# KeepAlive job never crash-loops on a typo. Nor on a number MLX's size_t refuses (2**64 and
+# up raise TypeError) or one too long for int() (4300 digits raise ValueError).
+SPEECH_CACHE_LIMIT = 536870912
+SPEECH_CACHE_ENV = "MLX_AUDIO_CACHE_LIMIT"
+# The job runs this with `python -c`, one line so `ps` shows it on one. It names
+# mlx_audio.server, which is how speech.py's _servers() finds the job by its plist and how
+# a holder's command reads. Under -c sys.argv[0] is '-c', and the server's argparse reads
+# sys.argv[1:], so it sees only the job's flags. The limit is set before mlx_audio.server is
+# imported. Its stderr line, in the job's log, is the receipt.
+SPEECH_LAUNCH = (
+    "import os,sys,mlx.core as mx;"
+    f"v=os.environ.get('{SPEECH_CACHE_ENV}','').strip();"
+    "ok=v.isascii() and v.isdigit() and len(v)<21 and int(v)<2**64;"
+    f"ok or not v or print(f'[ears] {SPEECH_CACHE_ENV}={{v!r}} is not a whole number of bytes"
+    " under 2**64:"
+    f" using the default {SPEECH_CACHE_LIMIT}',file=sys.stderr);"
+    f"n=int(v) if ok else {SPEECH_CACHE_LIMIT};"
+    "print(f'[ears] mx.set_cache_limit({n}) (previous {mx.set_cache_limit(n)})',"
+    "file=sys.stderr,flush=True);"
+    "import mlx_audio.server;mlx_audio.server.main()")
 
 
 class NoSpeech(NoKeeper):
@@ -1717,8 +1782,9 @@ def spec(name: str, notify: str | None = None) -> dict:
         # console script, on loopback only
         "talk": lambda: [str(talk_bin()), "serve", "--host", "127.0.0.1", "--port", str(_talk_port())],
         # mlx-audio's server on its own venv's python, on 127.0.0.1 only; its logs
-        # beside the agents' (its --log-dir default is a relative "logs")
-        "speech": lambda: [str(speech_py()), "-m", "mlx_audio.server", "--host", speech.HOST,
+        # beside the agents' (its --log-dir default is a relative "logs"); SPEECH_LAUNCH caps
+        # MLX's cache first, then runs the server's main()
+        "speech": lambda: [str(speech_py()), "-c", SPEECH_LAUNCH, "--host", speech.HOST,
                            "--port", str(_speech_port()), "--log-dir", str(LOGS / "mlx-audio")],
     }[name]()
     log = LOGS / (f"{name}.log" if name in JOB_LABELS else f"ears-{name}.log")   # the templates' names
@@ -1770,6 +1836,13 @@ def spec(name: str, notify: str | None = None) -> dict:
     if name == "speech":
         env.pop("EARS_PY")    # it runs on speech_py(), never the ears' python
         env["PATH"] = env["PATH"].replace(bindir, str(speech_py().parent), 1)
+        # an override install was run with: launchd gives the job none of this shell's
+        # environment, so it is written down, as given (SPEECH_LAUNCH judges it). Not a value
+        # no plist can hold (a control character, a byte not UTF-8): plistlib.dumps raises on
+        # it, half-way through an install. Left out, the server keeps the default.
+        cap = os.environ.get(SPEECH_CACHE_ENV, "").strip()
+        if cap and cap.isprintable():
+            env[SPEECH_CACHE_ENV] = cap
         d["WorkingDirectory"] = str(speech_home())
     return d
 
@@ -1829,10 +1902,24 @@ def _bootstrap(uid: int, name: str, path: Path, wait_s: float | None = None, old
     return r
 
 
-def install_schema() -> str:
+def _same_bytes(src: Path, dst: Path) -> bool:
+    """True when DST is a file holding exactly SRC's bytes. Bytes, never mtime: an upgrade
+    may leave a copy newer than a schema it no longer matches. A DST that cannot be read
+    counts as different, so it is written again."""
+    try:
+        return dst.is_file() and dst.read_bytes() == src.read_bytes()
+    except OSError:
+        return False
+
+
+def install_schema(dry_run: bool = False) -> str:
     """Copy each settings schema the ears ship (settings/NAME.schema.json) beside its settings
     file as the dot file .NAME.schema.json, which Settings draws the screen from, and remove
     the old visible NAME.schema.json. The tool owns its schema; nobody edits the copy.
+    A copy whose bytes already equal the shipped schema is current and is left alone: no
+    temp file, no rename, nothing removed. Anything else is written, so a copy an upgrade
+    left behind is brought up to date (``ears services schema``, and the keeper at start).
+    DRY_RUN compares and writes nothing, and says what it would write.
     Each copy lands whole (a temp file,
     then a rename), because Settings may read it at any moment. The mouth's schema goes
     beside the mouth's settings, which is the ears' folder too unless a variable moves
@@ -1842,26 +1929,61 @@ def install_schema() -> str:
     NoSchema, raised before any copy. A schema whose settings file is STRANDED
     (``ears.home.stranded``) is not copied into the settings folder: nothing is written
     there until the host step has moved the 0.1.0 file."""
+    return _copy_schemas(dry_run)[0]
+
+
+def _copy_schemas(dry_run: bool = False) -> tuple[str, str]:
+    """install_schema()'s work: (its line, the line's first clause when a copy was or would
+    be written, else "")."""
     import shutil
     from .home import refuse_stranded
     from .listen.stt import conf_path
     ears_dir = Path(conf_path()).parent
     srcs = schema_files()     # all found, or NoSchema: never a partial or an empty copy
-    done, held = [], []
+    done, held, current = [], [], []
     for src in srcs:
         d = _mouth_schema_dir() if src.name == "mouth.schema.json" else ears_dir
         name = src.name.replace(".schema.json", ".json")   # ears.schema.json -> ears.json
         if refuse_stranded(d / name, name, "ears services"):
             held.append(src.name)
             continue
-        d.mkdir(parents=True, exist_ok=True)
         dst, tmp = d / f".{src.name}", d / f".{src.name}.tmp"
+        if _same_bytes(src, dst):
+            current.append(dst.name)
+            continue
+        done.append(dst.name)
+        if dry_run:
+            continue
+        d.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, tmp)
         os.replace(tmp, dst)
         (d / src.name).unlink(missing_ok=True)
-        done.append(dst.name)
-    line = f"schema: {', '.join(done) or 'none'} in {ears_dir}"
-    return line + (f"; NOT copied (stranded, nothing written): {', '.join(held)}" if held else "")
+    head = "schema (dry run): would write" if dry_run else "schema:"
+    first = f"{head} {', '.join(done) or 'none'} in {ears_dir}"
+    line = first + (f"; current, nothing written: {', '.join(current)}" if current else "")
+    line += f"; NOT copied (stranded, nothing written): {', '.join(held)}" if held else ""
+    return line, (first if done else "")
+
+
+def schema_verb(dry_run: bool = False, quiet: bool = False) -> int:
+    """``ears services schema``: bring the settings-schema copies up to date with the schemas
+    this install ships, without reinstalling a service or touching a plist (install_schema).
+    Exit 0 when each copy was written, was already current, or was held back; 2 when a
+    shipped schema is missing (NoSchema), with nothing written. QUIET (the keeper's start):
+    print the line only when a copy was written, and nothing else."""
+    import contextlib
+    import io
+    try:
+        with contextlib.redirect_stderr(io.StringIO()) if quiet else contextlib.nullcontext():
+            line, wrote = _copy_schemas(dry_run=dry_run)
+    except NoSchema as e:
+        if not quiet:
+            print(f"ears services schema: REFUSED: {e}", file=sys.stderr)
+        return 2
+    out = wrote if quiet else line
+    if out:
+        print(out)
+    return 0
 
 
 def _mouth_schema_dir() -> Path:
@@ -2207,8 +2329,8 @@ def _heard_drop(dry_run: bool, got: tuple[int, str, str] | None,
     else:
         out.append(f"WARNING: heard box NOT made: `{SETUP_BOX}`: "
                    f"{what or 'no heard row in its plan'}. {lost}")
-    out.append("heard  an agent hears heard turns only once it subscribes to heard+<device> "
-               "(heard+macbook for the built-in mic; ears-mail.py device_slug names the rest)")
+    out.append("heard  an agent hears heard turns only once it subscribes to heard+room "
+               "(every input device; each turn's device is its Ears-Device header)")
     return out
 
 
@@ -2218,7 +2340,7 @@ def _heard_mta(dry_run: bool) -> list[str]:
     out: list[str] = []
     maps = _postconf("virtual_mailbox_maps")
     if not maps:
-        out.append("WARNING: postfix has no virtual_mailbox_maps: heard+<device>@<host> "
+        out.append("WARNING: postfix has no virtual_mailbox_maps: heard+room@<host> "
                    "reaches no maildir by postfix, so no agent is paged. Set up this host's "
                    "agent mail (sessionmail) first")
     else:
@@ -2262,9 +2384,9 @@ def _heard_mta(dry_run: bool) -> list[str]:
     if flat.is_dir():
         out.append(f"WARNING: {flat} is a FLAT box: sessionmail will not subscribe to it (it reads it "
                    "as a seat's own). The heard box belongs under the store's dir")
-    out.append("heard  an agent hears a device by subscribing to heard+<device>: "
-               "`message subscription add heard+macbook` (the built-in mic; heard+airpods for "
-               "AirPods; ears-mail.py device_slug names the rest)")
+    out.append("heard  an agent hears the room by subscribing to heard+room: "
+               "`message subscription add heard+room` (every input device; each turn's "
+               "device is its Ears-Device header)")
     return out
 
 
@@ -2774,12 +2896,11 @@ def _refused_block(pre: Preflight) -> None:
 
 
 def install_log_path() -> Path:
-    """The install log, ``<sessionvoice's home>/logs/install.log``: every real run of
-    ``ears services install`` appends what it printed and what launchctl answered to it,
-    each line timestamped. Under ``logs/`` beside the heard log's ``conversations/``; the
-    home's resolver keys on the heard log alone, so this file never decides the root."""
-    from .home import sessionvoice_home
-    return Path(sessionvoice_home()) / "logs" / "install.log"
+    """The install log, ``install.log`` in the log folder (:data:`LOGS`, ears.home.log_dir):
+    every real run of ``ears services install`` appends what it printed and what launchctl
+    answered to it, each line timestamped. Before 0.3.2 it was ``<sessionvoice's
+    home>/logs/install.log``; that file stays where it is."""
+    return LOGS / "install.log"
 
 
 def _log_now() -> str:
@@ -2830,7 +2951,7 @@ class _InstallLog:
                 pass
         if not self.lost:
             self.lost = True
-            where = self.path or "logs/install.log, under sessionvoice's home,"
+            where = self.path or "install.log, in the log folder,"
             print(f"ears services install: WARNING: the install log {where} cannot be written "
                   f"({e.strerror or e}); installing on without it", file=self.err)
 
@@ -3198,6 +3319,35 @@ def _fallback_status_row() -> str | None:
     return fallback_said(fb)
 
 
+def _stt_absent_state() -> str:
+    """The `stt` row's state when its agent is not installed. That agent is the optional Apple
+    STT server (`--apple`), not the ears' STT: say so, and what the ears do hear through, read
+    from ears.json's final (never probed: the speech row says whether :8890 answers). Without
+    it a reader takes `stt not installed` for no speech-to-text while the speech server serves it."""
+    import json
+    from urllib.parse import urlsplit
+    from .listen.stt import conf_path, final_of
+    state = "not installed (the optional --apple STT server)"
+    try:
+        final = final_of(json.loads(Path(conf_path()).read_text()))
+    except Exception:
+        return state
+    url, model = final.get("url"), final.get("model")
+    if not isinstance(url, str) or not url.strip():
+        return state
+    def clean(s: str) -> str:
+        return "".join(c for c in s if c.isprintable())[:200]
+    said = f"; the ears hear through {clean(url)}"
+    if isinstance(model, str) and model.strip():
+        said += f" ({clean(model)})"
+    try:
+        u = urlsplit(url)
+        ours = u.hostname in ("127.0.0.1", "localhost", "::1") and u.port == _speech_port()
+    except ValueError:
+        ours = False
+    return state + said + (", the speech server" if ours else "")
+
+
 def status() -> int:
     listed = _listed(_launchctl("list").stdout.splitlines())
     old = [o for o in OLD if any(_there(listed, l) for l in _labels(o))]
@@ -3218,7 +3368,7 @@ def status() -> int:
             o = next(o for o in olds if o in listed)
             state = _state(listed[o], o)
         else:
-            state = "not installed"
+            state = _stt_absent_state() if n == "stt" else "not installed"
         print(f"{n:6s} {state}" + (f"  (OLD {here}: the keeper runs it now; `ears services install` "
                                      "removes it)" if n in OLD else ""))
         for o in olds:
@@ -3252,8 +3402,11 @@ def status() -> int:
     for row in weights_status():
         print(row)
     # sessionvoice's home and why; LOUD when the heard log is split across two
-    from .home import status_lines
+    from .home import status_lines, log_status_lines
     for row in status_lines():
+        print(row)
+    # the log folder, and one pointer to it while an old one (ears.home.LEGACY_LOGS) holds files
+    for row in log_status_lines():
         print(row)
     return 0
 
@@ -3263,7 +3416,9 @@ def main(argv=None) -> int:
     import textwrap
     p = argparse.ArgumentParser(prog="ears services", description=__doc__.split("\n")[0],
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("verb", choices=["install", "uninstall", "status", "weights"])
+    p.add_argument("verb", choices=["install", "uninstall", "status", "weights", "schema"])
+    p.add_argument("--quiet", action="store_true", help="schema: print only a copy it wrote, "
+                   "and nothing else (what the keeper runs at its start)")
     p.add_argument("--only", default=None, help="comma list of: " + ",".join(ALL) + " (call, room: keeper;"
                    + " sounds: " + " and ".join(GROUPS["sounds"]) + ")"
                    + " (default: install " + ",".join(DEFAULT) + "; uninstall all)")
@@ -3291,7 +3446,9 @@ def main(argv=None) -> int:
     from .home import STRANDED_HELP, warn_stranded
     p.epilog = "\n\n".join(textwrap.fill(t, 78) for t in   # two paragraphs, each wrapped
                            (PHONE_ONLY.format(size=_size(speech_weights_total())), STRANDED_HELP))
-    warn_stranded("ears services")   # once per process: status and install alike
+    args = sys.argv[1:] if argv is None else list(argv)
+    if not ("schema" in args and "--quiet" in args):   # the keeper's start says nothing of it
+        warn_stranded("ears services")   # once per process: status and install alike
     a = p.parse_args(argv)
     if a.only:
         names = [n for n in a.only.split(",") if n]
@@ -3304,6 +3461,8 @@ def main(argv=None) -> int:
     if bad:
         p.error(f"unknown service {bad}; choose from {ALL}")
     names = jobs(names)       # sounds: its two agents, each its own label
+    if a.verb == "schema":
+        return schema_verb(a.dry_run, a.quiet)
     if a.verb == "status":
         return status()
     if a.verb == "weights":

@@ -1,5 +1,5 @@
 """bench/clock_check.py reads the call leg's recording by its name: caller-call.wav/.json since
-PHONE-127, mike-call.wav/.json in a call dir from before (EARS-298). The script is run whole,
+PHONE-127 (EARS-298), and no other name (EARS-490). The script is run whole,
 against a stand-in bot: EARS_BOT_DIR holds a calls.py that records the track it is given under
 the names a case asks for, and an av.py with the one AudioFrame call the script makes. No Delta
 bot, no PyAV, no network; about 1 s of audio, paced in real time, per case."""
@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 
 from tests._anchor import ANCHOR
+
+OTHER = "other-call"     # a stand-in for any recording not named caller-call
 
 ROOT = Path(__file__).resolve().parents[1]
 CLOCK = ROOT / "bench" / "clock_check.py"
@@ -57,10 +59,9 @@ def run(tmp_path, stems, real=""):
 
 @pytest.mark.parametrize("stems,want", [
     (["caller-call"], "caller-call"),                  # a call since PHONE-127
-    (["mike-call"], "mike-call"),                      # an older bot still writes the old name
-    (["mike-call", "caller-call"], "caller-call"),     # both: the new name wins
+    ([OTHER, "caller-call"], "caller-call"),           # another recording beside it: never read
 ])
-def test_clock_check_reads_caller_call_else_mike_call(tmp_path, stems, want):
+def test_clock_check_reads_caller_call_only(tmp_path, stems, want):
     p = run(tmp_path, stems, real=want)
     assert p.returncode == 0, p.stderr
     meta = json.loads(p.stdout.splitlines()[0])
@@ -68,7 +69,8 @@ def test_clock_check_reads_caller_call_else_mike_call(tmp_path, stems, want):
     assert "onset 1.000s in wav" in p.stdout           # the wav it read: the burst, not silence
 
 
-def test_clock_check_with_no_recording_names_both_files(tmp_path):
-    p = run(tmp_path, [])
+@pytest.mark.parametrize("stems", [[], [OTHER]])     # none, or only another name: not read
+def test_clock_check_with_no_caller_call_names_the_file(tmp_path, stems):
+    p = run(tmp_path, stems, real=OTHER)
     assert p.returncode != 0
-    assert "caller-call.json" in p.stderr and "mike-call.json" in p.stderr
+    assert "no caller-call.json in " in p.stderr and OTHER not in p.stderr

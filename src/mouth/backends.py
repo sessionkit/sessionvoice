@@ -244,24 +244,46 @@ class FileSound:
 
     It plays a sound file, or a section of one (``start``..``end``
     seconds).
+
+    PATH may be a list of files, the stems of one song (``mouth play --stem``): ONE
+    ffmpeg decodes them all, so the mix is sample-locked. ``-protocol_whitelist file``
+    and ``-ss`` are per-input options, so each goes before EACH ``-i``. The inputs are
+    summed by ``amix=inputs=N:duration=longest,volume=N``: plain ``amix`` averages
+    them, and ``volume=N`` undoes that on every ffmpeg (``normalize=0`` needs 4.4 or
+    later). A list of one plays as a plain file.
     """
 
     name = "file"
     sample_rate = SAMPLE_RATE
 
-    def __init__(self, path: str, start: Optional[float] = None, end: Optional[float] = None) -> None:
-        self.path, self.start, self.end = path, start, end
+    def __init__(self, path, start: Optional[float] = None, end: Optional[float] = None) -> None:
+        paths = [path] if isinstance(path, (str, os.PathLike)) else list(path)
+        if not paths:
+            raise ValueError("FileSound: no file to play")
+        self.paths = [str(p) for p in paths]
+        self.path, self.start, self.end = self.paths[0], start, end
+
+    def command(self) -> list:
+        """The one ffmpeg's argv."""
+        cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error"]
+        for p in self.paths:
+            cmd += ["-protocol_whitelist", "file"]
+            if self.start:
+                cmd += ["-ss", f"{self.start:.3f}"]
+            cmd += ["-i", p]
+        n = len(self.paths)
+        if n > 1:
+            ins = "".join(f"[{i}:a]" for i in range(n))
+            cmd += ["-filter_complex", f"{ins}amix=inputs={n}:duration=longest,volume={n}"]
+        if self.end is not None:
+            cmd += ["-t", f"{self.end - (self.start or 0.0):.3f}"]
+        cmd += ["-f", "s16le", "-ac", "1", "-ar", str(self.sample_rate), "-"]
+        return cmd
 
     def stream(self, text: str, voice: str, speed: Optional[float]) -> Iterator[np.ndarray]:
         import subprocess
 
-        cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-protocol_whitelist", "file"]
-        if self.start:
-            cmd += ["-ss", f"{self.start:.3f}"]
-        cmd += ["-i", self.path]
-        if self.end is not None:
-            cmd += ["-t", f"{self.end - (self.start or 0.0):.3f}"]
-        cmd += ["-f", "s16le", "-ac", "1", "-ar", str(self.sample_rate), "-"]
+        cmd = self.command()
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         got = 0
         try:

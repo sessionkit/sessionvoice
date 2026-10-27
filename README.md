@@ -89,10 +89,15 @@ pair of ears on a Mac (depth in [docs/architecture.md](docs/architecture.md)):
   package or a checkout; a bare install never does.
 - **Turn mail** (`keeper/ears-mail.py`, launchd `dev.sessionkit.voice.ears-mail`):
   mails each of the user's finished turns To and From
-  `heard+<device>@<host>`, with the `Ears-*` headers of the pager genie's
-  contract (sessionmail `openspec/changes/pager-genie`). A session hears a
-  device by subscribing to that address. The box is `heard` (`--sender`),
-  because `ears` is this project's own box.
+  `heard+room@<host>`, whatever input device the capture is following, with
+  the `Ears-*` headers of the pager genie's contract (sessionmail
+  `openspec/changes/pager-genie`). The device is named by the `Ears-Device`
+  header. A session hears the room, on every device, by subscribing to that
+  one address. While `--device-copy` is on (the default), the same send (one
+  message, one Message-ID) also goes Cc `heard+<device>@<host>`, so a
+  session subscribed to a device's address keeps hearing that device. The
+  room's tag is `--room` (`EARS_MAIL_ROOM`, default `room`). The box is
+  `heard` (`--sender`), because `ears` is this project's own box.
   sessionmail trusts only its keeper's From (`_voice.KEEPER`), so the
   plist loads only once that says `heard` too. `--to seats` is the older mail, To
   each seat a turn is for. **Never run `--to seats` and `--to device` for
@@ -195,21 +200,23 @@ Every key, its type and its default:
 - **The heard log:** `<home>/logs/conversations/heard_YYYY-MM-DD.jsonl`,
   one JSON line for each thing the ears heard and the mouth said, where
   `<home>` is the home above. A new file starts each day.
-- **The services' logs:** `~/Library/Logs/ears/` (`EARS_LOG_DIR` moves it).
+- **The services' logs:** `~/.sessionkit/voice/log/` (`EARS_LOG_DIR` moves it).
   `ears-keeper.log` is what the keeper did (devices, restarts, calls, a
   deaf mic); `ears-keeper-capture.log` is the room capture's own output;
   `ears-mail.log` is each turn mail sent or skipped; `ears-mouth.log` is
-  the mouth's player.
+  the mouth's player. Logs written before the move stay where they
+  were, and nothing deletes them. `ears services status` prints the folder.
 
 Follow one with `tail -F`, for example
-`tail -F ~/Library/Logs/ears/ears-keeper.log`, or today's heard log with
+`tail -F ~/.sessionkit/voice/log/ears-keeper.log`, or today's heard log with
 `tail -F <home>/logs/conversations/heard_$(date +%F).jsonl`.
 Every log file and what each line means:
 [docs/logs.md](docs/logs.md).
 
 - **Health:** `ears services status` prints one row per launch agent
-  (`running, pid N`, `loaded, not running` or `not installed`), the
-  keeper's `mode` (`input-watch`, or `polling system_profiler` and why),
+  (`running, pid N`, `loaded, not running` or `not installed`; the
+  `stt` row, the optional `--apple` server, also names what the ears hear
+  through), the keeper's `mode` (`input-watch`, or `polling system_profiler` and why),
   the one that serves speech on `127.0.0.1:8890`, and the home in use.
 
 ## Use
@@ -253,11 +260,17 @@ at `http://127.0.0.1:<port>/`, never at `localhost`. The code is `src/talk/`.
 `ears services install --only talk` keeps it running as a launch agent
 (opt-in; a bare install never does).
 
+In the kit's web page, Talk is a room: the kit's front door runs
+`talk serve --kit` on a unix socket and logs you in, so there is nothing to
+pair and you never run `--kit` by hand
+([docs/talk.md](docs/talk.md#in-the-kits-web-page)).
+
 ## Install
 
 The distribution is `sessionvoice` (`sessionvoice[nemotron]`, `sessionvoice[all]`);
-it installs the `ears`, `ears-serve`, `mouth` and `talk` commands. A bare
-`pip install sessionvoice` carries what `mouth say` needs. The extras are
+it installs the `ears`, `ears-serve`, `mouth`, `talk` and `sessionvoice-web`
+commands. A bare `pip install sessionvoice` carries what `mouth say` needs.
+The extras are
 `capture` (the mic and call ears), `silero` (the Silero VAD), `smart-turn`
 (the Smart Turn gate's ONNX backend), `nemotron` (mlx-audio) and `all`. An
 import that needs one fails naming it, as `pip install 'sessionvoice[EXTRA]'`.
@@ -295,7 +308,7 @@ with its fix, writes nothing and exits 2. A launch agent that fails to load
 also makes it exit 2, once every other service has been tried: one block on
 stderr names each service that did not load, the install log and `ears
 services status`. Every real run appends its output and launchctl's answers,
-timestamped, to `<sessionvoice's home>/logs/install.log`, and prints that path
+timestamped, to `install.log` in the log folder, `~/.sessionkit/voice/log/`, and prints that path
 as its `log` row ([logs](docs/logs.md#the-log-files)). It then:
 
 - first finds the mlx-audio speech server on `:8890`, or installs its own
@@ -346,7 +359,7 @@ as its `log` row ([logs](docs/logs.md#the-log-files)). It then:
   read (no `message`, or one older than 0.2.0), it warns, makes no box,
   checks neither, and goes on.
   On a postfix host it also prints the box to subscribe to:
-  `message subscription add heard+macbook`;
+  `message subscription add heard+room`;
 - `--agent NAME` adds NAME's wake seat (`ears wake add NAME`) and sends the
   keeper's notices to NAME (`EARS_NOTIFY`; `--notify ADDR` sends them
   elsewhere). Without it, and when the wake file names no seat, nobody would
@@ -411,7 +424,7 @@ the agent's next tool call. `EARS_HEARD_HOOK=off` silences it without
 editing the file.
 
 `ears heard hook` is the canonical heard hook. A seat that also gets heard
-mail (it subscribes to `heard+<device>`) gets each finished turn by mail, so
+mail (it subscribes to `heard+room`) gets each finished turn by mail, so
 give it `ears heard hook --partials-only || exit 1` instead: the hook then
 shows only the partial preview of a turn still being spoken and the shown
 events (wake word, barge-in, device change), never the finished turn a

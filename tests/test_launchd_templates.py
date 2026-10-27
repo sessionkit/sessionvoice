@@ -8,7 +8,7 @@ from xml.sax.saxutils import escape
 
 import pytest
 
-from ears.home import SETTINGS
+from ears.home import LOG, SETTINGS
 from tests import _scanlist
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,7 +35,7 @@ def run(*args, env=None, **kw):
 def fake(tmp_path):
     """A machine that is not ours: HOME and every install path under tmp_path, and no
     placeholder value taken from the real environment."""
-    home = tmp_path / "home" / "jim"
+    home = tmp_path / "home" / "someone"
     v = {"HOME": home, "EARS_REPO": home / "src" / "ears", "PYTHON": home / "src/ears/.venv/bin/python",
          "BASH": "/opt/homebrew/bin/bash", "RULES": home / SETTINGS / "wake.json",
          "SPEAKER_PY": home / "venv/bin/python",
@@ -80,7 +80,7 @@ def test_template_renders_to_a_plist(t, fake, tmp_path):
     # the Label is the template's, unchanged
     assert pl["Label"] == t.name[: -len(".plist.in")]
     assert pl["EnvironmentVariables"]["HOME"] == fake["HOME"]
-    assert pl["StandardOutPath"].startswith(fake["HOME"] + "/Library/Logs/ears/")  # as EARS_LOG_DIR
+    assert pl["StandardOutPath"].startswith(f"{fake['HOME']}/{LOG}/")  # ears.home.log_dir
     # stdout gives the same bytes
     assert run(t, env=fake).stdout == text
 
@@ -98,22 +98,22 @@ def test_sounds_run_the_repo_keeper_on_the_repo_venv(name, fake):
 def test_defaults_come_from_home_and_this_repo(tmp_path):
     """No flags: HOME is $HOME, EARS_REPO is the repo the renderer sits in, PYTHON is
     that repo's .venv."""
-    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path / "jim")}
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path / "someone")}
     p = run(LAUNCHD / "dev.sessionkit.voice.ears-sounds.plist.in", env=env)
     assert p.returncode == 0, p.stderr
     pl = plistlib.loads(p.stdout.encode())
     assert pl["ProgramArguments"] == [f"{ROOT}/.venv/bin/python", f"{ROOT}/keeper/ears-sounds.py"]
-    assert pl["EnvironmentVariables"]["HOME"] == str(tmp_path / "jim")
+    assert pl["EnvironmentVariables"]["HOME"] == str(tmp_path / "someone")
     p = run(LAUNCHD / "dev.sessionkit.voice.ears-mail.plist.in", env=env)
     assert p.returncode == 0, p.stderr
     pl = plistlib.loads(p.stdout.encode())
     args = pl["ProgramArguments"]
     # EARS-234: the rules are the USER file, never the repo's seatless default.
-    assert args[args.index("--rules") + 1] == str(tmp_path / "jim" / SETTINGS / "wake.json")
+    assert args[args.index("--rules") + 1] == str(tmp_path / "someone" / SETTINGS / "wake.json")
     # EARS-381 (rca-001 N3): ears-mail sends by `message`, a uv tool in ~/.local/bin;
     # the carrier is never copied into the plist (N4, ruled (b))
     env = pl["EnvironmentVariables"]
-    assert str(tmp_path / "jim/.local/bin") in env["PATH"].split(":")
+    assert str(tmp_path / "someone/.local/bin") in env["PATH"].split(":")
     assert "SESSIONMAIL_SENDMAIL" not in env and "MAGICDNS_SUFFIX" not in env
 
 
@@ -165,7 +165,7 @@ def test_talk_runs_the_talk_it_is_given(fake, tmp_path):
     assert pl["ProgramArguments"][0] == fake["TALK"]
     assert pl["ProgramArguments"][1:] == ["serve", "--host", "127.0.0.1", "--port", "8780"]
     assert pl["WorkingDirectory"] == fake["HOME"]
-    log = fake["HOME"] + "/Library/Logs/ears/talk.log"
+    log = f"{fake['HOME']}/{LOG}/talk.log"
     assert pl["StandardOutPath"] == pl["StandardErrorPath"] == log
 
 
@@ -201,7 +201,7 @@ DASHDASH = "-Users-alice--work"
 @pytest.fixture
 def dashdash(fake, tmp_path):
     """The fake machine again, with every path under a directory whose name holds "--"."""
-    home = tmp_path / DASHDASH / "home--jim"
+    home = tmp_path / DASHDASH / "home--someone"
     repo = home / "src" / "ears--x"
     v = {"HOME": home, "EARS_REPO": repo, "PYTHON": home / "venv--y/bin/python",
          "RULES": home / SETTINGS / "wake.json",
@@ -240,10 +240,12 @@ def test_a_dashdash_checkout_renders_on_its_defaults(tmp_path):
     root = tmp_path / DASHDASH / "ears"
     (root / "bin").mkdir(parents=True)
     (root / "bin" / "render-plist").write_text(RENDER.read_text())
+    (root / "src" / "ears").mkdir(parents=True)   # the log folder's one resolver, by path
+    (root / "src" / "ears" / "home.py").write_text((ROOT / "src/ears/home.py").read_text())
     (root / "launchd").mkdir()
     for t in TEMPLATES:
         (root / "launchd" / t.name).write_text(t.read_text())
-    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path / DASHDASH / "jim")}
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path / DASHDASH / "someone")}
     for name in ("dev.sessionkit.voice.ears-sounds", "dev.sessionkit.voice.mouth-sounds",
                  "dev.sessionkit.voice.ears-mail"):
         p = subprocess.run([sys.executable, str(root / "bin" / "render-plist"),
@@ -364,3 +366,64 @@ def test_a_private_word_planted_in_a_template_is_caught(fake, tmp_path):
                 or name not in _scanlist.hits(rendered(planted, fake), rows):
             missed.append(name)
     assert missed == [], f"the scan missed a word planted from row(s) {missed}"
+
+
+# -- the log folder (EARS-483): one resolver, ears.home.log_dir --------------------------------
+
+def _log_paths(pl):
+    """Every log path a rendered plist names: StandardOut/ErrorPath and ears-mail's --fire-log."""
+    paths = [pl["StandardOutPath"], pl["StandardErrorPath"]]
+    args = pl["ProgramArguments"]
+    if "--fire-log" in args:
+        paths.append(args[args.index("--fire-log") + 1])
+    return paths
+
+
+@pytest.mark.parametrize("t", TEMPLATES, ids=lambda p: p.name)
+def test_no_template_names_the_old_log_folder(t):
+    """Not in the plist, not in its header prose: the logs' folder is the resolver's alone."""
+    assert "Library/Logs" not in t.read_text(), t.name
+
+
+@pytest.mark.parametrize("t", TEMPLATES, ids=lambda p: p.name)
+def test_every_log_path_is_the_resolvers(t, fake):
+    from ears.home import log_dir
+
+    pl = plistlib.loads(run(t, env=fake).stdout.encode())
+    want = str(log_dir(environ={}, home=fake["HOME"]))
+    assert want == f"{fake['HOME']}/{LOG}"
+    for path in _log_paths(pl):
+        assert os.path.dirname(path) == want, (t.name, path)
+
+
+@pytest.mark.parametrize("how", ["env", "set"])
+@pytest.mark.parametrize("t", TEMPLATES, ids=lambda p: p.name)
+def test_ears_log_dir_moves_every_log_path(t, fake, tmp_path, how):
+    elsewhere = str(tmp_path / "my logs")
+    if how == "env":
+        p = run(t, env={**fake, "EARS_LOG_DIR": elsewhere})
+    else:
+        p = run("--set", f"EARS_LOG_DIR={elsewhere}", t, env=fake)
+    assert p.returncode == 0, p.stderr
+    pl = plistlib.loads(p.stdout.encode())
+    for path in _log_paths(pl):
+        assert os.path.dirname(path) == elsewhere, (t.name, path)
+    if "keeper" in t.name:   # the keeper's own logs follow the render, as install's keeper
+        assert pl["EnvironmentVariables"]["EARS_LOG_DIR"] == elsewhere
+
+
+def test_without_the_resolver_the_log_folder_is_refused_not_guessed(tmp_path, fake):
+    """A renderer with no src/ears/home.py beside it has no copy of the folder to fall back
+    on: a template that names @EARS_LOG_DIR@ is refused (exit 2), and --set still fills it."""
+    root = tmp_path / "bare"
+    (root / "bin").mkdir(parents=True)
+    (root / "bin" / "render-plist").write_text(RENDER.read_text())
+    t = LAUNCHD / "dev.sessionkit.voice.talk.plist.in"
+    p = subprocess.run([sys.executable, str(root / "bin" / "render-plist"), str(t)],
+                       capture_output=True, text=True, env=fake, timeout=30)
+    assert p.returncode == 2 and "@EARS_LOG_DIR@" in p.stderr and not p.stdout
+    p = subprocess.run([sys.executable, str(root / "bin" / "render-plist"),
+                        "--set", f"EARS_LOG_DIR={tmp_path}/l", str(t)],
+                       capture_output=True, text=True, env=fake, timeout=30)
+    assert p.returncode == 0, p.stderr
+    assert plistlib.loads(p.stdout.encode())["StandardOutPath"] == f"{tmp_path}/l/talk.log"

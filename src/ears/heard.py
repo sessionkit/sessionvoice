@@ -1078,7 +1078,7 @@ def _usage() -> str:
     return ("usage: ears heard hook [--budget TOKENS] [--max-lines N] [--partials-only | --no-partials-only]\n"
             "           the ride-along hook: reads the hook's JSON on stdin and prints what the\n"
             "           heard log gained since this session last looked. --partials-only drops\n"
-            "           each finished turn (for a seat that gets turns by mail, heard+<device>)\n"
+            "           each finished turn (for a seat that gets turns by mail, heard+room)\n"
             "           and keeps the partial preview and shown events; the cursor still moves.\n"
             "           Also $EARS_HEARD_PARTIALS_ONLY, or heard_partials_only in ears.json.\n"
             "           $EARS_HEARD_HOOK=off silences it; $EARS_HEARD_BUDGET, $EARS_HEARD_MAX_LINES.\n"

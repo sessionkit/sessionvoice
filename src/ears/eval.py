@@ -13,8 +13,7 @@ per engine follow. Everything cut, and every engine's raw output, stays under --
 (call mode). An empty TEXT means "nothing was said": every word an engine writes is
 an insertion. WER uses a plain normaliser (lowercase, no punctuation, no um/uh).
 
---call DIR is a Delta call directory (caller-call.wav + caller-call.json; a call dir from
-from an older sessionphone holds mike-call.wav + mike-call.json, still read), named
+--call DIR is a Delta call directory (caller-call.wav + caller-call.json), named
 ...-msg<N>, or a sessionphone web call's directory, named <N>. Its turns come
 from the heard log (kind turn, device call:N), cut from the wav at t0+OFFSET (0.3 s,
 measured on one call).
@@ -211,7 +210,7 @@ def call_clips(call_dir, out_dir, offset, limit):
     meta_path, wav_path = callrec.call_file(call_dir, "json"), callrec.call_file(call_dir, "wav")
     for path, ext in ((meta_path, "json"), (wav_path, "wav")):
         if path is None:
-            raise SystemExit(f"ears eval: no {callrec.looked_for(ext)} in {call_dir}")
+            raise SystemExit(f"ears eval: no {callrec.name(ext)} in {call_dir}")
     meta = json.loads(meta_path.read_text())
     m = re.fullmatch(r"(?:.*msg)?(\d+)", call_dir.name)   # a Delta ...-msg<N>, or a web call's <N>
     if not m:

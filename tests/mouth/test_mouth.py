@@ -145,7 +145,7 @@ def test_a_stop_never_touches_a_later_say(box):
 
 
 def test_an_absent_device_refuses_and_never_falls_back(box, monkeypatch):
-    def absent(name, sr):
+    def absent(name, sr, *a, **kw):   # open_output's whole signature (pan, meta)
         raise output.DeviceAbsent(f"output device {name!r} is not present")
     monkeypatch.setattr(output, "open_output", absent)
     item = say("hello", device="airpods")

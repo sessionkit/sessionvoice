@@ -40,6 +40,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from ears.home import log_dir
 from mouth import audio, bed, notice
 from mouth import box as _box
 from tests import env_fence
@@ -162,7 +163,8 @@ def queued(rig):
 
 
 def assert_nothing_played(rig):
-    assert not (rig.d / "player.log").exists()        # ensure_player started nobody
+    assert not (log_dir() / "player.log").exists()    # ensure_player started nobody (its log: ears.home)
+    assert not (rig.d / "player.log").exists()        # ...nor one of before EARS-483
     done = rig.d / "done"
     assert not (done.exists() and list(done.glob("*.json")))   # and no line was said
 

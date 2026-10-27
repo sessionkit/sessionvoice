@@ -1,6 +1,6 @@
 {
   "name": "sessionvoice",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Ears and a mouth for a Claude Code agent, the default way it talks (VoiceMode's converse only when the user asks for it by name): always-on listening (the room, or a phone call), a waiter that wakes the agent on the user's finished turn, and a mouth that speaks without blocking. Needs a speech server you run yourself: by default Parakeet on 127.0.0.1:8890 (VoiceMode's mlx-audio), or point it at any OpenAI-compatible STT; Apple speech (macOS 27) is opt-in via `ears install --apple`. Install the sessionvoice package for the `ears` and `mouth` commands; the heard ride-along hook is opt-in per seat (README, Install).",
   "author": {
     "name": "Mike Bailey",

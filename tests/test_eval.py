@@ -6,6 +6,8 @@ import pytest
 
 from ears import eval as ev
 
+OTHER = "other-call"     # a stand-in for any recording not named caller-call
+
 
 def test_norm_drops_punctuation_fillers_and_brackets():
     assert ev.norm("Hey, Ivy. Um, I'm having a look [INAUDIBLE].") == ["hey", "ivy", "i'm", "having", "a", "look"]
@@ -27,8 +29,8 @@ START = 1921356800.2
 
 
 def _call_dir(tmp_path, stem="caller-call", seconds=30, start=START, name="20300609-080000-chat12-msg1317"):
-    """A Delta call dir as the bot leaves it: STEM.wav + STEM.json (caller-call since PHONE-127,
-    mike-call before). Another stem in the same dir is added by calling again. NAME: a web
+    """A Delta call dir as the bot leaves it: STEM.wav + STEM.json (caller-call since PHONE-127).
+    Another stem in the same dir is added by calling again. NAME: a web
     call's dir is its bare id (EARS-316)."""
     call = tmp_path / name; call.mkdir(exist_ok=True)
     _wav(call / f"{stem}.wav", seconds)
@@ -58,12 +60,11 @@ def test_call_clips_cut_each_heard_turn_at_t0_plus_offset(tmp_path, monkeypatch)
 
 @pytest.mark.parametrize("stems,want", [
     (["caller-call"], "caller-call"),                     # a call since PHONE-127
-    (["mike-call"], "mike-call"),                         # an older call dir keeps its name
-    (["mike-call", "caller-call"], "caller-call"),        # both: the new name wins
+    ([OTHER, "caller-call"], "caller-call"),              # another recording beside it: never read
 ])
-def test_call_clips_read_caller_call_else_mike_call(tmp_path, monkeypatch, stems, want):
-    """EARS-298: PHONE-127 renamed mike-call.wav/.json -> caller-call.wav/.json. The loser
-    of 'both' is a 1 s wav a day earlier: read, it would cut no clip at all."""
+def test_call_clips_read_caller_call_only(tmp_path, monkeypatch, stems, want):
+    """EARS-298, EARS-490: caller-call.wav/.json is the one name read. The other recording
+    is a 1 s wav a day earlier: read, it would cut no clip at all."""
     monkeypatch.setenv("VOICEMODE_BASE_DIR", str(tmp_path / "vm"))
     from ears import heard
     for stem in stems:
@@ -104,11 +105,14 @@ def test_call_clips_refuse_a_dir_with_no_call_id(tmp_path, name):
         ev.call_clips(call, tmp_path / "out", offset=0.3, limit=None)
 
 
-def test_call_clips_with_no_recording_names_both_files(tmp_path):
+@pytest.mark.parametrize("other", [False, True])   # an empty dir, or one holding only another name
+def test_call_clips_with_no_caller_call_names_the_file(tmp_path, other):
     call = tmp_path / "20300609-080000-chat12-msg1317"; call.mkdir()
+    if other:
+        _call_dir(tmp_path, OTHER, name=call.name)
     with pytest.raises(SystemExit) as e:
         ev.call_clips(call, tmp_path / "out", offset=0.3, limit=None)
-    assert "caller-call.json" in str(e.value) and "mike-call.json" in str(e.value)
+    assert str(e.value) == f"ears eval: no caller-call.json in {call}"
 
 
 def test_report_scores_only_referenced_clips_and_counts_hallucinations():

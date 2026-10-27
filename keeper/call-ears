@@ -23,6 +23,12 @@ as a child and restarts it, so the room and the calls are one job.
 import json, os, re, socket, subprocess, sys, time
 from pathlib import Path
 
+# phone_roots.py sits beside this file (keeper/, or ears/_keeper/ in a wheel); a loader
+# that runs this without its dir on sys.path still finds it.
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import phone_roots  # noqa: E402  (keeper/ is not a package)
+
 HOME = Path.home()
 # The keeper passes its own; the default is the keeper's (keeper/ears-keeper.sh), change both.
 DIR = Path(os.environ.get("CALL_EARS_DIR")
@@ -58,11 +64,8 @@ def socks():
     env = os.environ.get("EARS_CALL_SOCKS", os.environ.get("VOICEMODE_CALL_EARS_SOCKS"))
     if env:
         return [p for p in env.split(":") if p]
-    sp = Path(os.environ.get("SESSIONPHONE_ROOT") or HOME / ".sessionphone").expanduser()
-    return sorted({str(p) for p in HOME.glob(".*/delta-chat/call-ears.sock")}
-                  | {str(p) for p in HOME.glob(".*/delta-chat/*/call-ears.sock")}
-                  | {str(p) for p in sp.glob("call-ears.sock")}
-                  | {str(p) for p in sp.glob("*/call-ears.sock")})
+    # else every bot root's: phone_roots.py, beside this file (the rule ears-mail.py shares)
+    return phone_roots.bot_socks("call-ears.sock")
 
 
 def live_calls():

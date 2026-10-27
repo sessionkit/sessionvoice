@@ -67,6 +67,37 @@ first installed with `--no-agent`: nobody would be woken when you speak.
 When the wake file names a seat, a bare re-run is accepted and says which
 seat it wakes.
 
+## Its memory cap
+
+MLX keeps freed GPU buffers in a cache for reuse, and by default that cache
+may grow to almost all of the Mac's memory. mlx-audio has no setting for it.
+So sessionvoice's own server caps it before the server starts: its launch
+agent runs a one-line `python -c` that calls `mx.set_cache_limit`, then
+`mlx_audio.server`'s own `main()` with the same flags as before. The cap is
+512 MiB (536870912 bytes). In sessionvoice's measurements it cut the peak
+memory of a long spoken line by about 4 GiB, with no measurable loss of
+speed.
+
+To set another cap, run install with `MLX_AUDIO_CACHE_LIMIT` in whole
+bytes. Install writes the value into the plist's environment, so it holds
+across restarts and logins. An install run without it goes back to the
+default:
+
+    MLX_AUDIO_CACHE_LIMIT=2147483648 ears services install --agent NAME
+
+`0` turns the cache off. A value that is not a whole number of bytes under
+2**64 is not refused: the server says so in its log and uses 512 MiB. A
+value with a control character in it is not written into the plist at all,
+so the server uses 512 MiB then too. Each start
+logs the cap it applied to `~/.sessionkit/voice/log/ears-speech.log`:
+
+    [ears] mx.set_cache_limit(536870912) (previous 130567005798)
+
+The cap applies only to the server sessionvoice installs. A server it uses
+(VoiceMode's, for example) runs as its installer set it up. A server
+installed before the cap runs uncapped until you reinstall it, as in
+[Upgrade it](#upgrade-it).
+
 ## What the lock checks
 
 The lock carries a hash for every pin, and install refuses an artifact that

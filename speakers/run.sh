@@ -3,9 +3,8 @@
 #
 # References: every refs/NAME.wav (made by make-refs.py on THIS mic), in name order.
 # Calls:      every refs-call/NAME.wav (12 s of NAME heard over a call, cut from a bot's
-#             caller-call.wav, or mike-call.wav in a call dir from an older sessionphone): call
-#             lines are named against these, never the room's. None:
-#             call lines get no row, as before.
+#             caller-call.wav): call lines are named against these, never the room's.
+#             None: call lines get no row, as before.
 # Agents:     $SPEAKER_AGENT_REFS (e.g. ada,sam): enrolled AGENT voices, see below.
 # Mic:        $SPEAKER_DEVICE: "follow" (the default) opens whatever device the
 #             ears keeper's capture is on and moves with it; a device name pins it. The

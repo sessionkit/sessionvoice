@@ -32,7 +32,8 @@ log. Otherwise whichever writes first decides: converse first, and sessionvoice 
 warning names this fix (:data:`FIX`). Nothing here detects VoiceMode.
 
 Under the root nothing changes: ``logs/conversations/heard_*.jsonl``, ``heard.lock``,
-``speakers_*``, ``logs/install.log``, ``mouth/``, ``talk/`` and ``state/``. VoiceMode's own files in
+``speakers_*``, ``mouth/``, ``talk/`` and ``state/`` (``logs/install.log`` was there
+before 0.3.2; it is in the log folder now, below). VoiceMode's own files in
 ``~/.voicemode`` (``voicemode.env``, ``voices/``, ``services/``, ``exchanges_*``) are
 VoiceMode's, and this module never names them.
 
@@ -61,6 +62,24 @@ missing file, and say so in ONE line naming both paths (:func:`warn_stranded`, o
 process, on stderr, from the ears, mouth and talk commands). Writers write NOTHING to a
 stranded file (:func:`refuse_stranded`), so the move finds no second copy in its way.
 The stdlib-only scripts carry no copy of the old folders and say nothing.
+
+The LOGS are not under the root either. Every voice log a writer keeps by default (the
+launch agents' stdout and stderr, the keeper's own logs, the sounds' logs, ``install.log``,
+the mouth's ``player.log`` and ``split.log``) goes in ONE folder, the kit's log home beside
+the settings: ``~/.sessionkit/voice/log/`` (:data:`LOG`, :func:`log_dir`). ``$EARS_LOG_DIR``
+moves the folder, and each variable that names one log file (``$EARS_SOUNDS_LOG``,
+``$MOUTH_SOUNDS_LOG``) still moves that file. This module is the ONE place the folder is
+named. There are no copies: a script that imports nothing from this package loads this
+file by its path and calls :func:`log_dir` (it is standard library only), the keeper's
+shell asks ``python -m ears.home log-dir``, and ``bin/render-plist`` fills the templates'
+``@EARS_LOG_DIR@`` from it. ``tests/test_log_dir.py`` scans for any other.
+
+NOT logs, and not in that folder: the heard log and ``heard.lock`` (``<root>/logs/
+conversations``, ``ears.heard.log_dir``, a different folder), the speakers' files, state,
+audio, caches and venvs. Before 0.3.2 the logs went to ``~/Library/Logs/ears`` (and a hand
+render's to ``~/Library/Logs/failmode``, :data:`LEGACY_LOGS`). Nothing moves or deletes
+them. ``ears services status`` says in one line where the logs are now while an old folder
+still holds a file (:func:`log_status_lines`).
 """
 from __future__ import annotations
 
@@ -80,6 +99,14 @@ FIX = "SESSIONVOICE_HOME=~/.voicemode (or VOICEMODE_BASE_DIR), so that both writ
 #: The package's settings folder, under $HOME: the kit's settings home, package first.
 #: The ONE place this repo's Python names it; the copies are held to it by tests.
 SETTINGS = ".sessionkit/voice/settings"
+#: The package's log folder, under $HOME: the kit's log home, beside :data:`SETTINGS`.
+#: The ONE place this repo names it; nothing copies it (:func:`log_dir`).
+LOG = ".sessionkit/voice/log"
+#: The variable that moves the log folder.
+LOG_ENV = "EARS_LOG_DIR"
+#: Where the logs went before 0.3.2, under $HOME. Only ever LOOKED at, for the pointer in
+#: ``ears services status``: nothing here writes, moves or deletes a file in them.
+LEGACY_LOGS = ("Library/Logs/ears", "Library/Logs/failmode")
 #: Where version 0.1.0 kept the voice settings files, under $HOME, by folder. The ONE place
 #: this repo names them. Used ONLY to build the stranded line: never opened, never written,
 #: never a fallback. The stdlib-only scripts carry no copy.
@@ -117,6 +144,46 @@ def settings_dir(home=None) -> Path:
     """``~/.sessionkit/voice/settings``: the folder every voice settings file sits in.
     ``home`` defaults to the user's home (``$HOME``, read on every call)."""
     return _home(home) / SETTINGS
+
+
+def log_dir(environ: Optional[Mapping[str, str]] = None, home=None) -> Path:
+    """The folder every voice log goes in by default: ``$EARS_LOG_DIR`` when it is set
+    (and not empty), else ``~/.sessionkit/voice/log``. ``environ`` defaults to
+    ``os.environ`` and ``home`` to the user's home (``$HOME``), both read on every call.
+    Nothing is made: a writer makes the folder when it writes."""
+    env = os.environ if environ is None else environ
+    raw = env.get(LOG_ENV)
+    if raw:
+        return Path(os.path.expanduser(os.path.expandvars(raw)))
+    return _home(home) / LOG
+
+
+def old_logs(home=None) -> list[Path]:
+    """Each :data:`LEGACY_LOGS` folder that still holds a file (at any depth). A look,
+    never a write: the old logs stay where they are."""
+    h, found = _home(home), []
+    for rel in LEGACY_LOGS:
+        d = h / rel
+        try:
+            if d.is_dir() and any(p.is_file() for p in d.rglob("*")):
+                found.append(d)
+        except OSError:
+            continue
+    return found
+
+
+def log_status_lines(environ: Optional[Mapping[str, str]] = None, home=None) -> list[str]:
+    """``ears services status``'s log row, and ONE pointer line while an old log folder
+    still holds files: they are left in place, and new logs go to :func:`log_dir`."""
+    env = os.environ if environ is None else environ
+    new = log_dir(env, home)
+    why = f"${LOG_ENV}" if env.get(LOG_ENV) else "the default"
+    rows = [f"{'logs':6s} {new} ({why})"]
+    old = old_logs(home)
+    if old:
+        rows.append(f"{'':6s} the logs are now in {new}; older ones stay in "
+                    f"{' and '.join(map(str, old))} (left in place, never deleted)")
+    return rows
 
 
 def legacy_path(name: str, home=None) -> Path:
@@ -224,3 +291,17 @@ def status_lines(environ: Optional[Mapping[str, str]] = None, home=None) -> list
             f"{'':6s} {FIX}.",
         ]
     return rows
+
+
+def main(argv=None) -> int:
+    """``python -m ears.home log-dir``: print :func:`log_dir`, for a writer in shell."""
+    args = sys.argv[1:] if argv is None else list(argv)
+    if args == ["log-dir"]:
+        print(log_dir())
+        return 0
+    print("usage: python -m ears.home log-dir", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

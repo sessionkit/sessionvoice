@@ -182,7 +182,7 @@ def test_no_held_stream_beside_ears_sounds_refuses_and_writes_nothing(snd, monke
 # ---- the hand templates: only the paths, the marker and the restart rule differ ----------------
 
 def _template(job) -> dict:
-    vals = {"HOME": "/Users/x", "EARS_REPO": "/r", "PYTHON": "/p/python"}
+    vals = {"HOME": "/Users/x", "EARS_REPO": "/r", "PYTHON": "/p/python", "EARS_LOG_DIR": "/Users/x/logs"}
     body = re.sub(r"<!--.*?-->", "", (REPO / f"launchd/{LABELS[job]}.plist.in").read_text(), flags=re.S)
     return plistlib.loads(re.sub(r"@([A-Z_]+)@", lambda m: vals[m.group(1)], body).encode())
 

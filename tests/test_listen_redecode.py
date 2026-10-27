@@ -188,3 +188,73 @@ def test_the_default_cap_covers_a_155_second_turn():
     from ears.listen.loop import DEFAULT_REDECODE_MAX_S
 
     assert DEFAULT_REDECODE_MAX_S >= 155
+
+
+# -- a re-decode that lost the turn's head (EARS-482) -----------------------------
+#
+# On AirPods turns the whole-turn decode sometimes drops the first words. Live case
+# seq 1287416: the turn landed headless. The joined partials still hold the head, so
+# it is put back in front of the re-decode, which keeps the re-decode's own text.
+
+SEQ_1287416_JOINED = "They need to make a change to the to the code to do that"
+SEQ_1287416_REDECODE = "to make a change to the to the code to do that."
+
+
+def test_a_redecode_that_lost_the_head_gets_it_back_from_the_joined_partials(tmp_path):
+    # call 1 is the one partial; call 2 is the speculative re-decode of the whole turn
+    stt = DurationSTT(texts={1: SEQ_1287416_JOINED, 2: SEQ_1287416_REDECODE})
+    _, lines, _ = run(tmp_path, [("silence", 0.5), ("speech", 1.0)], stt=stt, turn_text="redecode")
+    (turn,) = kind(lines, "turn")
+    assert turn["text"] == "They need to make a change to the to the code to do that."
+    assert turn["text_from"] == "redecode"
+    assert turn["head"] == "spliced" and turn["head_words"] == "They need"
+    assert turn["joined"] == SEQ_1287416_JOINED
+
+
+def test_a_redecode_identical_to_joined_is_unchanged(tmp_path):
+    same = "They need to make a change"
+    stt = DurationSTT(texts={1: same, 2: same})
+    _, lines, _ = run(tmp_path, [("silence", 0.5), ("speech", 1.0)], stt=stt, turn_text="redecode")
+    (turn,) = kind(lines, "turn")
+    assert turn["text"] == same and turn["text_from"] == "redecode"
+    assert "head" not in turn and "head_words" not in turn
+
+
+def test_a_redecode_with_a_better_first_word_is_unchanged(tmp_path):
+    # the start differs for another reason: the re-decode heard the first word better
+    stt = DurationSTT(texts={1: "Fiera said to make a change", 2: "Vera said to make a change."})
+    _, lines, _ = run(tmp_path, [("silence", 0.5), ("speech", 1.0)], stt=stt, turn_text="redecode")
+    (turn,) = kind(lines, "turn")
+    assert turn["text"] == "Vera said to make a change." and "head" not in turn
+
+
+@pytest.mark.parametrize(
+    "joined, redecoded, want",
+    [
+        # the seq 1287416 shape: the head is restored, the re-decode's punctuation kept
+        (SEQ_1287416_JOINED, SEQ_1287416_REDECODE,
+         ("They need to make a change to the to the code to do that.", "They need")),
+        # case and punctuation do not stop the anchor matching
+        ("Okay, so we Need, To ship it", "need to ship it.", ("Okay, so we need to ship it.", "Okay, so we")),
+        # a re-decode shorter than the anchor anchors on all of its words
+        ("well then yes", "Yes.", ("well then Yes.", "well then")),
+        # identical: nothing lost
+        ("to make a change", "To make a change.", None),
+        # joined's first word is where the re-decode starts: nothing lost
+        ("to make a to make a change", "to make a change", None),
+        # only the first word differs: no anchor at i > 0
+        ("Fiera said to make a change", "Vera said to make a change.", None),
+        # the re-decode's opening is nowhere in joined
+        ("hello there", "something else entirely", None),
+        # the anchor only appears at index 0 of joined
+        ("make a change now", "make a change now please", None),
+        # nothing to compare
+        ("", "to make a change", None),
+        ("to make a change", "", None),
+        ("They need to", "...", None),
+    ],
+)
+def test_restored_head(joined, redecoded, want):
+    from ears.listen.loop import restored_head
+
+    assert restored_head(joined, redecoded) == want

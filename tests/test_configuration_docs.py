@@ -108,8 +108,11 @@ def test_the_health_line_quotes_the_states_status_prints():
 
 
 def test_readme_logs_names_the_log_dir_the_code_uses():
-    assert 'Path.home() / "Library/Logs/ears"' in _read("src/ears/services.py")
-    assert "~/Library/Logs/ears/" in _section(README, "Logs")
+    from ears.home import LOG   # ears.home.log_dir, the one resolver (EARS-483)
+
+    assert "LOGS = log_dir()" in _read("src/ears/services.py")
+    assert f"~/{LOG}/" in _section(README, "Logs")
+    assert "Library/Logs" not in _section(README, "Logs")
 
 
 # --- docs/ ------------------------------------------------------------------------

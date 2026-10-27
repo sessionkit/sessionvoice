@@ -8,7 +8,7 @@ description: >-
   name in the room, keep a listener armed across turns, or know which wake
   rules to drop in a shop, on a call, or while the user thinks aloud; and to
   speak one line at a time on the user's device.
-tokens: 134/3144/7574  # seed/body/extras - run `skill tokens` after edits
+tokens: 134/3415/7574  # seed/body/extras - run `skill tokens` after edits
 ---
 
 # ears
@@ -21,6 +21,8 @@ tokens: 134/3144/7574  # seed/body/extras - run `skill tokens` after edits
 > `converse`, set `SESSIONVOICE_HOME=~/.voicemode` (or `VOICEMODE_BASE_DIR`), so
 > that both write one log. Every agent in the room reads the same log;
 > nobody owns it. Converse is someone dialling in; the ears are being there.
+
+Several agents in one seat? See the sessionkit skill's card, "Several agents in one seat".
 
 ## Talking with the kit: mouth and ears by default
 
@@ -71,6 +73,14 @@ from `scripts/`.
   under speech and mixes with the mouth's lines. `--start`/`--end` take a
   section, `--volume N` its level, and `mouth retract <utt>` stops it
   (docs/mouth.md, "Play music or a sound").
+  - A song plays its instrumental, without the vocals, by default. When
+    one must be made first, `mouth play` prints one stderr line saying so
+    and about how long; tell the user, since nothing plays until it is
+    made. `--no-instrumental` plays the file now, vocals and all.
+  - A line naming `mouth split --install` means no separator is installed
+    (about 1 GB): pass it on, and install only if the user asks.
+  - `--stem drums,bass` plays a song's stems, once `mouth split FILE` has
+    made them.
 - `SwitchAudioSource -c -t output` (if installed) names the user's output
   device now: a headset, or the built-in speakers. A headset vanishing from
   the list usually means it moved to a phone: a call.
@@ -139,7 +149,7 @@ wakes.
   command must be on the hook's PATH, not just the Bash tool's; see
   `ears heard hook --help`). It takes effect on your next tool call, with no
   restart. It prints `[heard ...]` lines after each tool call. If you also
-  get heard mail (`heard+<device>`), run it as
+  get heard mail (`heard+room`), run it as
   `ears heard hook --partials-only || exit 1` (or set
   `EARS_HEARD_PARTIALS_ONLY=1`): finished turns reach you by mail, so the
   hook then carries only the partial preview and the shown events. It has no sieve yet: every agent that has it
@@ -165,7 +175,8 @@ wakes.
 - **A cut is on you.** The `said` record carries `cut: true` and a reason:
   `barge-in` (the user spoke over you: say it again, shorter),
   `device-lost` (their headset dropped), `device-absent` (you named a
-  device that isn't there: `mouth devices`).
+  device that isn't there: `mouth devices`), `open-failed` (the device is
+  there but would not open; `detail` says why).
 - **Chopping has a number.** A played `said` row carries `device_gaps`,
   `device_gap_s` and `device_gap_max_s`. `device_gaps > 0` means the machine
   was too busy to feed the audio (its callback ran late), not the line or the

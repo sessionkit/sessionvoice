@@ -321,30 +321,65 @@ class MicSource:
 
 def call_socks() -> list[str]:
     """Every Delta bot's ear-leg socket. ``$EARS_CALL_SOCKS`` (colon-separated)
-    overrides the search of sessionphone's root (``$SESSIONPHONE_ROOT``, default
-    ``~/.sessionphone``) and ``~/.<agent>/delta-chat`` (an agent's own bot), each ``[/<profile>]/call-ears.sock``
-    - the same places the mouth looks for ``call-mouth.sock``, so the two halves of a call
-    pair up."""
+    overrides the search of every bot root (:func:`bot_roots`), each
+    ``[/<profile>]/call-ears.sock`` - the same places the mouth looks for
+    ``call-mouth.sock``, so the two halves of a call pair up."""
     env = envnames.get("EARS_CALL_SOCKS")
     if env:
         return [p for p in env.split(":") if p]
     return bot_socks("call-ears.sock")
 
 
-def bot_roots() -> list[str]:
-    """The dirs a Delta bot keeps its call sockets in: sessionphone's root, then each agent's own."""
+# sessionphone's root, new and old (it moves under ~/.sessionkit): both under ~. keeper/phone_roots.py holds
+# the stdlib twin of these four functions; tests/test_call_sock_search.py holds them equal.
+PHONE_NEW_ROOT = os.path.join(".sessionkit", "phone", "state")
+PHONE_OLD_ROOT = ".sessionphone"
+
+
+def _dedupe(paths: list[str]) -> list[str]:
+    """``paths`` in order, each realpath once: the first spelling of a place wins."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in paths:
+        real = os.path.realpath(p)
+        if real not in seen:
+            seen.add(real)
+            out.append(p)
+    return out
+
+
+def phone_roots() -> list[str]:
+    """sessionphone's root(s): ``[$SESSIONPHONE_ROOT]`` when it is set, alone; else
+    ``~/.sessionkit/phone/state`` (new) then ``~/.sessionphone`` (old), deduped by
+    realpath: for one release the old is a symlink to the new."""
+    explicit = os.environ.get("SESSIONPHONE_ROOT")
+    if explicit:
+        return [os.path.expanduser(explicit)]
     home = os.path.expanduser("~")
-    sp = os.path.expanduser(os.environ.get("SESSIONPHONE_ROOT") or os.path.join(home, ".sessionphone"))
-    return [sp] + sorted(glob.glob(os.path.join(home, ".*", "delta-chat")))
+    return _dedupe([os.path.join(home, PHONE_NEW_ROOT), os.path.join(home, PHONE_OLD_ROOT)])
+
+
+def bot_roots() -> list[str]:
+    """The dirs a Delta bot keeps its call sockets in: sessionphone's root(s), then
+    ``$DC_ROOT`` when it is set, then each agent's own ``~/.<agent>/delta-chat``;
+    no place twice."""
+    home = os.path.expanduser("~")
+    roots = phone_roots()
+    dc = os.environ.get("DC_ROOT")
+    if dc:
+        roots.append(os.path.expanduser(dc))
+    roots += sorted(glob.glob(os.path.join(glob.escape(home), ".*", "delta-chat")))
+    return _dedupe(roots)
 
 
 def bot_socks(name: str) -> list[str]:
-    """``name`` in every bot root and every profile dir under one, sorted, no repeats."""
-    out = set()
+    """``name`` in every bot root and every profile dir under one, sorted; a socket
+    reached by two spellings (the old root a symlink to the new) is counted once."""
+    found: list[str] = []
     for root in bot_roots():
-        out.update(glob.glob(os.path.join(glob.escape(root), name)))
-        out.update(glob.glob(os.path.join(glob.escape(root), "*", name)))
-    return sorted(out)
+        found += sorted(glob.glob(os.path.join(glob.escape(root), name)))
+        found += sorted(glob.glob(os.path.join(glob.escape(root), "*", name)))
+    return sorted(_dedupe(found))
 
 
 def _ask(path: str, header: dict, timeout: float = 2.0) -> tuple[socket.socket, dict, bytes]:

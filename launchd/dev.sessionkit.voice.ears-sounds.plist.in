@@ -9,10 +9,10 @@
      or an installed package; this template is the hand render of it.
      Runs the ears repo's copy (keeper/ears-sounds.py), which reads the user's paths:
        settings ~/.sessionkit/voice/settings/ears-sounds.json (reread live, no restart)
-       sound log ~/Library/Logs/ears/ears-sounds.jsonl
+       sound log ears-sounds.jsonl in the voice log folder (.venv/bin/python -m ears.home log-dir prints it)
      @PYTHON@ is the ears .venv (sounddevice, numpy).
      A TEMPLATE: render it, then install (no machine paths live here):
-       mkdir -p ~/Library/Logs/ears
+       mkdir -p "$(.venv/bin/python -m ears.home log-dir)"   # the voice log folder
        bin/render-plist launchd/dev.sessionkit.voice.ears-sounds.plist.in > ~/Library/LaunchAgents/dev.sessionkit.voice.ears-sounds.plist
        launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.sessionkit.voice.ears-sounds.plist
      bin/render-plist fills @HOME@, @EARS_REPO@ and @PYTHON@ from this machine (see its
@@ -39,7 +39,7 @@
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
-  <key>StandardOutPath</key><string>@HOME@/Library/Logs/ears/ears-sounds.log</string>
-  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/ears/ears-sounds.log</string>
+  <key>StandardOutPath</key><string>@EARS_LOG_DIR@/ears-sounds.log</string>
+  <key>StandardErrorPath</key><string>@EARS_LOG_DIR@/ears-sounds.log</string>
 </dict>
 </plist>

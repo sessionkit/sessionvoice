@@ -19,7 +19,6 @@ device plays mono and says so (``pan_ignored``) rather than dropping words.
 
 from __future__ import annotations
 
-import glob
 import json
 import math
 import os
@@ -236,7 +235,10 @@ class DeviceOut:
         self.pan_ignored: Optional[str] = None
         channels = 1
         if pan is not None:
-            have = sd.query_devices(idx)["max_output_channels"] if idx is not None else 2
+            # the device's own count, the default's too: AirPods hands-free while
+            # their mic is held have 1, and asking a 1-channel device for 2 is -9998
+            have = sd.query_devices(idx if idx is not None
+                                    else sd.default.device[1])["max_output_channels"]
             if have >= 2:
                 channels = 2
                 self.gains = np.array(pan_gains(pan), dtype=np.float32)
@@ -412,20 +414,14 @@ CALL_SLOW_S = 4.0       # the second look, and a line's header: under the bot's 
 
 
 def call_socks() -> list[str]:
-    """Every bot's mouth-leg socket. $MOUTH_CALL_SOCKS (colon-separated)
-    overrides the search of sessionphone's root ($SESSIONPHONE_ROOT, default
-    ~/.sessionphone) and ~/.<agent>/delta-chat (an agent's own bot), each [/<profile>]/call-mouth.sock."""
+    """Every bot's mouth-leg socket. $MOUTH_CALL_SOCKS (colon-separated) overrides the
+    search of every bot root the ears search (ears.listen.sources.bot_roots: sessionphone's
+    root, $DC_ROOT, ~/.<agent>/delta-chat), each [/<profile>]/call-mouth.sock."""
     env = envnames.get("MOUTH_CALL_SOCKS")
     if env:
         return [os.path.expanduser(p) for p in env.split(":") if p]
-    home = os.path.expanduser("~")
-    roots = [os.path.expanduser(os.environ.get("SESSIONPHONE_ROOT") or os.path.join(home, ".sessionphone"))]
-    roots += glob.glob(os.path.join(home, ".*", "delta-chat"))
-    out = set()
-    for root in roots:
-        out.update(glob.glob(os.path.join(glob.escape(root), "call-mouth.sock")))
-        out.update(glob.glob(os.path.join(glob.escape(root), "*", "call-mouth.sock")))
-    return sorted(out)
+    from ears.listen.sources import bot_socks   # here: the mouth needs the listen package only on a call
+    return bot_socks("call-mouth.sock")
 
 
 def _ask(sock_path: str, header: dict, timeout: Optional[float] = None) -> tuple[socket.socket, dict]:

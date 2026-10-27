@@ -22,7 +22,7 @@
      /talk path at unix:PATH. Then 127.0.0.1:8780 is not talk, and talk pair takes the
      tailnet URL instead (docs/talk.md, "On a tailnet").
      A TEMPLATE: render it, then install (no machine paths live here):
-       mkdir -p ~/Library/Logs/ears
+       mkdir -p "$(.venv/bin/python -m ears.home log-dir)"   # the voice log folder
        TALK=/path/to/the/installed/talk \
            bin/render-plist launchd/dev.sessionkit.voice.talk.plist.in > ~/Library/LaunchAgents/dev.sessionkit.voice.talk.plist
        launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.sessionkit.voice.talk.plist
@@ -63,7 +63,7 @@
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
-  <key>StandardOutPath</key><string>@HOME@/Library/Logs/ears/talk.log</string>
-  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/ears/talk.log</string>
+  <key>StandardOutPath</key><string>@EARS_LOG_DIR@/talk.log</string>
+  <key>StandardErrorPath</key><string>@EARS_LOG_DIR@/talk.log</string>
 </dict>
 </plist>

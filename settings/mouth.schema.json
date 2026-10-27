@@ -81,6 +81,12 @@
       "minimum": 0,
       "default": 1.0
     },
+    "music_instrumental": {
+      "title": "Play songs without their vocals",
+      "description": "On: a file the mouth plays plays its instrumental (the song without its vocals) when one is made for it. Off: it plays as it is. A per-call --instrumental/--no-instrumental beats this, and so does $MOUTH_MUSIC_INSTRUMENTAL in the environment of the command that plays it. Precedence: per-call --instrumental/--no-instrumental > $MOUTH_MUSIC_INSTRUMENTAL > the music_instrumental cascade (session > seat > agent > settings) > built-in on.",
+      "type": "boolean",
+      "default": true
+    },
     "barge_in": {
       "title": "Who may barge in",
       "description": "Whose words cut a line while it plays. Anyone: any words that are not the line's own (the television too). Names: only words the speaker side-car names as one of them; other voices, the television, silence and mixed voices never cut. A line still unnamed 2 s after its words cuts as if this were Anyone, so a stopped side-car never takes barge-in away; so do words the side-car hears but cannot score (unheard: too little audio, a quiet voice), at once. Today the side-car names the room mic only, so on a call a list acts as Anyone. When `session operator` names an operator, the default is that operator's mailbox in the room (calls stay anyone), read as a speaker name: enroll under your mailbox name. Set this key, to anyone or to names, and it wins.",

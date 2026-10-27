@@ -117,7 +117,9 @@ def test_the_plist_runs_mlx_audio_server_on_127_0_0_1_8890_from_our_venv(sx):
     d = services.spec("speech")
     py = os.environ["EARS_SPEECH_PY"]                        # the fence's given python
     assert d["Label"] == OURS
-    assert d["ProgramArguments"][:7] == [py, "-m", "mlx_audio.server", "--host", "127.0.0.1", "--port", "8890"]
+    # EARS-478: `python -c SPEECH_LAUNCH` caps MLX's cache, then runs mlx_audio.server's main()
+    assert d["ProgramArguments"][:7] == [py, "-c", services.SPEECH_LAUNCH, "--host", "127.0.0.1", "--port", "8890"]
+    assert "mlx_audio.server" in d["ProgramArguments"][2]
     assert d["ProgramArguments"][7:] == ["--log-dir", str(services.LOGS / "mlx-audio")]
     assert "EARS_PY" not in d["EnvironmentVariables"]
     assert d["EnvironmentVariables"]["PATH"].startswith(str(Path(py).parent) + ":")

@@ -18,13 +18,15 @@ Reads, from their ends at start (plus a short backfill):
     measured)
 Pushes the whole picture with dc-xdc-update when something changed and at
 least GAP seconds passed (webxdc's default sendUpdateInterval is 10 s), plus
-a heartbeat. Log: $EARS_LOG_DIR/ears-view-push.log (default ~/Library/Logs/ears, as the keeper).
+a heartbeat. Log: ears-view-push.log in the voice log folder, as the keeper's
+(ears.home.log_dir: $EARS_LOG_DIR, else the kit's log home).
 DC_OUTBOX picks the profile.
 Env: EARS_VIEW_GAP (default 10), EARS_VIEW_SESSION (default: every session),
 EARS_VIEW_UPDATE (default: dc-xdc-update on PATH), EARS_VIEW_PROJECT (default: every agent),
 EARS_VIEW_LABEL (the name the page shows on the agent's lines; unset = the page's neutral "Agent").
 """
 import ast, json, os, statistics, subprocess, sys, time
+from pathlib import Path
 from datetime import datetime, date
 
 def sessionvoice_home():
@@ -46,8 +48,28 @@ HOME = os.path.expanduser("~")
 LOGDIR = os.path.join(sessionvoice_home(), "logs/conversations")   # heard_*
 # VoiceMode's own exchanges log stays in VoiceMode's home, whatever sessionvoice's is
 VM_LOGDIR = os.path.join(HOME, ".voicemode/logs/conversations")
-LOG = os.path.join(os.path.expanduser(os.environ.get("EARS_LOG_DIR") or "~/Library/Logs/ears"),
-                   "ears-view-push.log")
+HERE = Path(__file__).resolve().parent
+
+
+def voice_log_dir() -> Path:
+    """ears.home.log_dir(), the ONE place the voice log folder is named ($EARS_LOG_DIR, else
+    the kit's log home). view/ imports nothing from the ears package, so it loads home.py
+    (standard library only) by its path: the checkout's src/ears/home.py (view/ ships in the
+    checkout only). Not there: exit 2, naming it; there is no copy to fall back on."""
+    import importlib.util, sys
+    tried = [HERE.parent / "src/ears/home.py"]
+    for f in tried:
+        if f.is_file():
+            spec = importlib.util.spec_from_file_location("_voice_home", f)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod.log_dir()
+    print(f"push: no ears/home.py at {' nor '.join(map(str, tried))}: it names the log "
+          "folder. Run it from a sessionvoice checkout", file=sys.stderr)
+    sys.exit(2)
+
+
+LOG = str(voice_log_dir() / "ears-view-push.log")
 UPDATE = os.environ.get("EARS_VIEW_UPDATE") or "dc-xdc-update"
 POLL, HEARTBEAT, KEEP, BACKFILL = 1.0, 60, 30, 40
 GAP = float(os.environ.get("EARS_VIEW_GAP", "10"))
@@ -198,7 +220,7 @@ def main():
                     continue
                 if k == "said":
                     item = by_utt.pop(r.get("utt"), None)
-                    if item is None and r.get("reason") in ("device-absent", "device-lost", "error"):
+                    if item is None and r.get("reason") in ("device-absent", "open-failed", "device-lost", "error"):
                         items.append([hms(t), "c", "[mouth: not played, %s]" % r.get("reason"), None])
                         dirty = True
                     elif item is not None and r.get("cut"):

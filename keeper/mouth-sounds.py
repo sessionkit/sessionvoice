@@ -77,6 +77,26 @@ def sessionvoice_home():
 
 
 HERE = Path(__file__).resolve().parent
+
+
+def voice_log_dir() -> Path:
+    """ears.home.log_dir(), the ONE place the voice log folder is named ($EARS_LOG_DIR, else
+    the kit's log home). keeper/ imports nothing from the ears package, so it loads home.py
+    (standard library only) by its path: the checkout's src/ears/home.py, else the wheel's
+    ears/home.py above ears/_keeper/. Neither: exit 2, naming both; there is no copy to fall
+    back on."""
+    import importlib.util, sys
+    tried = [HERE.parent / "src/ears/home.py", HERE.parent / "home.py"]
+    for f in tried:
+        if f.is_file():
+            spec = importlib.util.spec_from_file_location("_voice_home", f)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod.log_dir()
+    print(f"mouth-sounds: no ears/home.py at {' nor '.join(map(str, tried))}: it names the log "
+          "folder. Set MOUTH_SOUNDS_LOG, or run it from a checkout or the package", file=sys.stderr)
+    sys.exit(2)
+
 ENV = os.environ.get
 
 
@@ -90,7 +110,8 @@ RUN = _p("EARS_RUN", Path.home() / ".cache/ears/run")
 FIRED = _p("MOUTH_SOUNDS_FIRED", RUN / "mid-turn.fired")
 CANNED = _p("MOUTH_SOUNDS_CANNED", RUN / "auto-opener.utts")
 SETTINGS = _p("MOUTH_SOUNDS_SETTINGS", Path.home() / VOICE_SETTINGS / "mouth-sounds.json")
-LOG = _p("MOUTH_SOUNDS_LOG", Path.home() / "Library/Logs/ears/mouth-sounds.jsonl")
+LOG = Path(ENV("MOUTH_SOUNDS_LOG") or voice_log_dir() / "mouth-sounds.jsonl").expanduser()
+LOG.parent.mkdir(parents=True, exist_ok=True)
 STOP = _p("MOUTH_SOUNDS_STOP", HERE / "STOP-mouth-sounds")
 CURSORS = _p("MOUTH_SOUNDS_CURSORS", Path(sessionvoice_home()) / "state/heard-cursor")
 HEARD_DIR = _p("MOUTH_SOUNDS_HEARD_DIR", Path(sessionvoice_home()) / "logs/conversations")
@@ -359,7 +380,7 @@ def cursors():
     return out
 
 
-def mikes_rows(name, start, end):
+def user_rows(name, start, end):
     """How many of the user's partial/turn rows sit in bytes [start, end) of one heard log."""
     try:
         with open(HEARD_DIR / name, "rb") as f:
@@ -387,7 +408,7 @@ def scoops(old, new):
     for sess, (fname, off, seq, by) in new.items():
         was = old.get(sess)
         if was and fname and was[0] == fname and off > was[1]:
-            n = mikes_rows(fname, was[1], off)
+            n = user_rows(fname, was[1], off)
             if n:
                 out.append((sess, n, by, [was[2], seq]))
     return out

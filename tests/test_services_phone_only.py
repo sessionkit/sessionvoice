@@ -13,12 +13,14 @@
 The sizes are stubbed here (STUB): every number the line prints comes from them. Everything runs
 inside test_services_speech's fence (a temp HOME, launchctl faked, the speech probes faked) and
 test_services_prefetch's faked fetch seam: nothing is fetched, nothing real is touched."""
+import os
 from pathlib import Path
 
 import pytest
 
 from ears import services
 from ears.speech import Probe
+from tests import _scanlist
 from test_services_install_checks import _store, fence  # noqa: F401  (a fixture)
 from test_services_prefetch import px  # noqa: F401  (a fixture)
 from test_services_speech import VM, sx  # noqa: F401  (a fixture)
@@ -97,11 +99,32 @@ def test_the_refusal_keeps_its_shape(fence, monkeypatch, capsys):
     assert lines[-1] == "nothing was written"
 
 
-def test_the_refusal_is_neutral(fence, monkeypatch, capsys):
-    """Public text: no seat, person or task named, only the example the walk asked for."""
+def test_the_refusal_names_no_task(fence, monkeypatch, capsys):
+    """Public text: no task named. Tracker IDs are not private, so they are spelt here."""
     err = _refusal(fence, monkeypatch, capsys)
-    for word in ("EARS-", "TM-", "Mike", "Cora", "Doctor"):
+    for word in ("EARS-", "TM-"):
         assert word not in err
+
+
+def test_the_refusal_names_no_private_word(fence, monkeypatch, capsys):
+    """Public text: no seat or person named, only the example the walk asked for. The words
+    come from the private scan list (EARS-406, tests/_scanlist.py), every row of it, never
+    spelt here; unset, this guard skips loudly. A word planted from each row into the refusal
+    must fire, so the guard proves it can. The wake file's path is this run's temp HOME, which
+    carries the machine's own temp dir and user: the guard reads it as the user would, `~`."""
+    home = os.environ["HOME"]
+    err = _refusal(fence, monkeypatch, capsys)
+    assert home in err, "the refusal no longer names the wake file under HOME"
+    err = err.replace(home, "~")
+    rows = _scanlist.rows()
+    found = _scanlist.hits(err, rows)
+    assert found == [], f"the refusal holds a word of row(s) {found}"
+    missed = []
+    for name, word in _scanlist.controls(rows):
+        planted = f"{err}    ears services install --agent {word}\n"
+        if name not in _scanlist.hits(planted, rows):
+            missed.append(name)
+    assert missed == [], f"the scan missed a word planted from row(s) {missed}"
 
 
 # ---- 2. --help and the docs carry the same phone-only paragraph -----------------------------
@@ -152,7 +175,19 @@ def test_a_size_the_docs_type_is_the_computed_total(doc):
     """The docs cannot compute: each "about N GB" they type for the speech models is held to
     speech_weights_total, so a re-measured size fails here until the docs follow."""
     import re
-    paras = [p for p in (ROOT / doc).read_text().split("\n\n") if "**Memory:**" not in p]   # RSS, not a download
+    text = (ROOT / doc).read_text()
+    # The separator has sizes of its own (its venv, its working memory), not the speech
+    # models': its models.md section and its dependencies.md row are dropped, each one
+    # asserted present first, so the exclusion cannot go stale silently.
+    if doc == "docs/models.md":
+        m = re.search(r"^## HTDemucs\n.*?(?=^## )", text, re.M | re.S)
+        assert m, "docs/models.md has no HTDemucs section to leave out"
+        text = text[:m.start()] + text[m.end():]
+    if doc == "docs/dependencies.md":
+        rows = re.findall(r"^\| The separator \|.*\n", text, re.M)
+        assert len(rows) == 1, "docs/dependencies.md has no single separator row to leave out"
+        text = text.replace(rows[0], "")
+    paras = [p for p in text.split("\n\n") if "**Memory:**" not in p]   # RSS, not a download
     total = services._size(services.speech_weights_total())
     typed = {m for p in paras for m in re.findall(r"about (\d+(?:\.\d+)? GB)", _flat(p))}
     assert typed, doc

@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""ears-mail - the keeper mails every finished turn of the user to its device's address.
+"""ears-mail - the keeper mails every finished turn of the user to the room's address.
 
 The keeper half of the pager genie: the keeper writes, and sessionmail's
 pager reads. What it reads is the finished turns.
 By default (--to device) each FINISHED turn is ONE
-mail To and From heard+<device>@<host>, which lands in the one
-`heard` box; a session hears a device by subscribing to that address, and the pager
-decides wake or ride from the headers. Every finished turn goes, addressed or
-not. The headers carry no X-: Ears-Kind, Ears-Rule, Ears-Seq,
+mail To and From heard+room@<host>, whatever input device the capture is
+following, and it lands in the one `heard` box. A session hears the room, on
+every device, by subscribing to that one address; the pager decides wake or ride
+from the headers. The device is named by the Ears-Device header, never by the
+address. While --device-copy is on (the default) the same send, one message with
+one Message-ID, also goes Cc heard+<device>@<host>, so a session subscribed to a
+device's address still hears that device's turns. Every finished turn goes,
+addressed or not. The headers carry no X-: Ears-Kind, Ears-Rule, Ears-Seq,
 Ears-Start, Ears-End, Ears-Source, Ears-Device, Ears-Speaker. Ears-Speaker is
 the turn's own `speaker` label as <label>@<host> when the capture named the turn
 (a split, or its partials' labels; speaker_of), else --speaker, unknown@<host> by default.
@@ -18,11 +22,13 @@ everyone"; reply, light and first entries ride (only call and everyone wake).
 Ears-Audio names the turn's kept WAV when the record has `audio` (recording
 on); with no `audio` there is no Ears-Audio header.
 <device> is device_slug(): airpods, macbook (the built-in mic), else the name
-in lower-case words joined by "-". NOT mailed: drafts and partials, the mouth's
+in lower-case words joined by "-". It names the Cc, and it is the gate: a turn
+with no slug is not mailed at all. --room names the room (default
+$EARS_MAIL_ROOM, else room); a device whose slug is the room's gets no Cc. NOT mailed: drafts and partials, the mouth's
 echo, empty turns, and a BlackHole device's turns (the call tap).
 A FINISHED turn of a Delta call (source call, device call:N) is mailed To
 calls+<bot>-<N>@<host>, the call's own box, with the headers Ears-Kind: turn,
-Ears-Seq, Call-Id and Call-Bot, never to heard+<device>; the box carries both
+Ears-Seq, Call-Id and Call-Bot, never to any heard+ address and with no Cc; the box carries both
 directions. The bot is learned from the call's call-ears.sock probe (a call whose
 bot no leg names is skipped, {"skip": "call-bot"}, said on stderr). --calls off
 skips call turns again ({"skip": "call"}); --calls-from sets the From.
@@ -30,9 +36,9 @@ Web legs (<sessionphone root>/web) are left to sessionphone web. --to seats is
 the pre-genie behaviour below (each matched turn To the seats it is for), kept
 until the genie is live.
 NEVER run --to seats and --to device for the same seat: a call would reach it
-twice. The device box's name is --sender ($EARS_MAIL_FROM, default
+twice. The box's name is --sender ($EARS_MAIL_FROM, default
 heard): `heard`, because ears+<device> would fall into the ears project's
-own box (the project's, not the device's).
+own box (the project's, not the device's). The room is its plus tag.
 sessionmail's reader trusts only its keeper's From (_voice.KEEPER), so
 the two names move together.
 
@@ -55,7 +61,7 @@ MTA, so a Mac with no postfix delivers through sessionmail's mail drop
 (SESSIONMAIL_SENDMAIL=drop). There is no fallback. $EARS_MAIL_MESSAGE names the
 command (tests and rigs point it at a fake), else `message` on PATH, resolved
 once at start; while it is missing it is looked for again at each send, so a
-`message` installed later is found with no restart. The send runs as the seat (SENDER, or SENDER+<device>), display
+`message` installed later is found with no restart. The send runs as the seat (SENDER, or SENDER+ROOM), display
 name Ears, with every inherited CLAUDE_SESSION_* and must-sign dropped: unsigned
 until a plus seat can hold a key; $EARS_MAIL_SIGNER_SOCK and _PUB, both set, sign.
 The send mints the Message-ID, and the fire log keeps the one it returned.
@@ -100,6 +106,13 @@ import argparse, difflib, glob, json, os, re, shlex, socket, subprocess, sys, ti
 import urllib.request
 from datetime import datetime
 
+# phone_roots.py sits beside this file (keeper/, or ears/_keeper/ in a wheel): where a Delta
+# bot keeps its call sockets, the rule keeper/call-ears shares. A loader that runs this
+# without its dir on sys.path (the tests) still finds it.
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import phone_roots  # noqa: E402  (keeper/ is not a package)
+
 DEFAULTS = {
     "openers": "hey|hay",            # whisper hears "hey" as hey or hay; "a" dropped
                                      # (finding 3.6: "a Bob thing" is no call;
@@ -115,6 +128,12 @@ DEFAULTS = {
     "again_window": 120,             # seconds back a say-again looks, like reply_window
 }
 SUBJECT_MAX = 69
+#: The room's plus tag: every finished mic turn goes To and From SENDER+ROOM,
+#: whatever input device the capture follows (--room, $EARS_MAIL_ROOM).
+ROOM = "room"
+ROOM_VAR = "EARS_MAIL_ROOM"
+#: One plus tag: lower-case letters, digits and "-", never "+", "/" or "@".
+_TAG = re.compile(r"[a-z0-9-]+")
 
 # -- the send: sessionmail's `message send`, never an MTA ----------
 #: The command turns go through: it takes `message send`'s arguments. Tests and
@@ -125,7 +144,7 @@ SEND_TIMEOUT_S = 30
 FROM_NAME = "Ears"
 #: The keeper's own key, when it holds one: both set, the send signs
 #: with them and must sign. Unset, the turn goes unsigned: a plus seat
-#: (heard+<device>) cannot hold a key yet.
+#: (heard+room) cannot hold a key yet.
 SIGNER_VARS = {"EARS_MAIL_SIGNER_SOCK": "CLAUDE_SESSION_AGENT_SOCK",
                "EARS_MAIL_SIGNER_PUB": "CLAUDE_SESSION_PUB"}
 #: Both spellings sessionmail reads for must-sign: a caller's value is dropped.
@@ -816,8 +835,9 @@ def run_again(argv, timeout=None):
 
 
 def device_slug(name):
-    """The plus part of a device's address, heard+<slug>@<host>, or
-    None for a device the keeper does not mail. The keeper names the device:
+    """The plus part of a device's address, heard+<slug>@<host> (the Cc a
+    room turn carries while --device-copy is on), or None for a device the
+    keeper does not mail at all: None is the gate. The keeper names the device:
     airpods for any AirPods input, macbook for the built-in mic, else the
     name's lower-case words joined by "-". A BlackHole input is the call tap,
     and a Delta call is delta+call<N>, not built here: None."""
@@ -934,9 +954,12 @@ def subject_of(text):
 
 
 def mail_for(rec, to, rules_hit, kind="spoken", his=None, rule=None, frm=None, speaker=None,
-             whole=True, cuts=()):
+             whole=True, cuts=(), cc=()):
     """HIS is the turn with the mouth's echo cut off; the whole turn follows it.
     TO is local parts; FRM the sender's local part (None: the keeper's own).
+    CC is local parts copied on the SAME send (a room turn's device address):
+    one message, one Message-ID, never a second send. Only a mail with a Cc
+    carries the "cc" key, so every other mail is unchanged.
     RULE is the Ears-Rule value; None keys RULES_HIT by seat (--to seats).
     WHOLE=False drops the "heard whole" copy: a device mail rides WHOLE into
     every subscriber, so the copy would double the carry.
@@ -950,6 +973,7 @@ def mail_for(rec, to, rules_hit, kind="spoken", his=None, rule=None, frm=None, s
         rule = ", ".join(f"{s}={r}" for s, r in sorted(rules_hit.items()))
     return {
         "to": sorted(to),
+        **({"cc": sorted(cc)} if cc else {}),
         "from": frm,
         "subject": subject_of(his) if kind == "spoken"
         else clean_subject(f"your line was cut: {rec.get('reason') or rec.get('cut_reason') or 'cut'}"),
@@ -975,14 +999,18 @@ def mail_for(rec, to, rules_hit, kind="spoken", his=None, rule=None, frm=None, s
 def build(m, sender, domain):
     """``message send``'s arguments for the ONE recipient in m["to"], the
     body on stdin. From is not an argument: it is the seat in child_env, which is
-    m["from"] (the device's address) or SENDER. The keeper mints no Message-ID:
+    m["from"] (the room's address) or SENDER. Each of m["cc"] is a --cc on
+    this same send, not another recipient: one send is one message with one
+    Message-ID. The keeper mints no Message-ID:
     the send mints one, and --json returns it. Every non-empty Ears-*
     is a --header; the fleet's senders carry only X-Task/X-Project, so the keeper
     writes its own."""
     if len(m["to"]) != 1:
         raise ValueError(f"one recipient per send, got {m['to']!r}")
-    a = ["send", f"{m['to'][0]}@{domain}", "-s", clean_subject(m["subject"]), "-f", "-",
-         "--raw", "--no-shorten", "--json"]
+    a = ["send", f"{m['to'][0]}@{domain}"]
+    for c in m.get("cc", ()):
+        a += ["--cc", f"{c}@{domain}"]
+    a += ["-s", clean_subject(m["subject"]), "-f", "-", "--raw", "--no-shorten", "--json"]
     for k, v in m["headers"].items():
         v = " ".join(str(v or "").split())     # one line per header: send refuses a break
         if v:
@@ -1124,37 +1152,28 @@ PROBE_TIMEOUT_S = 1.0         # as keeper/call-ears: a leg that never answers st
 
 
 def call_socks():
-    """Every Delta bot's ear-leg socket: a stdlib copy of ears.listen.sources.call_socks
+    """Every Delta bot's ear-leg socket: the keeper's twin of ears.listen.sources.call_socks
     (keeper/ imports nothing from src/; tests/test_call_sock_search.py holds the two
     equal). $EARS_CALL_SOCKS if it is set at all (colon-separated), else its old name;
-    else call-ears.sock in sessionphone's root ($SESSIONPHONE_ROOT, default
-    ~/.sessionphone) and in each ~/.<agent>/delta-chat, each [/<profile>]."""
+    else call-ears.sock in every bot root (phone_roots.bot_roots: sessionphone's root,
+    $SESSIONPHONE_ROOT alone or the new and old roots; $DC_ROOT; each ~/.<agent>/delta-chat),
+    each [/<profile>]."""
     env = os.environ.get("EARS_CALL_SOCKS", os.environ.get("VOICEMODE_CALL_EARS_SOCKS"))
     if env:
         return [p for p in env.split(":") if p]
-    out = set()
-    for root in call_roots():
-        out.update(glob.glob(os.path.join(glob.escape(root), "call-ears.sock")))
-        out.update(glob.glob(os.path.join(glob.escape(root), "*", "call-ears.sock")))
-    return sorted(out)
-
-
-def sessionphone_root():
-    home = os.path.expanduser("~")
-    return os.path.expanduser(os.environ.get("SESSIONPHONE_ROOT") or os.path.join(home, ".sessionphone"))
+    return phone_roots.bot_socks("call-ears.sock")
 
 
 def call_roots():
-    """sessionphone's root, then each agent's own ~/.<agent>/delta-chat (sources.bot_roots)."""
-    home = os.path.expanduser("~")
-    return [sessionphone_root()] + sorted(glob.glob(os.path.join(home, ".*", "delta-chat")))
+    """Every bot root, in search order (phone_roots.bot_roots, as sources.bot_roots)."""
+    return phone_roots.bot_roots()
 
 
 def web_leg(path):
-    """True for sessionphone web's leg, <sessionphone root>/web/call-ears.sock: it names no
-    Delta bot, and its own server already mails each web turn to its seat."""
-    return (os.path.normpath(os.path.dirname(path))
-            == os.path.normpath(os.path.join(sessionphone_root(), "web")))
+    """True for sessionphone web's leg, <phone root>/web/call-ears.sock at any of
+    sessionphone's roots: it names no Delta bot, and its own server already mails each
+    web turn to its seat."""
+    return phone_roots.web_leg(path)
 
 
 def bot_of(reply):
@@ -1296,7 +1315,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--rules", default=os.path.expanduser(f"~/{VOICE_SETTINGS}/wake.json"))
     ap.add_argument("--to", choices=("device", "seats"), default="device",
-                    help="device (default): every finished turn To and From SENDER+<device>@DOMAIN, "
+                    help="device (default): every finished turn To and From SENDER+ROOM@DOMAIN, "
+                         "Cc SENDER+<device>@DOMAIN while --device-copy is on: "
                          "the genie contract; seats: the pre-genie mail To each seat it is for. "
                          "Never both for one seat: it would get each call twice")
     ap.add_argument("--speaker", default=os.environ.get("EARS_SPEAKER", ""),
@@ -1311,8 +1331,16 @@ def main(argv=None):
     ap.add_argument("--state", help="keeps the place across restarts (no gaps, no replays)")
     ap.add_argument("--fire-log", help="append one JSON line per mail sent (who woke, on what)")
     ap.add_argument("--sender", default=os.environ.get("EARS_MAIL_FROM", "heard"),
-                    help="the keeper's box: device mail is To and From SENDER+<device>@DOMAIN "
+                    help="the keeper's box: a room turn is To and From SENDER+ROOM@DOMAIN "
                          "(default $EARS_MAIL_FROM, else heard)")
+    ap.add_argument("--room", default=os.environ.get(ROOM_VAR) or ROOM, metavar="TAG",
+                    help="the room's plus tag: every finished mic turn, on any input device, is "
+                         "To and From SENDER+TAG@DOMAIN (default $EARS_MAIL_ROOM, else room). "
+                         "One tag: lower-case letters, digits and -")
+    ap.add_argument("--device-copy", choices=("on", "off"), default="on",
+                    help="on (default): the same send also goes Cc SENDER+<device>@DOMAIN, so a "
+                         "session subscribed to a device's address keeps hearing that device; "
+                         "off: no Cc, the room's address only")
     ap.add_argument("--domain", default=os.environ.get("EARS_MAIL_DOMAIN", socket.gethostname().split(".")[0]),
                     help="the seats' doorbells are SEAT@DOMAIN (default: this host's short name)")
     ap.add_argument("--logdir", default=os.environ.get("EARS_HEARD_DIR"),
@@ -1335,6 +1363,8 @@ def main(argv=None):
     ap.add_argument("--calls-from", default="ears", metavar="LOCAL",
                     help="the call-box turn mail's From, LOCAL@DOMAIN (default ears)")
     a = ap.parse_args(argv)
+    if not _TAG.fullmatch(a.room):
+        ap.error(f"--room {a.room!r}: one plus tag, lower-case letters, digits and - only")
     speaker = a.speaker or f"unknown@{a.domain}"  # an unplaced voice is not the operator
     only = [s.strip() for s in a.seats.split(",") if s.strip()]
     rules = load_rules(a.rules, only)
@@ -1393,8 +1423,9 @@ def main(argv=None):
         for to in m["to"]:
             one = dict(m, to=[to])
             out = {"at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
-                   "seq": rec.get("seq"), "to": one["to"], "rule": m["headers"].get("Ears-Rule"),
-                   "subject": m["subject"]}
+                   "seq": rec.get("seq"), "to": one["to"],
+                   **({"cc": m["cc"]} if m.get("cc") else {}),   # the same send's copies
+                   "rule": m["headers"].get("Ears-Rule"), "subject": m["subject"]}
             if a.dry_run:
                 out["dry_run"] = True
                 out["mail"] = one
@@ -1411,7 +1442,9 @@ def main(argv=None):
                 with open(os.path.expanduser(a.fire_log), "a") as f:
                     f.write(line + "\n")
 
-    print(f"ears-mail: {'every finished turn To and From ' + a.sender + '+<device>@' + a.domain if a.to == 'device' else 'seats ' + ', '.join(sorted(mailto))}"
+    room_to = (f"every finished turn To and From {a.sender}+{a.room}@{a.domain}"
+               + (f", Cc {a.sender}+<device>@{a.domain}" if a.device_copy == "on" else ""))
+    print(f"ears-mail: {room_to if a.to == 'device' else 'seats ' + ', '.join(sorted(mailto))}"
           f" (names known: {', '.join(sorted(rules))}); logs {logdir}; "
           f"{'DRY RUN' if a.dry_run else 'From ' + a.sender}", file=sys.stderr, flush=True)
     if not a.dry_run:           # resolved once, to an absolute path
@@ -1495,16 +1528,21 @@ def main(argv=None):
                     continue
                 # who said HIS: never the seat whose echo was just cut out (heard_rec)
                 his_rec = heard_rec(rec, his, cuts)
-                if slug:                # EVERY finished turn of the user, To and From its device
+                if slug:                # EVERY finished turn of the user, To and From the room
                     hit = act(verdicts(his_rec, rules, room, his, began, kodi and kodi.playing),
                               rec, his)
                     if room.held:
                         skip("film", rec, seats=room.held["seats"], rules=room.held["rules"],
                              media=room.held["media"], mailed="without those rules")
-                    addr = f"{a.sender}+{slug}"   # the box's name is configuration
+                    # one address for the room, whatever device the capture follows; the
+                    # device is Ears-Device, and (while --device-copy is on) a Cc on
+                    # the same send, so its own address still hears it
+                    addr = f"{a.sender}+{a.room}"   # the box's name is configuration
+                    copy = f"{a.sender}+{slug}"
+                    cc = [copy] if a.device_copy == "on" and copy != addr else []
                     deliver(mail_for(rec, [addr], hit, his=his, rule=rule_header(hit, a.domain),
                                      frm=addr, speaker=speaker_of(his_rec, speaker, a.domain),
-                                     whole=False, cuts=cuts), rec)
+                                     whole=False, cuts=cuts, cc=cc), rec)
                     continue
                 hit = {s: r for s, r in verdicts(his_rec, rules, room, his, began,
                                                  kodi and kodi.playing).items() if s in mailto}

@@ -3,7 +3,8 @@
 A service whose launchctl bootstrap fails makes install exit 2, once every service has been
 tried, with one FAILED block on stderr naming each service, the install log and `ears
 services status`. Every real run appends what it printed, and what launchctl answered, to
-``<sessionvoice's home>/logs/install.log``, each line timestamped, and prints that path.
+``install.log`` in the voice log folder (``ears.home.log_dir``; it was ``<sessionvoice's
+home>/logs/install.log`` before EARS-483), each line timestamped, and prints that path.
 
 Every case runs inside test_services_install_checks' fence (a temp HOME, services._launchctl
 faked), plus a tripwire: a `launchctl` stub first on PATH that writes a sentinel and exits 99.
@@ -36,7 +37,7 @@ def tripwire(pinned, monkeypatch):
     stub.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
     _store(pinned["home"])
-    pinned["log"] = pinned["home"] / ".sessionvoice/logs/install.log"
+    pinned["log"] = services.LOGS / "install.log"   # the voice log folder (the fence: under HOME)
     yield pinned
     assert not sentinel.exists(), f"a real launchctl call escaped the seam: {sentinel.read_text()}"
 
@@ -202,11 +203,13 @@ def test_a_run_that_stops_mid_redraw_logs_that_line_plain(tripwire, monkeypatch,
 
 
 def _unwritable(tripwire):
-    """A FILE where the log's folder goes: mkdir fails, as on a host whose logs/ is not ours."""
-    logs = tripwire["log"].parent
-    logs.parent.mkdir(parents=True, exist_ok=True)
-    logs.write_text("not a folder")
-    return logs
+    """A FOLDER where the install log goes: opening it to append fails, as on a host whose
+    install.log is not ours. (Since EARS-483 the install log sits in the log folder the
+    services' own logs need, so that folder itself must stay writable.)"""
+    log = tripwire["log"]
+    log.mkdir(parents=True)
+    (log / "not-a-log").write_text("not a file")
+    return log
 
 
 WARNING = "ears services install: WARNING: the install log "
@@ -223,7 +226,7 @@ def test_an_unwritable_log_never_stops_the_install(tripwire, capsys):
         assert f"{n:6s} loaded  {services.AGENTS / (services._label(n) + '.plist')}" in cap.out
     assert "proof  speak to the agent" in cap.out
     assert "\nlog    " not in cap.out                         # no path for a log not written
-    assert logs.read_text() == "not a folder"
+    assert [p.name for p in logs.iterdir()] == ["not-a-log"]   # left exactly as it was
 
 
 def test_an_unwritable_log_leaves_a_failed_load_its_exit_2(tripwire, monkeypatch, capsys):

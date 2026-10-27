@@ -38,6 +38,16 @@ Which files and variables each part of sessionvoice reads:
   in `~/.sessionkit/voice/settings/`, and `.mouth.schema.json` beside the
   mouth's file (the same folder, unless `$MOUTH_SETTINGS` moves it).
   A settings screen can be drawn from them. Do not edit the copies.
+- **The copies follow an upgrade.** An upgrade replaces the schemas, not
+  the copies. `ears services schema` brings each copy up to date with the
+  schema this install ships, with no service reinstalled and no plist
+  touched. It compares their bytes: a copy that already matches is left
+  alone, and a different one is replaced whole. `--dry-run` says what it
+  would write. The keeper does the same once each time it starts, so a host
+  that skips the command is brought up to date at the keeper's next start.
+  The keeper runs without your shell's variables, so it brings up to date
+  the copies in `~/.sessionkit/voice/settings/`; run the command yourself
+  for copies a variable (`$EARS_CONF`, `$MOUTH_SETTINGS`) moves elsewhere.
 - **Notes for people.** In `ears.json` and `ears-sounds.json` a key that
   starts with `_` (such as `_about`) is a note, and the tools never read
   it. The schema refuses any other key; the tools ignore one.
@@ -94,8 +104,8 @@ no template, no `ears.d/` folder, and no agent, seat or session layer.
 
 For these keys the mouth asks the session, seat and agent layers first,
 over its file: `voice`, `volume`, `play_volume`, `music_duck`,
-`music_duck_level`, `music_duck_restore_s`, `normalize`, `normalize_lufs`
-and `lead_s`.
+`music_duck_level`, `music_duck_restore_s`, `normalize`, `normalize_lufs`,
+`lead_s` and `music_instrumental`.
 
 - **How it reads them:** one `session settings --json <session-id> mouth`
   run (sessiontools) when a line is queued, for the session in
@@ -111,6 +121,10 @@ and `lead_s`.
   no caller: it takes the file, then the built-in (for its voice, the
   player's `$MOUTH_VOICE` comes between them). The replayed rest of a cut
   line keeps what its first line was given.
+- **`music_instrumental` has a variable above the layers.** The caller's
+  `$MOUTH_MUSIC_INSTRUMENTAL` comes after the flag and before the session
+  layer, read each time a file is played. The player's own environment is
+  never read for it.
 - **The host's own folder is not read.** For values the mouth reads
   `mouth.json` and nothing beside it: no `mouth.d/*.json` and no template.
 - **A lock.** `_locked: ["voice"]` in the host file stops a caller's
@@ -189,6 +203,7 @@ agent, seat and session layers ([above](#the-mouth-reads-some-keys-from-the-laye
 | `music_duck` | boolean | `true` | On: a played file turns down while a line is spoken, or while you talk over it. `mouth duck` overrides it for a while; `mouth play --duck` or `--no-duck` wins over both. | yes |
 | `music_duck_level` | integer, 0-100 | `20` | A ducked file's level, as a share of its own. | yes |
 | `music_duck_restore_s` | number, 0 or more | `1.0` | Seconds of quiet before a ducked file comes back up. | yes |
+| `music_instrumental` | boolean | `true` | On: a played file plays its instrumental, the song without its vocals, when one has been made for it. Off: it plays as it is. `$MOUTH_MUSIC_INSTRUMENTAL` wins over it, and `mouth play --instrumental` or `--no-instrumental` wins over both. | yes |
 | `barge_in` | `"anyone"`, a list of names, or `{"room": ..., "call": ...}` | `"anyone"`: see [the differences](#where-the-schema-and-the-code-differ) | Whose words may cut a line. A list allows only the voices the speaker side-car names; an empty list lets nobody cut. | no |
 | `barge_words` | integer, 1 or more | `2` | How many of your own words cut a line you talk over. A stop word ("stop", "wait") cuts at once. It wins over `$MOUTH_BARGE_WORDS`; `mouth barge N\|off` and a line's own `--barge-words` win over it. | no |
 | `barge_duck_level` | integer, 0-100 | `25` | The level a line drops to the moment you start talking over it; `100` turns that off. `mouth barge --duck` wins for a while. | no |

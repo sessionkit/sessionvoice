@@ -144,7 +144,10 @@ def test_one_session_run_serves_voice_level_and_duck(home, monkeypatch):
     cascade(home, monkeypatch, "session", voice="session_voice", volume=70, music_duck=False)
     runs = []
     real = subprocess.run
-    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: runs.append(a) or real(*a, **kw))
+    # the session runs only: a play of a file with no instrumental also probes its
+    # duration (``ffmpeg -i``, the split decision, design.md s3), which is not a session run
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: (
+        a and a[0] and a[0][0] != "ffmpeg" and runs.append(a)) or real(*a, **kw))
     item = played(home)
     assert len(runs) == 1
     assert item["voice"] == "session_voice" and item["volume"] == 70 and item["duck"]["on"] is False

@@ -207,7 +207,7 @@ with its exact mail. To read the events:
     jq -c 'select(.event == "ears-deaf" or .event == "ears-hearing") | {ts, event, device, text}' \
       ~/.voicemode/logs/conversations/heard_$(date +%F).jsonl
 
-The keeper log, `~/Library/Logs/ears/ears-keeper.log`, has a
+The keeper log, `~/.sessionkit/voice/log/ears-keeper.log`, has a
 `DEAF (CHANNEL): CAUSE` line for each, and every step it took.
 
 **Remedy, by cause** (the word after `room:` or `speakers:` in the event):
@@ -234,8 +234,7 @@ every service, and the block at the end of its stderr names each one that did
 not load, with launchctl's reason.
 
 **Check.** Read the install log: the path is the run's `log` row,
-`<sessionvoice's home>/logs/install.log` (`~/.sessionvoice/logs/install.log`
-on a new host). Each run is one block, from its `=== ... ears services install`
+`~/.sessionkit/voice/log/install.log`. Each run is one block, from its `=== ... ears services install`
 header to its `=== ... rc N` footer. Its `launchctl bootstrap ... -> rc N`
 lines are launchctl's own answers. Then run `ears services status`, which says
 what is loaded now.
@@ -245,5 +244,5 @@ job had not gone yet; install already retried it once. Run `ears services
 install --only NAME` for each one named: NAME is the name in the block, but
 `sounds` for `ears-sounds` or `mouth-sounds` (`--only` takes the service,
 not its job). If it fails the same way, the
-service's own log in `~/Library/Logs/ears/` (`EARS_LOG_DIR` moves it) may say
+service's own log in `~/.sessionkit/voice/log/` (`EARS_LOG_DIR` moves it) may say
 why it would not start.

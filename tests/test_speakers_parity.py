@@ -232,11 +232,12 @@ def test_plist_runs_from_the_repo_with_its_own_log(tmp_path):
     model every start). RunAtLoad brings it back after a reboot or a login."""
     text = (ROOT / "launchd" / "dev.sessionkit.voice.ears-speakers.plist.in").read_text()
     for k, v in {"@HOME@": "/Users/x", "@EARS_REPO@": "/Users/x/ears",
-                 "@SPEAKER_PY@": "/Users/x/venv/bin/python", "@AGENT_REFS@": "dave"}.items():
+                 "@SPEAKER_PY@": "/Users/x/venv/bin/python", "@AGENT_REFS@": "dave",
+                 "@EARS_LOG_DIR@": "/Users/x/.sessionkit/voice/log"}.items():
         text = text.replace(k, v)
     pl = plistlib.loads(text.encode())
     assert pl["WorkingDirectory"] == "/Users/x/ears/speakers"
-    assert pl["StandardOutPath"] == pl["StandardErrorPath"] == "/Users/x/Library/Logs/ears/ears-speakers.log"
+    assert pl["StandardOutPath"] == pl["StandardErrorPath"] == "/Users/x/.sessionkit/voice/log/ears-speakers.log"
     assert pl["ThrottleInterval"] == 30 and pl["RunAtLoad"] is True
     assert "follow-capture" in text and "Replacing follow-capture" in text, \
         "the plist must point at the job it replaces (its old label is named in speakers/README.md only)"

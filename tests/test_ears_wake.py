@@ -112,9 +112,9 @@ def test_example_calls_its_seat(tmp_path):
     texts = TEXTS[:2] + ["Hey assistant, what's the latency?", "Hey assistance, are you there?"]
     m, _, rc = ears_mail(tmp_path, EXAMPLE, texts)
     assert rc == 0
-    assert rules_of(m) == [(1, ["heard+airpods"], ""), (2, ["heard+airpods"], ""),
-                           (3, ["heard+airpods"], "assistant@host1=call"),
-                           (4, ["heard+airpods"], "assistant@host1=call")]
+    assert rules_of(m) == [(1, ["heard+room"], ""), (2, ["heard+room"], ""),
+                           (3, ["heard+room"], "assistant@host1=call"),
+                           (4, ["heard+room"], "assistant@host1=call")]
 
 
 @pytest.mark.parametrize("rules", ["missing", "shipped"])
@@ -122,8 +122,8 @@ def test_no_seats_still_mails_every_turn_with_no_call(tmp_path, rules):
     path = tmp_path / "nowhere" / "wake.json" if rules == "missing" else SHIPPED
     m, err, rc = ears_mail(tmp_path, path, TEXTS)
     assert rc == 0, err
-    assert rules_of(m) == [(1, ["heard+airpods"], ""), (2, ["heard+airpods"], ""),
-                           (3, ["heard+airpods"], "")]
+    assert rules_of(m) == [(1, ["heard+room"], ""), (2, ["heard+room"], ""),
+                           (3, ["heard+room"], "")]
     assert f"no seats in {path}: no turn is a call; add one with: ears wake add <seat>" in err
     assert err.count("no seats in") == 1
 
@@ -141,10 +141,10 @@ def test_add_dave_with_sound_alikes_makes_hey_dav_a_call(tmp_path):
     assert json.loads(f.read_text()) == {"seats": {"dave": {"names": "dave|dav|days"}}}
     m, _, rc = ears_mail(tmp_path, f, TEXTS + ["Hey Days, and hey Ivy."])
     assert rc == 0
-    assert rules_of(m) == [(1, ["heard+airpods"], "dave@host1=call"),
-                           (2, ["heard+airpods"], "dave@host1=call"),
-                           (3, ["heard+airpods"], ""),          # Ivy is not on this host
-                           (4, ["heard+airpods"], "dave@host1=call")]
+    assert rules_of(m) == [(1, ["heard+room"], "dave@host1=call"),
+                           (2, ["heard+room"], "dave@host1=call"),
+                           (3, ["heard+room"], ""),          # Ivy is not on this host
+                           (4, ["heard+room"], "dave@host1=call")]
 
 
 @pytest.mark.parametrize("names", ["dav|days", "dave|dav|days", "dav|days|DAV|Dave", " dav | days "])

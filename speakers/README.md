@@ -40,7 +40,7 @@ It needs an Apple-silicon Mac (arm64) on macOS 14 or later, and `uv`.
 - **Status.** The `speakers` row reads `not installed`,
   `installed, not enrolled` (no reference yet, whether or not the job is
   loaded), `running, pid N` or `loaded, not running`. Log:
-  `~/Library/Logs/ears/ears-speakers.log`.
+  `~/.sessionkit/voice/log/ears-speakers.log`.
 - **Uninstall.** `uninstall --only speakers`, or a bare `ears services
   uninstall`, boots the job out and removes its plist. The references and the
   venv stay.
@@ -139,10 +139,9 @@ other 309.
   `calls/<stamp>-chat<C>-msg<N>/caller-call.wav` (16 kHz mono). It is the caller's voice:
   0600, never in git (`*.wav`). `run.sh` passes each as `--call-enroll`.
 - A heard line from `source: "call"` (`device: call:N`) is cut from that
-  call's `caller-call.wav` at `wav_s + t0 .. wav_s + t1`. A call dir from
-  an older sessionphone holds `mike-call.wav` instead: still read,
-  when there is no `caller-call.wav`. Neither: the row is `unheard`, and its
-  why names both. `wav_s` is where the
+  call's `caller-call.wav` at `wav_s + t0 .. wav_s + t1`. No
+  `caller-call.wav`: the row is `unheard`, and its why names it. A call dir
+  from before sessionphone's stem rename is not read. `wav_s` is where the
   capture's ear tap began in the wav, from the bot's `ear-taps.jsonl`
   (sessionphone `ready/feat/ear-tap-wav-offset`). The wall clock will not do:
   it drifted 2.0 s from the capture's audio in 21 minutes on that call.
@@ -167,7 +166,9 @@ From a checkout, the hand-made job is
 and load it. Install treats a render as hand-made (by its content, not its
 label: it is install's own label) and never runs beside it or overwrites it.
 Rendering it over the plist install wrote replaces install's job. Log:
-`~/Library/Logs/ears/ears-speakers.log`.
+`~/.sessionkit/voice/log/ears-speakers.log` (`EARS_LOG_DIR` moves it). A job
+loaded before the move keeps its old log path until it is re-rendered and
+reloaded, and its old log stays in `~/Library/Logs/`.
 
 By hand:
 
@@ -227,6 +228,45 @@ long as the lines stay at 0%. A line with any coverage, or a line from another
 device, starts the count again. Call-leg rows are not counted. `--deaf-lines 0`
 turns the reopen off. If reopening does not bring the audio back, the keeper
 counts the same rows and reports the speakers as deaf.
+
+A stream can also be covered and still hear nobody: blocks arrive, the line
+is covered, and the diarizer finds no speech in audio where the capture heard
+words. The row's `why` then reads `words in the line, no speech found in its
+audio`. Three such mic turns in a row (`SILENT_TURNS`) make the side-car log
+`mic: N covered turns with no speech: reopening <device>` and reopen the
+stream, under the same once-a-minute limit. Only a turn counts, because
+partials repeat its words. It needs 2 or more words, because the diarizer can
+miss a one-word reply. It must not be the mouth's own words (`mouth_utt`).
+A line with no words is no evidence, so a quiet room never counts. A line
+where speech was found starts the count again. `--deaf-lines 0` turns this
+reopen off too. The keeper reports what the reopen does not cure (below).
+
+Each block of audio is stamped with the moment it was taken, by the stream's
+own clock (PortAudio's `inputBufferAdcTime`), not the moment it arrived. A
+Bluetooth input can stall and then deliver what it held in a burst; with stream
+stamps, the burst's audio lands where it belongs. A host that gives no stream
+clock falls back to the arrival time, and then the burst piles onto one moment.
+Either way `cover` is the share of the line's span that has audio, and a moment
+claimed by two blocks counts once, so a burst cannot make a line look covered.
+
+A stall is a block that arrived more than 0.25 s later than due, or more than
+0.25 s later after its own audio ended than the stream's usual delay (the least
+it has shown; a steady Bluetooth latency is not a stall), or a hole of more
+than 0.25 s in the stream clock. The side-car logs stalls at most once every
+10 s, in one line per device:
+
+    mic: stalls on 'airpods': blocks=37 wait_max_s=1.00 late_max_s=0.98 lost_s=0.00 stamps=stream
+
+- `blocks`: how many blocks stalled since the last line.
+- `wait_max_s`: the longest time between two blocks.
+- `late_max_s`: the latest a block arrived after its audio ended, beyond the
+  stream's usual delay.
+- `lost_s`: the seconds of audio the stream clock says never arrived.
+- `stamps`: `stream`, or `arrival` when the stream had no clock. With
+  `arrival`, the late and lost figures cannot be measured and read 0.
+
+A steady stream logs no stall line. If AirPods rows still say `no speech found`
+and no stall lines appear, the stream is not stalling.
 
 ## Replacing follow-capture
 
@@ -341,7 +381,7 @@ Then check:
 - `launchctl print $U/dev.sessionkit.voice.ears-speakers` shows a pid and
   `state = running`.
 - `pgrep -lx ears-speakers` shows exactly one process.
-- `~/Library/Logs/ears/ears-speakers.log` has a `mic: open` line, and new
+- `~/.sessionkit/voice/log/ears-speakers.log` has a `mic: open` line, and new
   rows reach `speakers_$(date +%F).jsonl`.
 - macOS may ask for a mic grant for `bin/ears-speakers`. If it is denied, rows
   say `unheard`, `no signal`.

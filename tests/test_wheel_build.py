@@ -7,9 +7,10 @@ interpreter with no build isolation, so nothing is fetched. The build runs in a 
 sources under tmp_path, so the checkout gets no build/ or egg-info.
 
 The wheel must hold the three packages, the keeper's files, the speaker side-car, the
-speech lock, the settings schemas and talk's page (each the same bytes as the checkout's),
-no swift/ (an Apple helper builds from a checkout only), and a METADATA whose base
-Requires-Dist is numpy, pyyaml, httpx and sounddevice, with a smart-turn extra.
+speech lock, the settings schemas, the separator's runner and lock (EARS-212) and talk's page
+(each the same bytes as the checkout's), no swift/ (an Apple helper builds from a checkout
+only), and a METADATA whose base Requires-Dist is numpy, pyyaml, httpx and sounddevice, with a
+smart-turn extra, and no torch or demucs anywhere (the separator's venv is installed apart).
 """
 from __future__ import annotations
 
@@ -27,8 +28,10 @@ import pytest
 REPO = Path(__file__).resolve().parents[1]
 SRC = REPO / "src"
 KEEPER = ("ears-keeper.sh", "call-ears", "input-watch.swift", "ears-mail.py",
-          "ears-sounds.py", "mouth-sounds.py", "held_stream.py")   # the sounds agents: EARS-429
+          "ears-sounds.py", "mouth-sounds.py", "held_stream.py",   # the sounds agents: EARS-429
+          "phone_roots.py")                                     # call sockets: EARS-372
 SCHEMAS = ("ears.schema.json", "ears-sounds.schema.json", "mouth.schema.json")
+SEPARATOR = ("run.py", "requirements.lock")   # the split's runner and its venv's lock
 BASE = {"numpy", "pyyaml", "httpx", "sounddevice"}
 SMART_TURN = {"onnxruntime", "transformers"}
 
@@ -97,6 +100,7 @@ def test_every_module_in_src_is_in_the_wheel(names):
     ("ears/_speakers", _files(SRC / "ears" / "_speakers")),
     ("ears/_speech", _files(SRC / "ears" / "_speech")),
     ("ears/_settings", sorted(SCHEMAS)),
+    ("mouth/_separator", sorted(SEPARATOR)),
 ])
 def test_the_package_data_ships(names, pkg, expected):
     assert expected, f"{pkg} is empty in the checkout"
@@ -110,7 +114,7 @@ def test_talk_serves_its_page_and_manifest(names):
 
 def test_shipped_data_is_the_checkouts_bytes(wheel, names):
     # the symlinks under src/ears/_*/ are copied as files: the same bytes as what they point at
-    data = [n for n in names if re.match(r"ears/_(keeper|speakers|speech|settings)/", n)]
+    data = [n for n in names if re.match(r"ears/_(keeper|speakers|speech|settings)/|mouth/_separator/", n)]
     data += ["talk/index.html", "talk/manifest.json"]
     with zipfile.ZipFile(wheel) as z:
         for n in data:
@@ -133,6 +137,13 @@ def _requirement(line: str) -> tuple[str, str]:
 def test_the_base_requires_are_numpy_pyyaml_httpx_and_sounddevice(wheel):
     reqs = [_requirement(r) for r in _metadata(wheel).get_all("Requires-Dist")]
     assert {n for n, m in reqs if not m} == BASE
+
+
+def test_no_requirement_of_the_wheel_is_torch_or_demucs(wheel):
+    """The separator's venv pulls torch (about 1 GB): it is installed only when asked, never
+    by the wheel, in its base or in any extra."""
+    reqs = {n for n, _ in (_requirement(r) for r in _metadata(wheel).get_all("Requires-Dist"))}
+    assert reqs and not reqs & {"torch", "demucs", "torchaudio"}
 
 
 def test_the_smart_turn_extra_is_onnxruntime_and_transformers(wheel):

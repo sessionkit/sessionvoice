@@ -34,6 +34,10 @@ PY_COPIES = (
     "src/ears/heard.py",   # the heard hook's ears.json (EARS-362); stdlib-only, runs as a script
 )
 SH_COPY = "keeper/ears-keeper.sh"
+#: Not the voice settings folder: sessionphone's root, ~/.sessionkit/phone/state, which the
+#: call-socket search reads (keeper/phone_roots.py and its twin; test_call_sock_search.py),
+#: and the speaker side-car's stdlib copy for its web call dirs (test_speakers_call.py, EARS-486).
+PHONE_ROOT_COPIES = ("keeper/phone_roots.py", "src/ears/listen/sources.py", "speakers/speaker-sidecar2.py")
 #: Where code that reads a settings file could live.
 SCANNED = ("src", "bin", "keeper", "launchd", "settings", "shadow", "skills", "speakers",
            "view", "bench")
@@ -137,7 +141,15 @@ def test_every_copy_is_listed():
     Prose (a docstring's ``~/.sessionkit/...``, a template comment) is not code."""
     literal = re.compile(r"""["'](?:~/|\$HOME/|@HOME@/)?\.sessionkit\b""")
     named = {path for path, text in _scanned() if literal.search(text)}
-    assert named == {"src/ears/home.py", SH_COPY, *PY_COPIES}
+    assert named == {"src/ears/home.py", SH_COPY, *PY_COPIES, *PHONE_ROOT_COPIES}
+
+
+@pytest.mark.parametrize("path", PHONE_ROOT_COPIES)
+def test_the_phone_root_copies_spell_phones_root_not_voice_settings(path):
+    """A listed phone-root copy names .sessionkit only as phone's state root."""
+    text = (ROOT / path).read_text()
+    assert '".sessionkit", "phone", "state"' in text
+    assert str(SHAPE) not in text and '"voice"' not in text
 
 
 def _repo_files():

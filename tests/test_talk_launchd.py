@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from ears.home import LOG
+
 REPO = Path(__file__).resolve().parent.parent
 TEMPLATE = REPO / "launchd" / "dev.sessionkit.voice.talk.plist.in"
 LABEL = "dev.sessionkit.voice.talk"
@@ -56,7 +58,7 @@ def test_header_render_gives_a_plist_with_no_placeholder_left(tmp_path):
     assert plist["Label"] == LABEL
     assert plist["ProgramArguments"][0] == str(talk)
     assert plist["EnvironmentVariables"]["HOME"] == str(home)
-    assert plist["StandardOutPath"] == str(home) + "/Library/Logs/ears/talk.log"  # G21
+    assert plist["StandardOutPath"] == f"{home}/{LOG}/talk.log"  # G21; ears.home.log_dir (EARS-483)
 
 
 def test_runs_talk_serve_on_loopback_only(tmp_path):
@@ -68,14 +70,15 @@ def test_runs_talk_serve_on_loopback_only(tmp_path):
 
 
 def test_every_placeholder_is_filled_by_the_header_line():
-    """@HOME@ is the renderer's own default; every other placeholder the header line sets."""
+    """@HOME@ and @EARS_LOG_DIR@ (ears.home.log_dir) are the renderer's own defaults; every
+    other placeholder the header line sets."""
     body = TEMPLATE.read_text()
     body = body[body.index("<plist"):]
     used = set(re.findall(r"@([A-Z_]+)@", body))
     cmd = header_render_command()
     assert "bin/render-plist" in cmd and "sed " not in cmd
     filled = set(re.findall(r"(?:^|\s)([A-Z_]+)=", cmd))
-    assert used and used - {"HOME"} == filled == {"TALK"}
+    assert used and used - {"HOME", "EARS_LOG_DIR"} == filled == {"TALK"}
 
 
 def test_no_user_specific_path():

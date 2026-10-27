@@ -187,8 +187,8 @@ aside, or load it on purpose, before you install.
 A heard line alone proves only the keeper. The proof is the whole loop:
 
 1. `mouth say "the voice labels moved"`: you hear it.
-2. Answer it out loud: the agent that subscribes to your `heard+<device>`
-   address wakes and answers.
+2. Answer it out loud: the agent that subscribes to `heard+room` wakes
+   and answers.
 
 ## Not moved
 

@@ -26,6 +26,7 @@ on this page is opt-in. Talk loads no model at all.
 | [Whisper][whisper-whispercpp] | ears | whisper.cpp `:2022` | no |
 | [WebRTC VAD][webrtc-vad] | ears | in process (CPU) | no |
 | [Apple `say` voices][apple-say-voices] | mouth | macOS `say` | no server |
+| [HTDemucs][htdemucs] | mouth (`mouth split`) | separator venv (CPU) | no, `mouth split --install` |
 
 The call ears (`keeper/call-ears`) and `bin/call-tap` use the same models
 as the room's ears: they run the same capture, with the same flags, on a
@@ -610,6 +611,66 @@ The URL, model and voice above are placeholders. Use your provider's.
   Apple voice, and the system voice if not.
 - **Licence:** part of macOS, under Apple's terms.
 
+## HTDemucs
+
+- **Model:** `htdemucs`, Demucs's hybrid transformer model, one file:
+  [`955717e8.safetensors`][htdemucs-hub] from the Hugging Face repo
+  `adefossez/HTDemucs`.
+- **Used by:** the mouth. `mouth split FILE` separates a song into its four
+  stems (vocals, drums, bass, other) and its instrumental, the song without
+  its vocals, in the file's [sidecar](sidecar.md). `mouth play` plays the
+  instrumental by default, and `mouth play --stem` plays stems.
+- **Served:** in a child process on the CPU, run at a lower priority, in the
+  separator's own venv (`~/.local/share/ears/separator/venv`;
+  `MOUTH_SEPARATOR_HOME` moves the home). Neither the sessionvoice package
+  nor the speech server has it. The play path never imports torch.
+  - `mouth split --install` builds that venv with uv (Python 3.12) from the
+    shipped `separator/requirements.lock`, installed with
+    `--require-hashes`: demucs 4.1.0 and torch 2.14.1, the speech venv's
+    torch, plus numpy and soundfile. Every pin is a wheel. It needs no
+    ffmpeg and no torchaudio.
+  - Install refuses unless the Mac is Apple silicon (arm64) on macOS 14 or
+    later. `--dry-run` prints the plan and the sizes and does nothing.
+  - `MOUTH_SEPARATOR` names a command run in place of the installed runner.
+- **Default, and what changes it:** off until installed. Only `mouth split
+  --install` installs it; `ears services install` never does. Once it is
+  installed, `mouth.music_instrumental` (on by default) makes a song's first
+  play start a split; `false`, or `mouth play --no-instrumental`, plays the
+  file as it is and starts none.
+- **The pin.** The model and its revision are hard-coded (`MODEL` in
+  `src/mouth/separator.py`), and no setting changes them:
+  - revision `cbc8a9b1a87023b7fd74e7b3412e6321c0eab003`, a commit, never a
+    branch;
+  - 84,025,440 bytes, SHA-256
+    `d9fa14133cfcc034a6758923bb3a8ca9f8dfd0b582134643bbf83f72c17576dd`,
+    the same digest the hub publishes for the file;
+  - the class its metadata names, `demucs.htdemucs.HTDemucs`.
+
+  Install downloads the file at that revision to a temporary name, checks
+  its size, its full SHA-256 and that class, and only then renames it into
+  place. A file that fails any check is removed, and the install is refused.
+  The pin is what makes the file safe to load: Demucs's loader builds the
+  class the file's metadata names. A split never fetches. It loads only the
+  checked file, by path, never through the hub.
+- **Why this file, not the older `.th` checkpoint:** its full SHA-256 is
+  published by the hub, so the pin is checked against a source other than
+  our own download; it is never unpickled; and it needs no other file.
+- **Size:** 84 MB (84,025,440 bytes). The venv is about 1 GB, mostly torch.
+- **RAM:** the split's peak memory footprint, measured with
+  `/usr/bin/time -l` on one Apple-silicon Mac, on the CPU: about 2 GB for
+  a 1-minute file, 4.5 GB for a 10-minute one and 7.3 GB for a 20-minute
+  one. Most of it is Demucs's own while the model runs, about 3 GB for 10
+  minutes and 5 GB for 20. The four stems are float 32-bit samples, about
+  1.7 GB for 20 minutes, and the runner holds them once: it puts the mix's
+  level back on them in place. That is why a play never splits a file over
+  10 minutes on its own; `--instrumental` splits a longer one.
+- **Speed:** about 0.15 s of CPU time per second of audio on one Apple-silicon
+  Mac; the mouth assumes 0.4 until it has measured its own host.
+- **Licence:** the demucs package, the code that loads and runs the model, is
+  MIT (its PyPI metadata). The model card of `adefossez/HTDemucs` states no
+  licence for the weights, and the repo is not gated. sessionvoice ships no
+  weights: each install fetches the file from the hub.
+
 ## Only for `ears eval`
 
 `ears eval` compares speech-to-text engines on the same audio. It is a
@@ -665,6 +726,8 @@ anyone has asked it for.
   `mlx-community/whisper-large-v3-turbo`.
 
 [parakeet-tdt-06b-v3]: #parakeet-tdt-06b-v3
+[htdemucs]: #htdemucs
+[htdemucs-hub]: https://huggingface.co/adefossez/HTDemucs
 [silero-vad]: #silero-vad
 [kokoro-82m]: #kokoro-82m
 [nemotron-3-diarization]: #nemotron-3-diarization

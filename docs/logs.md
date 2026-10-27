@@ -5,9 +5,11 @@ questions are answered by the heard log: one JSON line for each thing the
 ears heard or the mouth said, in
 `<home>/logs/conversations/heard_YYYY-MM-DD.jsonl`, where `<home>` is
 sessionvoice's home ([below](#sessionvoices-home)). The services keep
-their own logs in `~/Library/Logs/ears/`. In 0.1.0 those were split between
+their own logs in `~/.sessionkit/voice/log/`, beside the settings
+(`EARS_LOG_DIR` moves it). In 0.1.0 those were split between
 `~/Library/Logs/ears/` and `~/Library/Logs/failmode/`; master puts them all
-in one folder. Everything here was read from the code at master `138484c`,
+in one folder, and a move from `~/Library/Logs/` left the old files where they
+were ([below](#what-010-does-differently)). Everything here was read from the code at master `138484c`,
 and each `file:line` cited is a line at that commit.
 
 ## Where each thing is logged
@@ -23,7 +25,7 @@ and each `file:line` cited is a line at that commit.
 - **Which turn mails were sent, and which were skipped:**
   `ears-mail.fire.jsonl` (sent) and `ears-mail.log` (sent and skipped).
 - **What the mouth's player did** (barge and duck records):
-  `ears-mouth.log`, or `player.log` in the mouth's folder.
+  `ears-mouth.log`, or `player.log` in the same log folder.
 - **The user's audio when a reply went unheard:** the missed-reply clips are WAV
   files, not a log, and they are kept only while recording is on (off by
   default: [ears.md](ears.md#recording)). When a mouth line ends and no turn
@@ -69,9 +71,9 @@ jq -c 'select(.kind == "event") | {seq, event, device}' "$LOG" | tail
 
 ### sessionvoice's home
 
-The heard log, `heard.lock`, the speakers rows, the install log
-(`logs/install.log`), the mouth's folder (`mouth/`), talk's token (`talk/`) and
-the ears' state (`state/`) all live under one root, sessionvoice's home. `src/ears/home.py` finds it, in this order:
+The heard log, `heard.lock`, the speakers rows, the mouth's folder (`mouth/`), talk's token (`talk/`) and
+the ears' state (`state/`) all live under one root, sessionvoice's home. The logs are not under it: they have their own folder,
+`~/.sessionkit/voice/log/`. `src/ears/home.py` finds the home, in this order:
 
 1. `$SESSIONVOICE_HOME`, if it is set.
 2. `$VOICEMODE_BASE_DIR`, if it is set. This is the old name, and it is
@@ -232,6 +234,13 @@ What the user said, once the detector decided they had finished
   on, and it runs later STT calls on a fresh worker.
   `redecode_wait_s` and `speculative` say how long the turn waited for its
   decode, and whether that decode was started early.
+  `head: "spliced"` marks a re-decode that had lost the turn's first words:
+  its opening words (three, or all of them if it has fewer, compared
+  lowercased with punctuation stripped) were found in the joined partials
+  after their first word, so the joined words before them were put back in
+  front of it. `head_words` holds the words put back. `text_from` stays
+  `redecode`. Without `head`, nothing was put back
+  (`restored_head` in `src/ears/listen/loop.py`).
 - With `--speaker-split`: `speaker` is who said it, `split:
   "speaker-change"` marks a turn cut where another speaker took over, and
   `opened_by: "speaker-change"` marks the turn opened by that cut
@@ -281,6 +290,13 @@ Written at the line's first audio frame, like a partial
   `requested_ts`, `mail_id`, `file`, `start`, `end`, `hold`, `interest`,
   `resume_of`, `again_of` (a say-again replay: the utt it replays),
   `expires_t`, `volume`, `volume_from`, `in_reply_to` and `call_id`.
+- A played file's own, each dropped when it has none: `source_file` (the
+  file asked for, when its instrumental or a stem played in its place;
+  `file` is then what played), `instrumental_from` (the layer that turned
+  the instrumental on or off: `flag`, `env`, `session`, `seat`, `agent`,
+  `settings`, `mail` or `builtin`), `stem` (the names `mouth play --stem`
+  asked for) and `split` (for a play that waited on its file's split: what
+  the split came to). See [mouth.md](mouth.md#play-music-or-a-sound).
 - At the start: `speed`, `gen_s` (time to the first audio), `prefetched`,
   `lead_s` and `lead_from` (the buffer before it played), `held_s`,
   `pan_ignored`, and `level` (the voice's loudness levelling).
@@ -306,8 +322,11 @@ cut, where and why.
   word), and `audio` (the kept WAV).
 - `reason`: `done` when it played to the end. Otherwise it is the stop's
   reason (`stop`, `barge-in` and others), or `device-lost`,
-  `device-absent`, `error`, `expired`, `stale`, `lost` or `amended`.
-  `detail` holds the error text. `amended` closes a line the player took
+  `device-absent`, `open-failed`, `error`, `expired`, `stale`, `lost` or
+  `amended`. `detail` holds the error text. `device-absent` means the device
+  (or PortAudio) was not there; `open-failed` means it was there but refused
+  to open, and `detail` carries the audio system's words, such as
+  `PortAudioError: ... Invalid number of channels [-9998]`. `amended` closes a line the player took
   but cut before its first frame, because `mouth amend` replaced it.
   Its replacement keeps the same `utt`, so that `utt` gets a
   second `said`, the replacement's own.
@@ -457,10 +476,12 @@ as the default, `mic`:
   capture's heartbeats in a row had `peak` 0: `text` reads
   `room: zeros: 4 beats of peak 0`) and `lid` (the target is the built-in
   mic and the lid is shut: `text` reads `room: lid: shut`, and `device` is
-  the built-in). The `speakers` channel's one cause is `cover` (20 of the
+  the built-in). The `speakers` channel's causes are `cover` (20 of the
   side-car's mic rows in a row had 0% of their line covered: `text` reads
-  `speakers: cover: 20`). It is muted while the room is DEAF or no room
-  capture runs.
+  `speakers: cover: 20`) and `speech` (6 of its covered mic turns in a row
+  had 2 or more words heard by the capture and no speech found by the
+  side-car: `text` reads `speakers: speech: 6`). They are muted while the
+  room is DEAF or no room capture runs.
 - `ears-hearing` (`ears-keeper.sh:521`): the episode's last cause
   cleared. `device`, and `text` reads
   `CHANNEL: hearing again, was CAUSE for DURATION`, for example
@@ -490,14 +511,18 @@ repo writes either.
 
 ## The log files
 
-Paths are master's. `EARS_LOG_DIR` moves `~/Library/Logs/ears`, for
-`ears services` and the keeper alike.
+Paths are master's. Every log below is in `~/.sessionkit/voice/log/` unless
+its entry says otherwise. `EARS_LOG_DIR` moves that folder, for `ears services`,
+the keeper, the mouth's player and the sound agents alike. Nothing copies,
+moves or deletes the old files in `~/Library/Logs/`; `ears services status`
+prints the folder, and one line pointing at it while the old folders still hold
+a file.
 
 - **`heard_YYYY-MM-DD.jsonl`** in `<home>/logs/conversations/`
   ([sessionvoice's home](#sessionvoices-home); `~/.voicemode` in 0.1.0). Writer: `src/ears/heard.py:87-89`, `214-217`. It shows the heard log
   above. The same in 0.1.0.
-- **`install.log`** in `<home>/logs/`
-  ([sessionvoice's home](#sessionvoices-home)). Writer: `ears services
+- **`install.log`** in `~/.sessionkit/voice/log/` (it was `<home>/logs/install.log`
+  before). Writer: `ears services
   install` (`src/ears/services.py`, `install_log_path`). Every real run
   appends to it: a `=== <time> ears services install <services>` header, one
   line for each line the run printed (`<time> stdout ...` or `<time> stderr
@@ -511,7 +536,7 @@ Paths are master's. `EARS_LOG_DIR` moves `~/Library/Logs/ears`, for
   cannot be made or written, install prints one `WARNING` line naming it, and
   goes on unlogged with no `log` row; the exit code is the services' alone.
 - **`speakers_YYYY-MM-DD.jsonl`**, beside the heard log. Writer: the
-  speakers side-car, `speakers/speaker-sidecar2.py:281` (its installed copy
+  speakers side-car, `speakers/speaker-sidecar2.py:363` (its installed copy
   is `src/ears/_speakers/`). One line per heard line that names who spoke:
   `seq`, `kind`, `speaker` (a name, `other`, `mixed`, `silent` or
   `unheard`), `fracs`, `speech_s`, `t0`, `t1`, `by`, `at` and `v: 2`.
@@ -525,7 +550,10 @@ Paths are master's. `EARS_LOG_DIR` moves `~/Library/Logs/ears`, for
   `speaker_by: "mouth"` (within `v: 2`).
   It is read by the ride-along (`src/ears/heard.py:596`), by
   `--speaker-split`, and by the keeper, which counts the mic rows (no
-  `leg`) with 0% of their line covered (see `ears-deaf` above).
+  `leg`) with 0% of their line covered, and the covered mic turns whose
+  `why` starts `words in the line, no speech found` (see `ears-deaf` above).
+  No field was added for that: the keeper reads `kind`, `text`, `why` and
+  `mouth_utt`.
   The keeper reads a row's `cover` field first: a number, and 0 or less
   is 0% covered. A row without it, from an older side-car that does not
   write it, is read by its `why`: one ending `(0% of the line covered)` counts, and
@@ -533,7 +561,7 @@ Paths are master's. `EARS_LOG_DIR` moves `~/Library/Logs/ears`, for
   row is passed over. The file is written only where the speakers
   service runs.
   `ears services install` loads it only when asked (`--only`).
-- **`ears-keeper.log`** in `~/Library/Logs/ears/`. Writer: the keeper's
+- **`ears-keeper.log`** in `~/.sessionkit/voice/log/`. Writer: the keeper's
   launch agent, as stdout and stderr (`src/ears/services.py:717`), or the
   hand template (`launchd/dev.sessionkit.voice.ears-keeper.plist.in:54`). It shows
   one `HH:MM:SS` line per keeper event (`keeper/ears-keeper.sh:292`): an
@@ -605,7 +633,7 @@ Paths are master's. `EARS_LOG_DIR` moves `~/Library/Logs/ears`, for
   `${XDG_STATE_HOME:-~/.local/state}/ears/call-ears/`, or `CALL_EARS_DIR`.
   Writer: `keeper/call-ears:108`, with the folder set at `call-ears:28`. It
   shows the call ear's capture output for call `N`.
-- **`ears-mail.log`** in `~/Library/Logs/ears/`. Writer: the turn-mail
+- **`ears-mail.log`** in `~/.sessionkit/voice/log/`. Writer: the turn-mail
   launch agent, as stdout and stderr (`src/ears/services.py:717`, or
   `launchd/dev.sessionkit.voice.ears-mail.plist.in:84`). It shows a start banner,
   one JSON line per mail sent, and one `{"skip": WHY, "seq": N}` line per
@@ -625,34 +653,36 @@ Paths are master's. `EARS_LOG_DIR` moves `~/Library/Logs/ears`, for
   `timeout`, with `timeout_s`), would not start (`not run`) or had nothing
   to replay (`exit 3`, with its `err`). That turn's
   mail then carries `call` instead of `again`.
-- **`ears-mail.fire.jsonl`** in `~/Library/Logs/ears/`. Writer:
+- **`ears-mail.fire.jsonl`** in `~/.sessionkit/voice/log/`. Writer:
   `deliver()` in `keeper/ears-mail.py`, given as `--fire-log`
   (`spec("mail")` in `src/ears/services.py`). It shows one line per mail
   sent: `at`, `seq`, `to`, `rule`, `subject`, `exit`, `id`, and `err` if it
   failed. A call-box mail is a row To `calls+<bot>-<N>` with a null `rule`. A
   `rule` entry `<seat>@<host>=again` is a say-again the mouth replayed:
   it woke nobody. One the mouth could not replay is written `=call` instead.
-- **`ears-mouth.log`** in `~/Library/Logs/ears/`. Writer: the `mouth mail`
+- **`ears-mouth.log`** in `~/.sessionkit/voice/log/`. Writer: the `mouth mail`
   launch agent, as stdout and stderr (`src/ears/services.py:717`). The
   player runs inside it and prints its records there: `kind: barge`
   decisions and duck records (`src/mouth/player.py:259-266`), and one line
   per drop notice (`src/mouth/notice.py:542`).
-- **`player.log`** in the mouth's folder, `$MOUTH_DIR`, by default
-  `<home>/mouth/` (`src/mouth/paths.py`; `~/.voicemode/mouth/` in 0.1.0). Writer: a player that
+- **`player.log`** and **`split.log`** in `~/.sessionkit/voice/log/` (they were
+  in the mouth's folder, `$MOUTH_DIR`, by default `<home>/mouth/`, and its
+  `splits/`; `~/.voicemode/mouth/` in 0.1.0). The mouth's other records, locks
+  and speed stay in the mouth's folder. `player.log`'s writer: a player that
   `mouth say` started because none was running (`src/mouth/__init__.py:72`).
   It shows the same records as `ears-mouth.log`.
-- **`ears-stt.log`** and **`ears-speakers.log`** in `~/Library/Logs/ears/`.
+- **`ears-stt.log`** and **`ears-speakers.log`** in `~/.sessionkit/voice/log/`.
   Writer: the opt-in `stt` and `speakers` launch agents
   (`src/ears/services.py:717`). The side-car started by hand logs to
   `speakers.log` in its home (`speakers/run.sh:78`).
-- **`ears-speech.log`** in `~/Library/Logs/ears/`, and mlx-audio's own logs
-  in `~/Library/Logs/ears/mlx-audio/` (its `--log-dir`,
+- **`ears-speech.log`** in `~/.sessionkit/voice/log/`, and mlx-audio's own logs
+  in `~/.sessionkit/voice/log/mlx-audio/` (its `--log-dir`,
   `src/ears/services.py:712`). Writer: the speech server's launch agent,
   `dev.sessionkit.voice.mlx-audio`, only when `ears services install` installed
   it. A server sessionvoice found already running logs where its own
   installer put it.
 - **`ears-sounds.jsonl`** and **`mouth-sounds.jsonl`** in
-  `~/Library/Logs/ears/`, one line per sound played. Writers:
+  `~/.sessionkit/voice/log/`, one line per sound played. Writers:
   `keeper/ears-sounds.py:80` and `keeper/mouth-sounds.py:74`. Their agents'
   own output goes to `ears-sounds.log` and `mouth-sounds.log`, and the talk
   page's to `talk.log`. All three are hand templates in `launchd/`, not
@@ -668,13 +698,19 @@ Paths are master's. `EARS_LOG_DIR` moves `~/Library/Logs/ears`, for
   defaulted its own `LOGDIR` to `~/Library/Logs/failmode`, and `ears
   services` did not pass `EARS_LOG_DIR` to it. So `ears-keeper-capture.log`
   and `ears-keeper-calls.log` landed in `~/Library/Logs/failmode`. Master
-  defaults both to `~/Library/Logs/ears` (`keeper/ears-keeper.sh:96`) and
+  defaults both to `~/.sessionkit/voice/log` (`keeper/ears-keeper.sh`) and
   passes `EARS_LOG_DIR` to the keeper (`src/ears/services.py:692`).
 - **The turn mail and the sounds.** 0.1.0's `ears services` had no `mail`
   or `speakers` agent. The hand templates wrote `ears-mail.log`,
   `ears-mail.fire.jsonl`, `ears-speakers.log`, `ears-sounds.jsonl` and
   `mouth-sounds.jsonl` to `~/Library/Logs/failmode`. At master all of them
-  are in `~/Library/Logs/ears`.
+  are in `~/.sessionkit/voice/log`. The exceptions are the two hand jobs,
+  a hand-made launch job for the speakers and `dev.voicemode.ears-sounds`:
+  their logs stay in an older log folder until each is given its own GO.
+- **The move out of `~/Library/Logs/`.** Master writes every log to
+  `~/.sessionkit/voice/log/`. The old files in `~/Library/Logs/ears` and in
+  an older log folder are left in place, never deleted; read them there
+  for anything written before the move.
 - **The call ears' folder** was `~/.<agent>/call-ears`, under the agent's
   own dot-folder. It is now
   `${XDG_STATE_HOME:-~/.local/state}/ears/call-ears`.

@@ -17,6 +17,9 @@ variable NAME, then a default:
   BASH       the first bash on PATH
   RULES      @HOME@/.sessionkit/voice/settings/wake.json, the user file ears-mail reads
              by default (the repo's keeper/defaults/wake.json ships no seats)
+  EARS_LOG_DIR  the voice log folder for @HOME@, asked of the ONE resolver,
+             ears.home.log_dir (this repo's src/ears/home.py, loaded by its path): every
+             StandardOutPath, StandardErrorPath and log flag in the templates
 Anything else (SPEAKER_PY, AGENT_REFS, TALK) has no default: pass --set. TALK, the
 installed `talk`, is never looked up on PATH: macOS ships an unrelated /usr/bin/talk. A template
 with a placeholder left unfilled is refused (exit 2), and so is a result that does not
@@ -37,6 +40,10 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 
 REPO = Path(__file__).resolve().parents[1]
+#: The ONE resolver of the voice log folder, loaded by its path (stdlib only, no package
+#: import). No copy of the folder lives here: without the file, @EARS_LOG_DIR@ has no
+#: default, and a template that names it is refused unless --set or the env fills it.
+HOME_PY = REPO / "src" / "ears" / "home.py"
 #: The voice settings folder under HOME: a copy of ears.home.SETTINGS (stdlib only, this
 #: imports nothing from src/; tests/test_settings_dir.py holds the copy to it).
 VOICE_SETTINGS = ".sessionkit/voice/settings"
@@ -44,16 +51,32 @@ PLACEHOLDER = re.compile(r"@([A-Z][A-Z0-9_]*)@")
 COMMENT = re.compile(r"(<!--.*?-->)", re.S)  # one group: re.split keeps them
 
 
+def log_dir(home):
+    """ears.home.log_dir() for HOME (the env's EARS_LOG_DIR is a placeholder value of its
+    own, read before any default), or None when this repo has no src/ears/home.py."""
+    if not HOME_PY.is_file():
+        return None
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_voice_home", HOME_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return str(mod.log_dir(environ={}, home=home))
+
+
 def defaults(get):
     repo = get("EARS_REPO") or str(REPO)
     home = get("HOME") or str(Path.home())
-    return {
+    d = {
         "HOME": home,
         "EARS_REPO": repo,
         "PYTHON": f"{repo}/.venv/bin/python",
         "BASH": shutil.which("bash") or "/bin/bash",
         "RULES": f"{home}/{VOICE_SETTINGS}/wake.json",
     }
+    logs = log_dir(home)
+    if logs:
+        d["EARS_LOG_DIR"] = logs
+    return d
 
 
 def render(text, sets, env=os.environ):

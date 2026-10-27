@@ -6,7 +6,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Talk">
-<link rel="manifest" href="manifest.json">
+<!-- A browser fetches the manifest without cookies unless told to; behind the kit's front door
+     (a login cookie) that fetch would be sent to the login page. Same origin, so harmless alone. -->
+<link rel="manifest" href="manifest.json" crossorigin="use-credentials">
 <title>Talk</title>
 <style>
   /* Settings' tokens, so Talk sits in the same family as Home and Settings */

@@ -1,6 +1,6 @@
 [project]
 name = "sessionvoice"
-version = "0.3.1"
+version = "0.3.2"
 description = "One listening engine for coding agents and the Delta bot: Apple / Nemotron / whisper -> one event stream -> VAD -> turns"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -44,6 +44,12 @@ ears = "ears.cli:main"
 ears-serve = "ears.serve:main"
 mouth = "mouth.__main__:main"
 talk = "talk.cli:main"
+# the kit's web front door asks it for Talk's room: `sessionvoice-web web-room`, src/talk/web.py
+sessionvoice-web = "talk.web:main"
+
+# the same room, for a front door installed in this environment: it loads and calls room()
+[project.entry-points."sessionkit.web"]
+talk = "talk.web:room"
 
 [dependency-groups]
 # what `make test` runs on: `uv sync` installs this group by default. The capture
@@ -64,8 +70,9 @@ where = ["src"]
 [tool.setuptools.package-data]
 # What the keeper agent runs, shipped so `ears services install` from a wheel points it at a
 # real script: the keeper, its call ears (a child) and the input watcher it
-# builds, and the turn mailer the mail agent runs (stdlib only, nothing beside it). The sounds
+# builds, and the turn mailer the mail agent runs (stdlib only). The sounds
 # agents' two watchers, and held_stream.py, which ears-sounds.py imports from beside itself.
+# phone_roots.py: where a Delta bot keeps its call sockets, imported by call-ears and ears-mail.py.
 # src/ears/_keeper/ holds symlinks into keeper/; the build copies the files.
 # The speaker side-car: run.sh, the side-car, the enrol's cluster-room.py and
 # make-refs.py, and the service venv's requirements.lock; src/ears/_speakers/ links into
@@ -76,7 +83,12 @@ where = ["src"]
 # Apple helper from a source checkout only, and refuses without one.
 ears = ["_keeper/ears-keeper.sh", "_keeper/call-ears", "_keeper/input-watch.swift", "_keeper/ears-mail.py",
         "_keeper/ears-sounds.py", "_keeper/mouth-sounds.py", "_keeper/held_stream.py",
+        "_keeper/phone_roots.py",
         "_speakers/*", "_speech/*", "_settings/*.schema.json"]
+# The separator's runner and its venv's lock: src/mouth/_separator/ links into separator/ the
+# same way. They are data, never imported by the mouth: `mouth split` runs run.py in the
+# separator venv. torch and demucs, that venv's, are in no dependency list here.
+mouth = ["_separator/*"]
 # talk serves its page and manifest from beside server.py
 talk = ["index.html", "manifest.json"]
 

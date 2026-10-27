@@ -22,7 +22,8 @@ passed), and writes to the heard log:
   meaning "no device callback", and the row's ``device`` tells which. Played
   rows always carry them; a line that never played has none), where reason
   is ``done``, ``stop``, ``barge-in``, ``device-absent`` (not there at the
-  start), ``device-lost`` (stopped taking audio mid-play) or ``error``.
+  start), ``open-failed`` (there, but it refused to open: ``detail`` says why),
+  ``device-lost`` (stopped taking audio mid-play) or ``error``.
 
 ``text_played_est`` is an ESTIMATE: the text cut at the played fraction of
 the audio, back to a word boundary, until the backends give word timings.
@@ -57,6 +58,9 @@ from . import box as _box
 from . import maillog
 from . import output as _output
 from . import hold as _hold
+from . import instrumental as _instrumental
+from . import splitwait as _splitwait
+from . import stems as _stems
 from . import onset as _onset
 from . import level as _level
 from . import mpv as _mpv
@@ -211,6 +215,15 @@ def _common(item: dict) -> dict:
             "session": item.get("session"), "agent": item.get("agent"),
             "requested_ts": item.get("requested_ts"), "directory": _log_dir(item),
             "file": item.get("file"), "start": item.get("start"), "end": item.get("end"),
+            # a played file's instrumental: file is what played, source_file the
+            # file asked for (None, dropped, when it played as it is), and the
+            # layer that turned the setting on or off (instrumental.swap)
+            "source_file": item.get("source_file"), "instrumental_from": item.get("instrumental_from"),
+            # mouth play --stem: the stem names asked for; file is the first one (stems.resolve)
+            "stem": item.get("stem"),
+            # a play that waited for its file's split: what the split came to, and why
+            # it plays as it is when it does (splitwait.settle); None is dropped
+            "split": item.get("split"),
             "mail_id": item.get("mail_id"), "hold": item.get("hold"),
             # room: held by the room default (hold.ROOM_HOLD), not by its sender
             "hold_from": item.get("hold_from"),
@@ -345,6 +358,16 @@ def said_unplayed(item: dict, reason: str, device: Optional[str] = None, detail:
     return _said(item, **_common(item), device=device or item.get("device"), played_s=0.0,
                  cut=True, cut_at_s=0.0, text_played_est="", reason=reason, detail=detail,
                  **(cut_named or {}))
+
+
+def said_not_opened(item: dict, e: BaseException) -> dict:
+    """The said row of a line whose output did not open (``open_output``): ``device-absent``
+    only for a :class:`~mouth.canplay.DeviceAbsent` (the device, or PortAudio, is not
+    there), else ``open-failed`` with the cause, ``PortAudioError: ... Invalid number of
+    channels [-9998]`` say: the device is there and refused."""
+    if isinstance(e, _output.DeviceAbsent):
+        return said_unplayed(item, "device-absent", detail=str(e)[:300])
+    return said_unplayed(item, "open-failed", detail=f"{type(e).__name__}: {e}"[:300])
 
 
 #: What names a barge-in cut: the words that cut it,
@@ -569,8 +592,7 @@ def play_one(item: dict, d: Path, synth: Optional[Synth] = None, prefetched: boo
                                   meta={"text": text, "who": item.get("agent")})
     except Exception as e:  # noqa: BLE001 - absent, or PortAudio refusing to open it
         synth.cancel()
-        detail = str(e) if isinstance(e, _output.DeviceAbsent) else f"{type(e).__name__}: {e}"
-        return said_unplayed(item, "device-absent", detail=detail[:300])
+        return said_not_opened(item, e)
 
     sr = backend.sample_rate
     step = int(sr * _backends.BLOCK_S)
@@ -760,11 +782,16 @@ def _next(d: Path, q: "_box.Queue", beds: "Optional[_bed.Beds]" = None) -> tuple
     play. A line to a bed's device plays at once, duck on or off:
     ``open_output`` mixes it over the bed.
 
+    A play waiting for its file's split (``split_wait``, :mod:`mouth.splitwait`) keeps
+    its place and is skipped (``held``) while the split runs, and so is every later
+    FILE for its device, so plays keep their order. Lines are not held by it.
+
     Before it hands back a line, every eligible file queued behind it starts
     its bed (:func:`_leapfrog`): a file for an idle device never waits
     behind lines for another.
     """
     held = False
+    split_held: set = set()   # the device keys a waiting play holds files on
     playing = _read_playing(d)
     for x in q.lines(act=True, playing=[playing, *beds.items()] if beds and beds.any() else playing):
         if x.get("hold") or x.get("expires_t") is not None:
@@ -777,6 +804,14 @@ def _next(d: Path, q: "_box.Queue", beds: "Optional[_bed.Beds]" = None) -> tuple
                 continue
             if verdict != "play":
                 held = True
+                continue
+        if _bed.is_file(x):
+            if _splitwait.waiting(x, d):
+                split_held.add(_bed.device_key(x.get("device")))
+                held = True
+                continue
+            if split_held and _bed.device_key(x.get("device")) in split_held:
+                held = True          # behind a play that waits for its split
                 continue
         bed = beds.on(x) if beds else None
         if bed is None:
@@ -793,12 +828,15 @@ def _next(d: Path, q: "_box.Queue", beds: "Optional[_bed.Beds]" = None) -> tuple
     return None, held
 
 
-def _playable(x: dict, beds: "Optional[_bed.Beds]") -> bool:
+def _playable(x: dict, beds: "Optional[_bed.Beds]", d: Optional[Path] = None) -> bool:
     """``_next``'s own test, read-only: would it hand ``x`` out now? Not a line
-    held for the user's turn (or past its moment: ``_next`` files that one), and not one
+    held for the user's turn (or past its moment: ``_next`` files that one), not a play
+    waiting for its file's split (:mod:`mouth.splitwait`), and not one
     waiting on its device's bed (a file, or a line whose bed's mixer is not
     open yet). Nothing is filed here."""
     if (x.get("hold") or x.get("expires_t") is not None) and _hold.check(x) != "play":
+        return False
+    if _bed.is_file(x) and _splitwait.waiting(x, d):
         return False
     bed = beds.on(x) if beds else None
     if bed is None:
@@ -820,7 +858,9 @@ def _leapfrog(d: Path, q: "_box.Queue", beds: "Optional[_bed.Beds]", playing: Op
        no mixer mid-line); and
     3. has no PLAYABLE line queued ahead of it (:func:`_playable`, ``_next``'s
        own test): same-device order is kept, and a held line keeps its place
-       and is skipped, as ``_next`` skips it.
+       and is skipped, as ``_next`` skips it; and
+    4. is not waiting for its split, nor queued behind a file for its device that is
+       (:mod:`mouth.splitwait`): plays keep their order.
 
     A file that is itself held (or past its moment) is left to ``_next``. Its
     ``saying`` carries ``leapfrog: true`` when it jumped a playable line queued
@@ -838,16 +878,19 @@ def _leapfrog(d: Path, q: "_box.Queue", beds: "Optional[_bed.Beds]", playing: Op
     for x in queued:
         key = _bed.device_key(x.get("device"))
         if not _bed.is_file(x):
-            if _playable(x, beds):
+            if _playable(x, beds, d):
                 busy.add(key)
                 jumped = True
             continue
         if (x.get("hold") or x.get("expires_t") is not None) and _hold.check(x) != "play":
             continue
+        if _splitwait.waiting(x, d):
+            busy.add(key)    # it keeps its place, and later files for its device wait too
+            continue
         if key in busy or beds.on(x) is not None:
             busy.add(key)
             continue
-        item = _voices.fill_item(_box.public(x), d)
+        item = _bed_item(x, d)
         q.ack(x)            # a mail from outside: its queued root, as _next's act gives it
         taken = q.take(x)
         if taken is None:   # retracted or taken meanwhile
@@ -855,6 +898,19 @@ def _leapfrog(d: Path, q: "_box.Queue", beds: "Optional[_bed.Beds]", playing: Op
         out.append(beds.start(item, taken, leapfrog=jumped))
         busy.add(key)
     return out
+
+
+def _bed_item(x: dict, d: Path) -> dict:
+    """A queued file as its bed takes it: its level and duck filled in
+    (``voices.fill_item``), and its instrumental in its place when the setting is
+    on and its sidecar has one (``instrumental.swap``). ``_raw`` is the box's
+    local-drop mark: a mail from outside plays only an instrumental in the sounds
+    directory. A ``--stem`` line has its stems found first (``stems.resolve``), and is
+    never swapped. A play that waited for its split carries what the split came to
+    (``splitwait.settle``)."""
+    local = bool(x.get("_raw"))
+    item = _stems.resolve(_voices.fill_item(_box.public(x), d), local=local, d=d)
+    return _splitwait.settle(_instrumental.swap(item, local=local, d=d), x, d)
 
 
 def _read_playing(d: Path) -> Optional[dict]:
@@ -1197,6 +1253,9 @@ def serve(d: Optional[Path] = None, idle_exit_s: Optional[float] = None, poll_s:
                     # A played file (any duck setting) leaves the speech queue as a
                     # bed on its device, and the loop goes straight back to the
                     # queue: nothing for another device waits behind it.
+                    item = _stems.resolve(item, local=bool(f.get("_raw")), d=d)
+                    item = _instrumental.swap(item, local=bool(f.get("_raw")), d=d)
+                    item = _splitwait.settle(item, f, d)   # it waited for its split
                     taken = q.take(f)
                     if taken is not None:
                         beds.start(item, taken)

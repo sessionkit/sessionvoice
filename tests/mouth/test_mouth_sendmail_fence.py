@@ -299,6 +299,7 @@ def test_no_message_binary_is_a_failed_row_and_never_a_fallback(monkeypatch, hea
 WRITERS = {
     ("mouth/player.py", "_said"): "the player (via the rows below)",
     ("mouth/player.py", "said_unplayed"): "the player (via the rows below)",
+    ("mouth/player.py", "said_not_opened"): "the player (via play_one and the bed's _play)",
     ("mouth/player.py", "play_one"): "the player: serve",
     ("mouth/player.py", "_next"): "the player: serve",
     ("mouth/player.py", "_handle_stop"): "the player: serve",

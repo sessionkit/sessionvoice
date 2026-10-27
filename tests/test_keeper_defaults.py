@@ -7,6 +7,9 @@ Every variable keeps its name; only what it means when unset changed:
                                                 `session operator` names one; "" -> nobody)
     CALL_EARS_DIR  ~/.<agent>/call-ears      -> ${XDG_STATE_HOME:-~/.local/state}/ears/call-ears
     EARS_LOG_DIR   ~/Library/Logs/failmode   -> ~/Library/Logs/ears (as src/ears/services.py)
+                                             -> ears.home.log_dir, ~/.sessionkit/voice/log
+                                                (EARS-483: the keeper asks `$PY -m ears.home
+                                                log-dir`; no copy of the path in the shell)
 
 These run the keeper's own lines (cut out of keeper/ears-keeper.sh) under a fake HOME,
 with the variables unset, and never start a capture, a call-ears or a mail.
@@ -24,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from ears.home import LOG
 from tests import _scanlist
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +36,8 @@ SRC = ROOT / "src"
 BASH = shutil.which("bash") or "/bin/bash"
 KEEPER = ROOT / "keeper" / "ears-keeper.sh"
 VARS = ("EARS_NOTIFY", "CALL_EARS_DIR", "EARS_LOG_DIR", "XDG_STATE_HOME")
+# the keeper's PY (a python that can `import ears`), which its LOGDIR line asks
+PY_LINE = f"PY={shlex.quote(sys.executable)}"
 
 
 def _line(prefix: str) -> str:
@@ -71,7 +77,7 @@ def home(tmp_path):
 # -- the defaults, unset ---------------------------------------------------------
 
 def _defaults(home, **extra):
-    script = "\n".join([_line("NOTIFY="), _line("LOGDIR="), _line("CALL_EARS_DIR="),
+    script = "\n".join([_line("NOTIFY="), PY_LINE, _line("LOGDIR="), _line("CALL_EARS_DIR="),
                         'echo "N[$NOTIFY]"; echo "L[$LOGDIR]"; echo "C[$CALL_EARS_DIR]"'])
     return _bash(script, _env(home, **extra)).splitlines()
 
@@ -84,7 +90,7 @@ def _tails(out, home):
 
 def test_unset_defaults_are_neutral(home):
     out = _defaults(home)
-    assert out == ["N[]", f"L[{home}/Library/Logs/ears]",
+    assert out == ["N[]", f"L[{home}/{LOG}]",
                    f"C[{home}/.local/state/ears/call-ears]"]
 
 
@@ -107,7 +113,7 @@ def test_call_ears_dir_follows_xdg_state_home(home, tmp_path):
 
 def test_set_values_still_win(home, tmp_path):
     """The names are unchanged: a host that sets them (to keep its old paths) gets them."""
-    script = "\n".join([_line("NOTIFY="), _line("LOGDIR="), _line("CALL_EARS_DIR="),
+    script = "\n".join([_line("NOTIFY="), PY_LINE, _line("LOGDIR="), _line("CALL_EARS_DIR="),
                         'echo "$NOTIFY|$LOGDIR|$CALL_EARS_DIR"'])
     env = _env(home, EARS_NOTIFY="someone", EARS_LOG_DIR=str(tmp_path / "logs"),
                CALL_EARS_DIR=str(tmp_path / "ce"))
@@ -358,17 +364,18 @@ def test_view_push_log_default_is_the_keepers(monkeypatch, home, tmp_path):
     monkeypatch.delenv("EARS_LOG_DIR", raising=False)
     monkeypatch.setenv("HOME", str(home))
     assert _load("view_push", ROOT / "view" / "push").LOG == \
-        str(home / "Library/Logs/ears/ears-view-push.log")
+        str(home / LOG / "ears-view-push.log")
     monkeypatch.setenv("EARS_LOG_DIR", str(tmp_path / "logs"))
     assert _load("view_push", ROOT / "view" / "push").LOG == str(tmp_path / "logs/ears-view-push.log")
 
 
 def test_sound_logs_default_beside_the_keepers_logs():
-    """EARS-202 fix-003: mouth-sounds and ears-sounds log under ~/Library/Logs/ears, as
-    EARS_LOG_DIR and every launchd/*.plist.in now do; their env overrides are unchanged."""
+    """EARS-202 fix-003, EARS-483: mouth-sounds and ears-sounds log in the voice log folder, as
+    EARS_LOG_DIR and every launchd/*.plist.in do: each asks ears.home.log_dir (voice_log_dir,
+    no copy of the path); their env overrides are unchanged."""
     for script, var in (("mouth-sounds.py", "MOUTH_SOUNDS_LOG"), ("ears-sounds.py", "EARS_SOUNDS_LOG")):
         text = (ROOT / "keeper" / script).read_text()
-        assert "Library/Logs/failmode" not in text, script
-        assert var in text and f"Library/Logs/ears/{script[:-3]}.jsonl" in text, script
+        assert "Library/Logs" not in text and LOG not in text, script
+        assert var in text and f'voice_log_dir() / "{script[:-3]}.jsonl"' in text, script
     for t in (ROOT / "launchd").glob("*.plist.in"):
-        assert "Logs/failmode" not in t.read_text(), t.name
+        assert "Library/Logs" not in t.read_text(), t.name

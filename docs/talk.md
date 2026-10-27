@@ -11,6 +11,8 @@ it can see anything. Run it with `talk serve` and pair with `talk pair`.
   environment variable or a URL query.
 - **On a tailnet:** optional. Keep talk on 127.0.0.1 and put Tailscale in
   front; socket mode is the safer way to do it.
+- **In the kit's web page:** Talk is a room behind the kit's front door,
+  which logs you in, so there is no pairing.
 - **What it reads:** the heard log, each seat's waiter offsets, presence
   and faces. It writes nothing.
 - **Settings:** all off by default; each one is a `talk serve` flag or an
@@ -45,7 +47,7 @@ Talk ships in the sessionvoice wheel as the `talk` command (`src/talk/`).
   - It runs the `talk` installed beside the Python that runs `ears`, never
     the first `talk` on `PATH`: macOS ships an unrelated `/usr/bin/talk`.
     When there is none, install refuses and writes nothing.
-  - Its log is `~/Library/Logs/ears/talk.log`. `ears services status` has a
+  - Its log is `~/.sessionkit/voice/log/talk.log`. `ears services status` has a
     row for it, and `ears services uninstall --only talk` removes it.
   - `--dry-run` prints the plist and changes nothing.
   - To change the port or add a `TALK_*` variable, render
@@ -163,6 +165,71 @@ you.
     at the default PATH. Pair with the proxy's address:
     `talk pair --url https://machine.example.ts.net/talk`.
 
+## In the kit's web page
+
+The kit's web page has a front door that logs you in and serves each
+installed package's page as a room, under its own path. Talk is one, at
+`/talk/`. Nothing here is needed to run Talk on its own.
+
+- **How the front door finds Talk:** it asks for Talk's room descriptor,
+  one JSON object with a name, a title, the package and the command that
+  starts the room. A front door installed in the same environment as
+  sessionvoice loads `talk.web:room` from the `sessionkit.web` entry-point
+  group and calls it. From another environment it runs
+  `sessionvoice-web web-room`, which prints the same object on one line and
+  exits 0. It loads no audio or model code, so it answers well within the
+  front door's 2 s.
+
+      sessionvoice-web web-room
+      {"name": "talk", "title": "Talk", "package": "sessionvoice", "command": ["<venv>/bin/python", "-I", "-m", "talk", "serve", "--kit", "--unix", "{socket}"]}
+
+- **The command** is `talk serve --kit` on the unix socket the front door
+  names (`{socket}`), run by the interpreter of the environment that
+  answered. Nothing looks `talk` up on `PATH`, so the unrelated
+  `/usr/bin/talk` on macOS is never run.
+- **It runs isolated (`-I`):** the front door's working directory, the user
+  site and every `PYTHON*` variable are left out, so a `talk.py` lying in
+  that directory is never what is served. Install sessionvoice in that
+  interpreter's own environment (a venv, `uv tool` or `pipx`); one reached
+  only through the user site (`pip install --user`) or `PYTHONPATH` is not
+  seen, and the room exits at start.
+
+`talk serve --kit` is socket mode ([On a tailnet][tailnet]) with the changes
+below. The front door runs it; you never run it by hand.
+
+- **A unix socket and no TCP port.** `--kit` needs `--unix PATH` (or
+  `TALK_UNIX_SOCKET`); without one it exits 2 before anything binds.
+  `--host` and `--port` are unused, as with `--unix`.
+- **Only talk's own uid may connect.** There is no proxy uid: `--kit` with
+  `--proxy-uid` exits 2 before anything binds. Any other peer gets a 403
+  before its request is read.
+- **The front door's login is the one login.** Every request, the page and
+  the manifest included, must carry exactly one `X-Sessionkit-User` header:
+  non-empty printable ASCII, at most 64 characters. The front door sets it
+  after it has removed any the browser sent. Without it a request gets a
+  plain-text 403. There is no token: none is made or read, the page shows no
+  pairing panel, and `POST pair` is a 404. The name in the header is not
+  shown or logged. `talk pair` and `talk token` are unchanged; they are for
+  Talk outside the kit.
+- **Links resolve under any prefix.** Every link on the page is relative, so
+  it resolves under the path the front door serves Talk at. Its
+  `X-Sessionkit-Prefix` header is not read, and the page is served byte for
+  byte. The manifest link asks for credentials
+  (`crossorigin="use-credentials"`), so the manifest loads behind the front
+  door's login and the page can still be added to a home screen.
+- **Host and Origin.** The front door checks the browser's Host, forwards it
+  as it came, and passes Talk no list of its names. So kit mode answers any
+  well-formed Host, an IPv6 address in brackets included, except `localhost`
+  and `*.localhost`, which the front door never forwards. No Host, more than
+  one, or one that does not parse is refused. An `Origin`, when sent, must
+  be `http` or `https` and name the same host and port as the Host, a
+  missing port counting as the Origin's scheme default on both sides. Any
+  other request gets a plain-text 403. `--allow-host` names are still
+  answered.
+- **At start** it prints two lines to the front door's room log: the socket
+  it serves, and that it answers its own uid only, trusts
+  `X-Sessionkit-User` and does no pairing.
+
 ## What it reads
 
 Read-only; talk writes none of these.
@@ -195,12 +262,14 @@ variable.
 | `--call-url URL` | `TALK_CALL_URL` | a phone button in the header that opens this web call (sessionphone) in a new tab; no button without it. Only `https:`, or `http://localhost` / `http://127.0.0.1`; anything else is refused at start and nothing is served |
 | `--allow-host NAME` | `TALK_ALLOW_HOSTS` | another Host to answer, beside `127.0.0.1:<port>`, `localhost:<port>` and the `--host` address. The flag repeats; the env var takes a comma- or space-separated list, and both are merged. `NAME` is answered on any port or none, `NAME:PORT` only on that port. Behind `tailscale serve`, add its name (`machine.example.ts.net`). A scheme, path, `@`, whitespace or `*` is refused at start and nothing is served |
 | `--unix [PATH]` | `TALK_UNIX_SOCKET` | bind a unix socket and no TCP port ([On a tailnet][tailnet]) |
-| `--proxy-uid UID` | | in socket mode, the one other uid that may connect; default 0 |
+| `--proxy-uid UID` | | in socket mode, the one other uid that may connect; default 0; not with `--kit` |
+| `--kit` | | run as a room behind the kit's web front door; needs `--unix`. The front door runs it, never you ([In the kit's web page][kit]) |
 
 `SESSIONVOICE_HOME` moves the heard log and the token, the same as for the
 ears.
 
 [home]: logs.md#sessionvoices-home
+[kit]: #in-the-kits-web-page
 [pairing]: #pairing
 [settings]: #settings
 [tailnet]: #on-a-tailnet

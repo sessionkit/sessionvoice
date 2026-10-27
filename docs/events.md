@@ -198,6 +198,10 @@ turn's kept WAV), `audio_s` (its length in seconds) and, for a turn cut at
 not be written ([logs.md](logs.md#turn-a-finished-turn),
 [ears.md](ears.md#kept-turn-audio)). This stream's own `turn` carries no
 audio field.
+With `--turn-text redecode`, a heard `turn` line says where its text came
+from (`text_from`, `joined`, `redecode`) and, when the re-decode had lost the
+turn's first words and the joined partials put them back, `head: "spliced"`
+and `head_words` ([logs.md](logs.md#turn-a-finished-turn)).
 
 ## Commands
 

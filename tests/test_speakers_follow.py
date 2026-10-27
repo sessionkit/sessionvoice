@@ -6,6 +6,7 @@ relabel run uses the stand-in diarizer from test_speakers."""
 import ast, collections, json, os, plistlib, re, subprocess, sys, threading, wave
 import xml.dom.minidom
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -113,7 +114,7 @@ def test_ring_drops_audio_older_than_keep():
     ("theo", "Hello there.", np.full(1600, 0.3, np.float32), ("theo", None)),
 ])
 def test_unheard_why(who, text, seg, want):
-    got = lift("words", "unheard_why")["unheard_why"](who, text, seg)
+    got = lift("words", "SILENT_WHY", "unheard_why")["unheard_why"](who, text, seg)
     assert got[0] == want[0]
     assert (got[1] is None) if want[1] is None else want[1] in got[1]
 
@@ -160,7 +161,8 @@ def test_plist_renders_and_stays_down_on_stop(tmp_path):
     every placeholder filled, and KeepAlive restarts a crash but not a STOP (exit 0)."""
     text = PLIST.read_text()
     for k, v in {"@HOME@": "/Users/x", "@EARS_REPO@": "/Users/x/ears",
-                 "@SPEAKER_PY@": "/Users/x/venv/bin/python", "@AGENT_REFS@": "dave"}.items():
+                 "@SPEAKER_PY@": "/Users/x/venv/bin/python", "@AGENT_REFS@": "dave",
+                 "@EARS_LOG_DIR@": "/Users/x/logs"}.items():
         text = text.replace(k, v)
     assert "@" not in re.sub(r"<!--.*?-->", "", text, flags=re.S)
     xml.dom.minidom.parseString(text.encode())
@@ -174,8 +176,9 @@ def test_plist_renders_and_stays_down_on_stop(tmp_path):
 
 
 class FakeStream:
-    def __init__(self, dev, fail_stop=False):
+    def __init__(self, dev, fail_stop=False, rate=SR, blocksize=None):
         self.dev, self.active, self.fail_stop, self.closed = dev, False, fail_stop, False
+        self.rate, self.blocksize = rate, blocksize
     def start(self): self.active = True
     def stop(self):
         if self.fail_stop: raise RuntimeError("PortAudio -9986: the device left")
@@ -184,24 +187,38 @@ class FakeStream:
 
 class FakeSD:
     """PortAudio as sounddevice shows it: the device list is the one read at the last
-    _initialize, so a device that arrives later is invisible until a rescan."""
-    def __init__(self, names, fail_stop=False):
+    _initialize, so a device that arrives later is invisible until a rescan. RATES gives a
+    device its default input rate (48000 if not named); a rate in REFUSE will not open
+    (raises, as PortAudio does). Every open asked for is in .asked, as (name, rate)."""
+    def __init__(self, names, fail_stop=False, rates=None, refuse=()):
         self.live, self.names, self.fail_stop, self.opened, self.rescans = list(names), list(names), fail_stop, [], 0
+        self.rates, self.refuse, self.asked = dict(rates or {}), set(refuse), []
     def _terminate(self): pass
     def _initialize(self): self.names = list(self.live); self.rescans += 1
     def query_devices(self, idx=None, kind=None):
         if idx is None:
             return [{"name": n, "max_input_channels": 1} for n in self.names]
-        return {"default_samplerate": 48000.0}
-    def InputStream(self, device, **kw):
+        return {"default_samplerate": float(self.rates.get(self.names[idx], 48000))}
+    def InputStream(self, device, samplerate=SR, blocksize=None, callback=None, **kw):
+        self.asked.append((self.names[device], samplerate))
         if self.names[device] not in self.live:
             raise RuntimeError("PortAudio -9986: stale device list")
-        s = FakeStream(self.names[device], self.fail_stop); self.opened.append(s); return s
+        if samplerate in self.refuse:
+            raise RuntimeError(f"PortAudio -9997: invalid sample rate {samplerate}")
+        s = FakeStream(self.names[device], self.fail_stop, samplerate, blocksize)
+        s.callback = callback
+        self.opened.append(s); return s
+
+
+SILENT = ("words", "SILENT_WHY", "SILENT_TURNS", "SILENT_MIN_WORDS", "silent", "note_speech",
+          "silent_due")
+TIMING = ("GAP_S", "GAP_LOG_S", "STAMP_MAX_S", "gaps", "gaps_lock", "gaps_said",
+          "block_start", "note_gap", "gap_report")
 
 
 def mic_ns(target, said, deaf_lines=10):
     ns = lift("same_dev", "RESCAN_S", "REOPEN_S", "deaf", "deaf_lock", "note_cover", "deaf_due",
-              "deaf_reset", "close_stream", "rescan", "try_open", "mic_step",
+              "deaf_reset", "close_stream", "rescan", "try_open", "mic_step", *TIMING, *SILENT,
               a=type("A", (), {"deaf_lines": deaf_lines})())
     ns.update(SR=SR, time=__import__("time"), ring=None, target_device=lambda: target[0],
               say=said.append)
@@ -409,9 +426,11 @@ class StaleSD(FakeSD):
         return s
 
     def play(self, seconds):
+        """SECONDS of audio from every live stream, at the rate that stream opened at."""
         for s in self.opened:
             if s.active and not s.closed and not s.deaf:
-                s.callback(np.full((int(SR * seconds), 1), 300, np.int16), int(SR * seconds), None, None)
+                n = int(s.rate * seconds)
+                s.callback(np.full((n, 1), 300, np.int16), n, None, None)
 
 
 class DeafSD(StaleSD):
@@ -423,7 +442,7 @@ class DeafSD(StaleSD):
         return s
 
 
-def run_deaf(tmp_path, ticks=60, sd=None, argv=()):
+def run_deaf(tmp_path, ticks=60, sd=None, argv=(), label=None, text="hello"):
     """The side-car's two loops, interleaved on one fake clock: each tick is one mic_step
     (the mic thread's 1 s look), 1 s of audio from every stream that calls back, and the
     follow loop, which takes a 2 s keeper line every other tick and drains. Returns the
@@ -433,7 +452,7 @@ def run_deaf(tmp_path, ticks=60, sd=None, argv=()):
     start = clock.t
     ns.update(say=lambda m: said.append((round(clock.t - start), m)), time=clock,
               target_device=lambda: "airpods",
-              label=lambda seg, refset=None: ("theo", {"theo": 1.0}, 100, 0.0))  # no diarizer
+              label=label or (lambda seg, refset=None: ("theo", {"theo": 1.0}, 100, 0.0)))  # no diarizer
     sd = sd or StaleSD(["Theo's AirPods Pro"])
     st, day = {"stream": None, "dev": None}, "2030-06-09"
     ns["starts"][("ears-keeper", "airpods")] = start
@@ -443,7 +462,7 @@ def run_deaf(tmp_path, ticks=60, sd=None, argv=()):
         ns["mic_step"](sd, st, clock.t)
         sd.play(1.0)
         if tick % 2 == 0:
-            r = line(tick // 2, dev="airpods", t0=tick - 2.0, t1=float(tick))
+            r = dict(line(tick // 2, dev="airpods", t0=tick - 2.0, t1=float(tick)), text=text)
             ns["take"](r, day)
         ns["drain"](clock.t, day)
     rows = [json.loads(x) for x in out.read_text().splitlines()] if out.exists() else []
@@ -502,7 +521,7 @@ def test_a_row_with_no_window_has_no_cover(tmp_path):
 
 
 def count_ns(deaf_lines=10):
-    ns = lift("same_dev", "deaf", "deaf_lock", "note_cover", "deaf_due", "deaf_reset",
+    ns = lift("same_dev", "deaf", "deaf_lock", "note_cover", "deaf_due", "deaf_reset", *SILENT,
               a=type("A", (), {"deaf_lines": deaf_lines})())
     return ns
 
@@ -557,7 +576,7 @@ def test_a_forced_reopen_is_rate_limited_to_once_per_60_s():
     assert len(sd.opened) == 3 and sd.rescans == 2 and sd.opened[1].closed
     assert said[-4:] == ["mic: 13 lines at 0% coverage: reopening 'airpods'",
                          "mic: closed 'airpods' - 13 lines at 0% coverage",
-                         "mic: rescanning the device list", "mic: open 'airpods' at 16000 Hz"]
+                         "mic: rescanning the device list", "mic: open 'airpods' at 48000 Hz"]
     ns["mic_step"](sd, st, 1062.0)                                # nothing due: nothing done
     assert len(sd.opened) == 3 and sd.rescans == 2
 
@@ -576,3 +595,300 @@ def test_a_device_that_stays_deaf_is_reopened_once_a_minute_not_every_ten_lines(
 def test_deaf_lines_is_a_flag():
     ns = sidecar(["--deaf-lines", "4"])
     assert ns["a"].deaf_lines == 4 and sidecar([])["a"].deaf_lines == 10
+
+
+AIRPODS = "Theo's AirPods Pro"
+
+
+def open_ns(said, clock):
+    """try_open with the real Ring behind it: what the callback adds is what the scorer cuts."""
+    ns = lift("same_dev", "Ring", "try_open", *TIMING)
+    ns.update(say=said.append, time=clock)
+    ns["ring"] = ns["Ring"](30.0)
+    return ns
+
+
+def play_tone(stream, clock, hz=440.0, seconds=1.0, peak=10000):
+    """SECONDS of a tone at the rate the stream opened at, called back in its 20 ms blocks
+    as PortAudio does, the clock moving 20 ms a block. Returns the start time."""
+    t0, n = clock.t, int(stream.rate * seconds)
+    tone = (peak * np.sin(2 * np.pi * hz * np.arange(n) / stream.rate)).astype(np.int16)
+    for blk in tone.reshape(-1, stream.blocksize):
+        clock.t += 0.02
+        stream.callback(blk[:, None].copy(), len(blk), None, None)
+    return t0
+
+
+@pytest.mark.parametrize("rate", [24000, 48000, 44100])
+def test_a_device_opens_at_its_default_rate_and_the_scorer_gets_16k(rate):
+    """AirPods' input runs at 24000. The side-car asks for the device's own default rate
+    first, says the rate it opened at, and resamples each 20 ms block to 320 samples at
+    16 kHz: one second of a 440 Hz tone reaches the ring as one second of 440 Hz at 16 kHz,
+    at its level, fully covered."""
+    said, clock = [], Clock(1_000.0)
+    ns = open_ns(said, clock)
+    sd = FakeSD([AIRPODS], rates={AIRPODS: rate})
+    stream = ns["try_open"](sd, "airpods")
+    assert stream is sd.opened[0] and stream.active
+    assert sd.asked == [(AIRPODS, rate)]
+    assert (stream.rate, stream.blocksize) == (rate, int(rate * 0.02))
+    assert said == [f"mic: open 'airpods' at {rate} Hz"]
+    t0 = play_tone(stream, clock)
+    blocks = list(ns["ring"].blocks)
+    assert len(blocks) == 50 and {len(x) for _, x, _ in blocks} == {320}
+    assert {d for _, _, d in blocks} == {"airpods"}
+    seg, cover = ns["ring"].cut(t0, clock.t, "airpods")
+    assert len(seg) == SR and cover == pytest.approx(1.0)
+    assert np.argmax(np.abs(np.fft.rfft(seg))) * SR / len(seg) == pytest.approx(440.0, abs=2)
+    assert 0.29 < np.abs(seg).max() <= 10000 / 32768 + 1e-4
+
+
+def test_a_device_whose_default_rate_will_not_open_falls_back_to_16k():
+    """The default rate raises: the side-car says so, opens at 16000, and the blocks reach
+    the ring as they came, with no resampling."""
+    said, clock = [], Clock(1_000.0)
+    ns = open_ns(said, clock)
+    sd = FakeSD([AIRPODS], rates={AIRPODS: 24000}, refuse={24000})
+    stream = ns["try_open"](sd, "airpods")
+    assert sd.asked == [(AIRPODS, 24000), (AIRPODS, SR)]
+    assert stream is sd.opened[0] and (stream.rate, stream.blocksize) == (SR, 320)
+    assert said[0].startswith("mic: 'airpods' at 24000 Hz failed: PortAudio -9997")
+    assert said[1:] == ["mic: open 'airpods' at 16000 Hz"]
+    blk = (np.arange(320, dtype=np.int16) * 7)[:, None]
+    stream.callback(blk, 320, None, None)
+    assert np.array_equal(ns["ring"].blocks[-1][1], blk[:, 0])
+
+
+def test_a_16k_default_device_opens_once_at_16k_unchanged():
+    """A device whose default is already 16000 is asked for 16000 once, not twice, and its
+    blocks pass through as they came. When it will not open, that is one try and one line."""
+    said, clock = [], Clock(1_000.0)
+    ns = open_ns(said, clock)
+    sd = FakeSD(["USB Mic"], rates={"USB Mic": SR})
+    stream = ns["try_open"](sd, "usb")
+    assert sd.asked == [("USB Mic", SR)] and (stream.rate, stream.blocksize) == (SR, 320)
+    assert said == ["mic: open 'usb' at 16000 Hz"]
+    blk = (np.arange(320, dtype=np.int16) * 3)[:, None]
+    stream.callback(blk, 320, None, None)
+    assert np.array_equal(ns["ring"].blocks[-1][1], blk[:, 0])
+    said.clear()
+    sd = FakeSD(["USB Mic"], rates={"USB Mic": SR}, refuse={SR})
+    assert ns["try_open"](sd, "usb") is None
+    assert sd.asked == [("USB Mic", SR)] and len(said) == 1 and "failed" in said[0]
+
+
+OFF = 950.0  # the fake stream clock reads wall time minus this: its own zero, not the wall's
+
+
+def feed(stream, clock, arrivals, start, ti=True):
+    """Block i, 20 ms whose every sample is i + 1, taken at START + i * 0.02 and called back
+    at ARRIVALS[i] (None: lost, never delivered), with PortAudio's time_info on a stream
+    clock OFF behind the wall, or with none (TI false), as some hosts give."""
+    for i, arr in enumerate(arrivals):
+        if arr is None:
+            continue
+        clock.t = arr
+        taken = start + i * 0.02
+        info = SimpleNamespace(inputBufferAdcTime=taken - OFF, currentTime=arr - OFF) if ti else None
+        stream.callback(np.full((stream.blocksize, 1), i + 1, np.int16), stream.blocksize, info, None)
+
+
+def steady(start, n, first=0):
+    """Each block called back as it ends."""
+    return [start + (i + 1) * 0.02 for i in range(first, first + n)]
+
+
+def stall_then_burst(start):
+    """3 s of blocks: the first second on time; the second second held back and delivered
+    all at once at 2.00 s, when its last block ends; the third second on time again."""
+    return steady(start, 50) + [start + 2.0] * 50 + steady(start, 50, first=100)
+
+
+def airpods_open(clock):
+    said = []
+    ns = open_ns(said, clock)
+    stream = ns["try_open"](FakeSD([AIRPODS], rates={AIRPODS: 24000}), "airpods")
+    said.clear()
+    return ns, stream, said
+
+
+def chunk_values(seg):
+    """The value of each 20 ms of a cut, in order: which block it came from."""
+    v = np.round(seg * 32768).astype(int)
+    return [int(c[0]) for c in v.reshape(-1, 320)]
+
+
+def test_a_stall_then_burst_is_stamped_by_stream_time_and_logged():
+    """A Bluetooth input that stalls 1 s and then delivers what it held in a burst: each
+    block keeps the moment its audio was taken (the stream clock), so the stalled second is
+    cut whole and in order from the right moment, and the mic thread logs one stall line."""
+    clock = Clock(1_000.0)
+    ns, stream, said = airpods_open(clock)
+    start = clock.t
+    feed(stream, clock, stall_then_burst(start), start)
+    stamps = [t for t, _, _ in ns["ring"].blocks]
+    assert stamps == pytest.approx([start + i * 0.02 for i in range(150)], abs=1e-6)
+    seg, cover = ns["ring"].cut(start + 1.0, start + 2.0, "airpods")
+    assert cover == pytest.approx(1.0) and chunk_values(seg) == list(range(51, 101))
+    ns["gap_report"](0.0)
+    # blocks 50-86 came more than 0.25 s after their audio ended; block 50 after a 1 s wait
+    assert said == ["mic: stalls on 'airpods': blocks=37 wait_max_s=1.00 late_max_s=0.98 "
+                    "lost_s=0.00 stamps=stream"]
+    ns["gap_report"](20.0)
+    assert len(said) == 1                              # nothing new: nothing said
+
+
+def test_with_no_stream_clock_a_burst_piles_up_and_cover_says_so():
+    """No time_info: blocks are stamped on arrival, so the held-back second piles onto the
+    moment it arrived. Cover counts that moment once: the stalled second reads 2% covered,
+    not 100% (50 blocks' samples), and the stall line says the stamps are arrival."""
+    clock = Clock(1_000.0)
+    ns, stream, said = airpods_open(clock)
+    start = clock.t
+    feed(stream, clock, stall_then_burst(start), start, ti=False)
+    seg, cover = ns["ring"].cut(start + 1.0, start + 2.0, "airpods")
+    assert cover == pytest.approx(0.02, abs=1e-3) and len(seg) == 320
+    ns["gap_report"](0.0)
+    assert said == ["mic: stalls on 'airpods': blocks=1 wait_max_s=1.00 late_max_s=0.00 "
+                    "lost_s=0.00 stamps=arrival"]
+
+
+def test_lost_audio_is_a_gap_in_cover_and_the_stall_lines_are_rate_limited():
+    """Half a second the stream never delivers: the stream clock shows the hole, cover over
+    that second is 50%, and the line says lost_s=0.50. Stalls 5 s after a line are held
+    back, then said, counted, 10 s after it."""
+    clock = Clock(1_000.0)
+    ns, stream, said = airpods_open(clock)
+    start = clock.t
+    feed(stream, clock, steady(start, 50) + [None] * 25 + steady(start, 75, first=75), start)
+    seg, cover = ns["ring"].cut(start + 1.0, start + 2.0, "airpods")
+    assert cover == pytest.approx(0.5) and chunk_values(seg) == list(range(76, 101))
+    ns["gap_report"](100.0)
+    assert said == ["mic: stalls on 'airpods': blocks=1 wait_max_s=0.52 late_max_s=0.00 "
+                    "lost_s=0.50 stamps=stream"]
+    start = clock.t
+    feed(stream, clock, [start + 0.02, start + 1.02], start + 0.0)  # a 1 s wait, nothing lost
+    ns["gap_report"](105.0)
+    assert len(said) == 1                              # inside GAP_LOG_S: held back
+    ns["gap_report"](110.0)
+    assert said[1].startswith("mic: stalls on 'airpods': blocks=1 wait_max_s=1.00 ")
+    assert said[1].endswith(" stamps=stream")
+
+
+@pytest.mark.parametrize("latency", [0.0, 0.4])
+def test_a_steady_stream_logs_no_stall_line(latency):
+    """Every block on time, or every block a steady 0.4 s behind its audio (a Bluetooth
+    input's latency, more than GAP_S): no stall line, and the audio is cut where it was taken."""
+    clock = Clock(1_000.0)
+    ns, stream, said = airpods_open(clock)
+    start = clock.t
+    feed(stream, clock, [t + latency for t in steady(start, 150)], start)
+    ns["gap_report"](0.0)
+    assert said == [] and ns["gaps"] == {}
+    seg, cover = ns["ring"].cut(start, start + 3.0, "airpods")
+    assert cover == pytest.approx(1.0) and chunk_values(seg) == list(range(1, 151))
+
+
+@pytest.mark.parametrize("ti,want", [
+    (SimpleNamespace(inputBufferAdcTime=49.9, currentTime=50.0), (999.9, "stream")),
+    (None, (999.98, "arrival")),                                                   # no time_info
+    (SimpleNamespace(inputBufferAdcTime=0.0, currentTime=0.0), (999.98, "arrival")),   # host gives 0
+    (SimpleNamespace(inputBufferAdcTime=50.1, currentTime=50.0), (999.98, "arrival")),  # in the future
+    (SimpleNamespace(inputBufferAdcTime=30.0, currentTime=50.0), (999.98, "arrival")),  # 20 s back
+    (SimpleNamespace(), (999.98, "arrival")),                                      # no such fields
+])
+def test_block_start_trusts_the_stream_clock_only_in_range(ti, want):
+    ns = lift(*TIMING)
+    t0, how = ns["block_start"](ti, 1000.0, 0.02)
+    assert (round(t0, 6), how) == want
+
+
+def test_mic_step_says_the_stalls_first():
+    """The line comes from the mic thread's look, not the audio callback."""
+    said, target = [], [None]
+    ns = mic_ns(target, said)
+    ns["gaps"]["airpods"] = {"blocks": 3, "wait": 1.2, "late": 1.1, "lost": 0.0, "stamps": "stream"}
+    ns["mic_step"](FakeSD([AIRPODS]), {"stream": None, "dev": None}, 50.0)
+    assert said == ["mic: stalls on 'airpods': blocks=3 wait_max_s=1.20 late_max_s=1.10 "
+                    "lost_s=0.00 stamps=stream"]
+
+
+def test_one_block_without_a_stream_clock_does_not_make_a_steady_latency_a_stall():
+    """A stream a steady 0.4 s behind its audio, with one block in the middle that comes
+    with no stream clock (stamped on arrival, so it shows no delay at all). The stream's
+    least delay is measured from stream-stamped blocks only: the blocks after it are as
+    late as ever, and no stall line is said."""
+    clock = Clock(1_000.0)
+    ns, stream, said = airpods_open(clock)
+    s = clock.t
+    feed(stream, clock, [t + 0.4 for t in steady(s, 50)], s)
+    feed(stream, clock, [s + 1.02 + 0.4], s + 1.0, ti=False)
+    feed(stream, clock, [t + 0.4 for t in steady(s + 1.02, 49)], s + 1.02)
+    ns["gap_report"](0.0)
+    assert said == [] and ns["gaps"] == {}
+
+
+# -- covered and still deaf: the capture heard words, the side-car's audio held no speech --
+
+SPOKEN = "Oh okay, something short."
+NO_SPEECH = lambda seg, refset=None: ("silent", {}, 0, 0.0)   # the diarizer: under 10 frames
+
+
+class LiveSD(StaleSD):
+    """Every stream calls back from the first open: each line is covered."""
+    def InputStream(self, device, callback=None, **kw):
+        s = super().InputStream(device, callback=callback, **kw)
+        s.deaf = False
+        return s
+
+
+def test_covered_turns_with_words_and_no_speech_reopen_the_stream(tmp_path):
+    """The AirPods case: every line is covered, the capture heard the user's words, and the
+    side-car's audio held no speech. The cover count never moves; SILENT_TURNS such turns
+    in a row close, rescan and reopen the stream, saying why, and only once a minute."""
+    rows, said, sd = run_deaf(tmp_path, ticks=100, sd=LiveSD([AIRPODS]), label=NO_SPEECH, text=SPOKEN)
+    assert rows and all(r["cover"] == 1.0 for r in rows)
+    assert all(r["speaker"] == "unheard" and r["why"].startswith("words in the line, no speech found")
+               for r in rows)
+    when = [t for t, m in said if "reopening" in m]
+    assert [m for _, m in said if "reopening" in m][0] == \
+        "mic: 3 covered turns with no speech: reopening 'airpods'"
+    assert not any("0% coverage" in m for _, m in said)
+    assert len(when) == 2 and when[1] - when[0] >= 60, when
+    assert sd.rescans == 2 and len(sd.opened) == 3
+
+
+@pytest.mark.parametrize("text", ["", "Short."])
+def test_a_quiet_room_or_one_word_turns_never_reopen(tmp_path, text):
+    """No words in the line is no evidence (a quiet room), and a one-word turn can be a
+    genuine diarizer miss: covered lines with no speech found reopen nothing."""
+    rows, said, sd = run_deaf(tmp_path, ticks=100, sd=LiveSD([AIRPODS]), label=NO_SPEECH, text=text)
+    assert len(rows) >= 40 and all(r["cover"] == 1.0 for r in rows)
+    assert not any("reopening" in m for _, m in said) and sd.rescans == 0 and len(sd.opened) == 1
+
+
+def test_note_speech_counts_only_covered_spoken_turns_with_no_speech():
+    ns = count_ns()
+    note, due, W = ns["note_speech"], ns["silent_due"], ns["SILENT_WHY"]
+    note("airpods", "turn", SPOKEN, "unheard", W, None)
+    note("airpods", "turn", SPOKEN, "unheard", W, None)
+    note("airpods", "partial", SPOKEN, "unheard", W, None)        # a partial: no evidence
+    note("airpods", "turn", "Short.", "unheard", W, None)         # one word: no evidence
+    note("airpods", "turn", SPOKEN, "unheard", W, "u-7")          # the mouth's own words
+    note("airpods", "turn", "", "silent", None, None)             # a quiet line
+    note("airpods", "turn", SPOKEN, "unheard", "no signal: the device gave only zeros", None)
+    assert ns["silent"]["n"] == 2 and due("airpods") == 0
+    note("airpods", "partial", "okay something", "speaker-1", None, None)   # speech found: the run ends
+    assert ns["silent"]["n"] == 0
+    for _ in range(2): note("airpods", "turn", SPOKEN, "unheard", W, None)
+    note("MacBook Pro Microphone", "turn", SPOKEN, "unheard", W, None)  # another device: a new run
+    assert ns["silent"]["n"] == 1 and due("airpods") == 0
+    for _ in range(2): note("MacBook Pro Microphone", "turn", SPOKEN, "unheard", W, None)
+    assert due("airpods") == 0 and due("MacBook Pro Microphone") == 3
+    assert due("MacBook Pro Microphone") == 0                     # asked once, cleared
+    for _ in range(3): note("MacBook Pro Microphone", "turn", SPOKEN, "unheard", W, None)
+    ns["deaf_reset"]()                                            # a new stream: a new count
+    assert ns["silent"]["n"] == 0 and due("MacBook Pro Microphone") == 0
+    ns = count_ns(deaf_lines=0)                                   # --deaf-lines 0: no reopens
+    for _ in range(9): ns["note_speech"]("airpods", "turn", SPOKEN, "unheard", W, None)
+    assert ns["silent_due"]("airpods") == 0

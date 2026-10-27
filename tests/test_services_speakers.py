@@ -148,7 +148,8 @@ def test_data_paths_lie_under_home(sp):
 
 def _template(tmp_path) -> dict:
     """The hand template rendered with dummy values (bin/render-plist fills only @NAME@)."""
-    vals = {"HOME": "/Users/x", "EARS_REPO": "/r", "SPEAKER_PY": "/p/python", "AGENT_REFS": ""}
+    vals = {"HOME": "/Users/x", "EARS_REPO": "/r", "SPEAKER_PY": "/p/python", "AGENT_REFS": "",
+            "EARS_LOG_DIR": "/Users/x/logs"}
     body = re.sub(r"<!--.*?-->", "", TEMPLATE.read_text(), flags=re.S)
     return plistlib.loads(re.sub(r"@([A-Z_]+)@", lambda m: vals[m.group(1)], body).encode())
 
@@ -256,7 +257,7 @@ def _tree(root: Path) -> list[tuple[str, int]]:
 @pytest.mark.parametrize("argv", [["install", "--only", "speakers", "--dry-run"], ["install", "--dry-run"]])
 def test_a_dry_run_leaves_the_whole_home_as_it_was(sp, capsys, argv):
     """SC1 "changes nothing", measured over the whole HOME: the do-006 proof run found a dry
-    run making an empty ~/Library/Logs/ears (install's LOGS.mkdir ran before any dry_run test)."""
+    run making an empty log folder (install's LOGS.mkdir ran before any dry_run test)."""
     before = _tree(sp["home"])
     services.main(argv)
     assert _tree(sp["home"]) == before

@@ -508,8 +508,15 @@ class Bed:
         from . import player as _player
 
         item, text = self.item, self.text
+        if "stem" in item:   # mouth play --stem: the stems stems.resolve found, never a path it was sent
+            if item.get("stem_error") or not item.get("stem_files"):
+                return _player.said_unplayed(item, "error", detail=str(
+                    item.get("stem_error") or "mouth: its stems were never found")[:300])
+            what = item["stem_files"]
+        else:
+            what = item["file"]
         try:
-            dec = Lookahead(_backends.FileSound(item["file"], item.get("start"), item.get("end")), text)
+            dec = Lookahead(_backends.FileSound(what, item.get("start"), item.get("end")), text)
         except Exception as e:  # noqa: BLE001
             return _player.said_unplayed(item, "error", detail=str(e)[:300])
         sr = dec.sample_rate
@@ -520,8 +527,7 @@ class Bed:
                                 None if level is None else level / 100.0, meta, self.utt)
         except Exception as e:  # noqa: BLE001 - absent, or PortAudio refusing to open it
             dec.cancel()
-            detail = str(e) if isinstance(e, _output.DeviceAbsent) else f"{type(e).__name__}: {e}"
-            return _player.said_unplayed(item, "device-absent", detail=detail[:300])
+            return _player.said_not_opened(item, e)
         finally:
             self.ready.set()   # a line to its device waits for this, not longer
         name = getattr(out, "name", item["device"])
@@ -608,6 +614,9 @@ class Bed:
         """Its ``bed.json`` entry (and ``mouth status``'s music row)."""
         it = self.item
         return {"utt": self.utt, "device": self.device, "key": self.key, "file": it.get("file"),
+                # the file asked for, when its instrumental plays in its place
+                "source_file": it.get("source_file"), "instrumental_from": it.get("instrumental_from"),
+                "stem": it.get("stem"),   # --stem: the stems mixed, file the first of them
                 "text": self.text, "mail_id": it.get("mail_id"), "requested_t": self.requested_t,
                 "started_t": self.started_t, "volume": it.get("volume"),
                 "volume_from": it.get("volume_from"), "duck": it.get("duck"),

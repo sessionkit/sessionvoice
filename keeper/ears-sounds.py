@@ -95,13 +95,37 @@ LOGDIR = Path(os.environ.get("EARS_SOUNDS_HEARD_DIR") or Path(sessionvoice_home(
 MAX_FAILS = int(os.environ.get("EARS_SOUNDS_MAX_FAILS") or 20)
 HERE = Path(__file__).resolve().parent
 
+
+def voice_log_dir() -> Path:
+    """ears.home.log_dir(), the ONE place the voice log folder is named ($EARS_LOG_DIR, else
+    the kit's log home). keeper/ imports nothing from the ears package, so it loads home.py
+    (standard library only) by its path: the checkout's src/ears/home.py, else the wheel's
+    ears/home.py above ears/_keeper/. Neither: exit 2, naming both; there is no copy to fall
+    back on."""
+    import importlib.util, sys
+    tried = [HERE.parent / "src/ears/home.py", HERE.parent / "home.py"]
+    for f in tried:
+        if f.is_file():
+            spec = importlib.util.spec_from_file_location("_voice_home", f)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod.log_dir()
+    print(f"ears-sounds: no ears/home.py at {' nor '.join(map(str, tried))}: it names the log "
+          "folder. Pass --sound-log (or set EARS_SOUNDS_LOG), or run it from a checkout or "
+          "the package", file=sys.stderr)
+    sys.exit(2)
+
+
 ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
 ap.add_argument("--settings", default=os.environ.get("EARS_SOUNDS_SETTINGS") or str(Path.home() / VOICE_SETTINGS / "ears-sounds.json"))
-ap.add_argument("--sound-log", default=os.environ.get("EARS_SOUNDS_LOG") or str(Path.home() / "Library/Logs/ears/ears-sounds.jsonl"))
+ap.add_argument("--sound-log", default=os.environ.get("EARS_SOUNDS_LOG"),
+                help="the sound log (default: ears-sounds.jsonl in the voice log folder, ears.home.log_dir)")
 ap.add_argument("--stop-file", default=str(HERE / "STOP-ears-sounds"))
 ap.add_argument("--test", metavar="KIND", help="play KIND's sound once, where it would go, and exit")
 ap.add_argument("--mic", metavar="DEVICE", help="with --test: as if the line came from DEVICE (e.g. call:N)")
 a = ap.parse_args()
+a.sound_log = a.sound_log or str(voice_log_dir() / "ears-sounds.jsonl")
+os.makedirs(os.path.dirname(os.path.abspath(a.sound_log)), exist_ok=True)
 
 _settings, _mtime = {}, None
 

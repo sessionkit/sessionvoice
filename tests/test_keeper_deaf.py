@@ -126,7 +126,7 @@ def test_the_device_is_remembered_for_the_recovery():
 # -- subjects ------------------------------------------------------------------------------
 
 def test_every_subject_fits_64_and_ends_eom():
-    causes = ["model", "lid", "stt", "beat", "zeros", "averyveryverylongcausename"]
+    causes = ["model", "lid", "stt", "beat", "zeros", "cover", "speech", "averyveryverylongcausename"]
     script = "".join(
         f"deaf_subject {ch} {c} 'a long detail string that keeps on going and going' \"$D\"; "
         f"deaf_subject {ch} {c} '' ''; "

@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import time
 from collections import deque
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -102,6 +103,7 @@ DEFAULT_REDECODE_MAX_S = 300.0  # longer turns fall back to joined partials
 # name; the same audio re-decoded whole read the name right
 # on all three backends (research/2030-06-09-stt-three-way). A whole-turn decode of 155 s
 # took Apple 2.5 s and Whisper large-v2 3.7 s, and 300 s of audio is 19 MB: cheap.
+HEAD_ANCHOR_WORDS = 3  # how many of the re-decode's opening words must be found in the partials
 SPLIT_CHECK_S = 0.5  # how often an open turn looks for a speaker change
 SPECULATIVE_MAX_S = 60.0  # past this, re-decode once at the turn's end, not at every pause
 _HISTORY_S = 4.0  # audio kept before a turn opens; covers pre-roll and a chunk opened up to max_s early
@@ -632,6 +634,11 @@ class _Capture:
         info = {"redecode_wait_s": _r(time.monotonic() - waited), "speculative": spec is not None}
         if not text:
             return joined, {"text_from": "joined", "redecode": "empty", **info}
+        restored = restored_head(joined, text)
+        if restored is not None:
+            # the re-decode lost the turn's first words, and the partials heard them
+            text, head = restored
+            info = {**info, "head": "spliced", "head_words": head}
         return text, {"text_from": "redecode", "joined": joined, **info}
 
     # -- transcription -----------------------------------------------------
@@ -953,3 +960,35 @@ def capture(
         redecode_wait_s=redecode_wait_s,
         watchdog=watchdog,
     ).run()
+
+
+
+def _norm(word: str) -> str:
+    return re.sub(r"[^\w']", "", word.lower())
+
+
+def restored_head(joined: str, redecoded: str) -> Optional[tuple[str, str]]:
+    """The re-decode with the head it lost put back, and that head; ``None`` if it lost none.
+
+    On AirPods turns the whole-turn decode sometimes drops the turn's first words
+    (seq 1287416: joined "They need to make a change ...", re-decode "to make a
+    change ..."). The check is conservative, on words lowercased with punctuation
+    stripped: the re-decode's opening ``HEAD_ANCHOR_WORDS`` words (all of them if it
+    has fewer) must appear in the joined partials starting at word ``i > 0``, and
+    joined's first word must not be where the re-decode starts. The joined words
+    before ``i`` go in front of the re-decode, which keeps its own punctuation and
+    casing. A re-decode that differs at the start for any other reason (a better
+    first word, a misheard partial) is left as it is.
+    """
+    words = joined.split()
+    jw = [(n, k) for k, n in ((k, _norm(w)) for k, w in enumerate(words)) if n]
+    rw = [n for n in (_norm(w) for w in redecoded.split()) if n]
+    if not jw or not rw or rw[0] == jw[0][0]:
+        return None
+    anchor = rw[:HEAD_ANCHOR_WORDS]
+    norms = [n for n, _ in jw]
+    for i in range(1, len(norms) - len(anchor) + 1):
+        if norms[i:i + len(anchor)] == anchor:
+            head = " ".join(words[:jw[i][1]])
+            return f"{head} {redecoded}", head
+    return None

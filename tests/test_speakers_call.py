@@ -1,6 +1,6 @@
 """speakers/speaker-sidecar2.py, the call leg: a call line (source "call", device call:N) is cut
-from the bot's caller-call.wav (mike-call.wav in a call dir from before PHONE-127) at
-wav_s + t0 .. wav_s + t1, wav_s from ear-taps.jsonl, and named
+from the bot's caller-call.wav, the one name read (a call dir from before PHONE-127 is not read;
+EARS-490), at wav_s + t0 .. wav_s + t1, wav_s from ear-taps.jsonl, and named
 against the CALL references (barge in only on a voice identified as the
 user's). No model: functions are lifted by name, as in test_speakers_follow."""
 import collections, datetime as dt, importlib, json, os, re, subprocess, sys, time, wave
@@ -14,6 +14,7 @@ from test_speakers_follow import SC, SR, lift
 from test_speakers_parity import SD_STUB
 
 T0_EPOCH = dt.datetime.fromisoformat(T0).timestamp()
+OTHER = "other-call"     # a stand-in for any recording not named caller-call
 
 
 def growing_wav(path, samples):
@@ -124,11 +125,10 @@ def test_listen_started_picks_the_capture_s_own_tap(tmp_path):
 
 @pytest.mark.parametrize("have,want", [
     (["caller-call.wav"], "caller-call.wav"),                  # a call since PHONE-127
-    (["mike-call.wav"], "mike-call.wav"),                      # an older call dir keeps its name
-    (["mike-call.wav", "caller-call.wav"], "caller-call.wav"), # both: the new name wins
+    ([f"{OTHER}.wav", "caller-call.wav"], "caller-call.wav"),  # another recording beside it: never read
 ])
-def test_a_call_line_is_cut_from_caller_call_wav_else_mike_call_wav(tmp_path, have, want):
-    """EARS-298: PHONE-127 renamed the bot's recording mike-call.wav -> caller-call.wav."""
+def test_a_call_line_is_cut_from_caller_call_wav_only(tmp_path, have, want):
+    """EARS-298, EARS-490: caller-call.wav is the one name the call leg reads."""
     ns, rows, d = leg(tmp_path)
     for n in have:
         growing_wav(d / n, ramp(0, 30))
@@ -161,7 +161,9 @@ def test_a_copy_of_the_side_car_outside_the_repo_runs_without_the_helper_until_i
 
 
 @pytest.mark.parametrize("make,why", [
-    (lambda d: None, "no caller-call.wav or mike-call.wav for call 54541 in "),   # both names, and where
+    (lambda d: None, "no caller-call.wav for call 54541 in "),                 # the name, and where
+    (lambda d: growing_wav(d / f"{OTHER}.wav", ramp(0, 30)),                   # only another name:
+     "no caller-call.wav for call 54541 in "),                                 # not read
     (lambda d: growing_wav(d / "caller-call.wav", ramp(0, 1)), "no ear-taps.jsonl row"),
 ])
 def test_a_call_line_that_cannot_be_placed_gets_its_row_now(tmp_path, make, why):
@@ -208,9 +210,9 @@ def test_call_dirs_default_names_no_agent_and_finds_every_bot(tmp_path, monkeypa
     """EARS-202 fix-003: the default was two of our agents' homes; it is now every
     ~/.<agent>/delta-chat/calls, as the ears and the mouth find a bot's sockets."""
     monkeypatch.delenv("SESSIONPHONE_ROOT", raising=False)
-    ns = lift("call_dir", "CALL_DIRS", os=os); ns["Path"] = Path
-    assert ".ivy" not in ns["CALL_DIRS"] and ".vera" not in ns["CALL_DIRS"]
     home = tmp_path / "home"; monkeypatch.setenv("HOME", str(home))
+    ns = lift("call_dir", "phone_roots", "CALL_DIRS", os=os); ns["Path"] = Path
+    assert ".ivy" not in ns["CALL_DIRS"] and ".vera" not in ns["CALL_DIRS"]
     old = home / ".alice" / "delta-chat" / "calls" / "20300609-080000-chat12-msg54541"
     new = home / ".bob" / "delta-chat" / "calls" / "20300609-090000-chat3-msg54541"
     for d in (old, new): d.mkdir(parents=True)
@@ -249,10 +251,11 @@ def test_call_dir_finds_a_web_call_s_dir_named_by_its_id(tmp_path):
 
 def test_call_dirs_default_covers_sessionphone_s_web_calls(tmp_path, monkeypatch):
     """The default reaches sessionphone's web calls as the ears reach its sockets (bot_roots):
-    $SESSIONPHONE_ROOT, else ~/.sessionphone. Beside every agent's Delta bot, not instead."""
+    $SESSIONPHONE_ROOT, else the new root and ~/.sessionphone (EARS-486, below). Beside every
+    agent's Delta bot, not instead."""
     home = tmp_path / "home"; monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("SESSIONPHONE_ROOT", raising=False)
-    ns = lift("call_dir", "CALL_DIRS", os=os); ns["Path"] = Path
+    ns = lift("call_dir", "phone_roots", "CALL_DIRS", os=os); ns["Path"] = Path
     web = home / ".sessionphone" / "web" / "calls" / str(WEB)
     delta = home / ".alice" / "delta-chat" / "calls" / "20300609-080000-chat12-msg54541"
     for d in (web, delta): d.mkdir(parents=True)
@@ -261,10 +264,106 @@ def test_call_dirs_default_covers_sessionphone_s_web_calls(tmp_path, monkeypatch
 
     sp = tmp_path / "elsewhere"; (sp / "web" / "calls" / str(WEB)).mkdir(parents=True)
     monkeypatch.setenv("SESSIONPHONE_ROOT", str(sp))
-    ns = lift("call_dir", "CALL_DIRS", os=os); ns["Path"] = Path
+    ns = lift("call_dir", "phone_roots", "CALL_DIRS", os=os); ns["Path"] = Path
     roots = ns["CALL_DIRS"].split(":")
     assert ns["call_dir"](str(WEB), roots) == sp / "web" / "calls" / str(WEB)
     assert ns["call_dir"]("54541", roots) == delta              # the Delta bots are still searched
+
+
+# ---- EARS-486: the web calls under every phone root, as EARS-372 reads them (PHONE-270 moves
+# sessionphone's root to ~/.sessionkit/phone/state; ~/.sessionphone is a symlink to it for one
+# release, then goes). The side-car's phone_roots() is a stdlib copy of keeper/phone_roots.py's.
+
+NEW_ROOT = (".sessionkit", "phone", "state")
+KEEPER = Path(__file__).resolve().parents[1] / "keeper"
+
+
+def _call_dirs(monkeypatch, home):
+    """The side-car's CALL_DIRS under HOME, split: its default --call-dirs roots."""
+    monkeypatch.setenv("HOME", str(home))
+    return lift("phone_roots", "CALL_DIRS", os=os)["CALL_DIRS"].split(":")
+
+
+def _web(root):
+    return str(Path(root) / "web" / "calls")
+
+
+def test_a_web_call_under_the_new_phone_root_only_is_found(tmp_path, monkeypatch):
+    """A moved host with the old root gone: the call is still found, and its Delta bots too."""
+    home = tmp_path / "home"
+    monkeypatch.delenv("SESSIONPHONE_ROOT", raising=False)
+    web = home.joinpath(*NEW_ROOT, "web", "calls", str(WEB)); web.mkdir(parents=True)
+    delta = home / ".alice" / "delta-chat" / "calls" / "20300609-080000-chat12-msg54541"; delta.mkdir(parents=True)
+    assert not (home / ".sessionphone").exists()
+    roots = _call_dirs(monkeypatch, home)
+    ns = lift("call_dir"); ns["Path"] = Path
+    assert ns["call_dir"](str(WEB), roots) == web and ns["call_dir"]("54541", roots) == delta
+
+
+def test_both_phone_roots_are_searched_the_new_first(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.delenv("SESSIONPHONE_ROOT", raising=False)
+    home.joinpath(*NEW_ROOT).mkdir(parents=True); (home / ".sessionphone").mkdir()
+    old_call = home / ".sessionphone" / "web" / "calls" / str(WEB); old_call.mkdir(parents=True)
+    roots = _call_dirs(monkeypatch, home)
+    assert roots == ["~/.*/delta-chat/calls", _web(home.joinpath(*NEW_ROOT)), _web(home / ".sessionphone")]
+    ns = lift("call_dir"); ns["Path"] = Path
+    assert ns["call_dir"](str(WEB), roots) == old_call            # the old root alone still found
+
+
+def test_the_old_phone_root_a_symlink_to_the_new_is_one_entry(tmp_path, monkeypatch):
+    """For one release ~/.sessionphone is a symlink to the new root: searched once, by the
+    new spelling. The other way round (the new a link to the old) is one entry too."""
+    home = tmp_path / "home"
+    monkeypatch.delenv("SESSIONPHONE_ROOT", raising=False)
+    home.joinpath(*NEW_ROOT).mkdir(parents=True)
+    (home / ".sessionphone").symlink_to(home.joinpath(*NEW_ROOT), target_is_directory=True)
+    assert _call_dirs(monkeypatch, home) == ["~/.*/delta-chat/calls", _web(home.joinpath(*NEW_ROOT))]
+
+    back = tmp_path / "back"; (back / ".sessionphone").mkdir(parents=True)
+    back.joinpath(*NEW_ROOT).parent.mkdir(parents=True)
+    back.joinpath(*NEW_ROOT).symlink_to(back / ".sessionphone", target_is_directory=True)
+    assert len(_call_dirs(monkeypatch, back)) == 2
+
+
+def test_sessionphone_root_set_is_the_only_phone_root(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    for d in (home.joinpath(*NEW_ROOT, "web", "calls", str(WEB)), home / ".sessionphone" / "web" / "calls" / str(WEB)):
+        d.mkdir(parents=True)
+    monkeypatch.setenv("SESSIONPHONE_ROOT", str(tmp_path / "explicit"))
+    roots = _call_dirs(monkeypatch, home)
+    assert roots == ["~/.*/delta-chat/calls", _web(tmp_path / "explicit")]
+    ns = lift("call_dir"); ns["Path"] = Path
+    assert ns["call_dir"](str(WEB), roots) is None                 # neither default is read
+    monkeypatch.setenv("SESSIONPHONE_ROOT", "~/mine")
+    assert _call_dirs(monkeypatch, home)[1:] == [_web(home / "mine")]   # ~ expanded, as the keeper's
+
+
+def _keeper_roots():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("phone_roots_for_sidecar", KEEPER / "phone_roots.py")
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    return m
+
+
+def test_the_side_car_copy_of_phone_roots_equals_the_keepers(tmp_path, monkeypatch):
+    """The side-car's venv imports nothing from ears, so it carries its own phone_roots(): it
+    gives what keeper/phone_roots.py gives, in order, over every case."""
+    home = tmp_path / "home"; home.mkdir(); monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("SESSIONPHONE_ROOT", raising=False)
+    pr = _keeper_roots()
+
+    def same():
+        assert lift("phone_roots", os=os)["phone_roots"]() == pr.phone_roots()
+
+    same()                                                          # neither root there
+    home.joinpath(*NEW_ROOT).mkdir(parents=True); same()            # new only
+    (home / ".sessionphone").mkdir(); same()                        # both
+    (home / ".sessionphone").rmdir()
+    (home / ".sessionphone").symlink_to(home.joinpath(*NEW_ROOT), target_is_directory=True); same()
+    monkeypatch.setenv("SESSIONPHONE_ROOT", str(tmp_path / "x")); same()
+    monkeypatch.setenv("SESSIONPHONE_ROOT", "~/y"); same()
+    monkeypatch.setenv("SESSIONPHONE_ROOT", ""); same()             # empty: not set
 
 
 def test_a_web_call_line_is_cut_from_its_caller_call_wav_at_wav_s_plus_t0(tmp_path):
@@ -286,7 +385,7 @@ def test_a_web_call_with_taps_and_no_wav_still_gets_its_unheard_row(tmp_path):
     found, not silently skipped."""
     ns, rows, d = leg(tmp_path, taps=({"t": T0_EPOCH - 60, "call": WEB, "wav_s": 0.659},), name=str(WEB))
     ns["take_call"](call_line(1, dev=f"call:{WEB}"), "d")
-    assert rows == [(1, None, None, f"no caller-call.wav or mike-call.wav for call {WEB} in {d}", "call")]
+    assert rows == [(1, None, None, f"no caller-call.wav for call {WEB} in {d}", "call")]
     assert not ns["call_backlog"]
 
 
@@ -300,7 +399,7 @@ def test_a_call_line_with_no_call_dir_names_every_root_it_searched(tmp_path, mon
     ns["take_call"](call_line(1, dev=f"call:{WEB}"), "d")
     (seq, seg, _, why, legname), = rows
     assert (seq, seg, legname) == (1, None, "call")
-    assert why == (f"no caller-call.wav or mike-call.wav for call {WEB} (no dir *-msg{WEB} or {WEB}/ "
+    assert why == (f"no caller-call.wav for call {WEB} (no dir *-msg{WEB} or {WEB}/ "
                    f"under {home}/.*/delta-chat/calls:{tmp_path / 'calls'})")
     assert not ns["call_backlog"]
 
@@ -366,4 +465,4 @@ def test_end_to_end_a_web_call_and_a_delta_call_both_label_theo(tmp_path):
     assert rows[2]["speaker"] == "theo" and rows[2]["leg"] == "call", rows[2]          # the web call
     assert rows[2]["device"] == f"call:{WEB}" and rows[2]["refs"] == ["theo"] and "why" not in rows[2]
     assert rows[3]["speaker"] == "unheard" and rows[3]["leg"] == "call"
-    assert rows[3]["why"] == f"no caller-call.wav or mike-call.wav for call {WEB + 1} in {calls / str(WEB + 1)}"
+    assert rows[3]["why"] == f"no caller-call.wav for call {WEB + 1} in {calls / str(WEB + 1)}"

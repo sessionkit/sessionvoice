@@ -15,6 +15,24 @@ G3-voicemode-link, G4-speech-use): a real install now ends with one ``log    <pa
 the install log it appended to (``services.install_log_path``). The dry runs write no log
 and print no row, so they are unchanged.
 
+A third deliberate change, made by hand to the one ``heard`` setup line in each of the
+five stdouts (all five run on a postfix host): room turns now go to one address,
+``heard+room``, whatever input device the capture follows, so the line names
+``message subscription add heard+room`` where it named ``heard+macbook``. No other byte of
+any case changed.
+
+A fourth deliberate change (EARS-478), re-captured and its diff read: the speech plist in the
+four G1 and G3 cases runs ``-c`` and ``services.SPEECH_LAUNCH`` (MLX's cache capped, then
+mlx_audio.server's main()) where it ran ``-m mlx_audio.server``. The same flags follow it. No
+other byte of any case changed.
+
+A fifth deliberate change (EARS-483), made by hand with one replace over the fixture: every
+log path moved into the voice log folder, ``ears.home.log_dir`` (the fence's ``services.LOGS``
+under the temp HOME). ``<TMP>/home/Library/Logs/ears`` became ``<TMP>/home/.sessionkit/voice/log``
+(every StandardOutPath and StandardErrorPath, the keeper's EARS_LOG_DIR, ears-mail's
+--fire-log, mlx-audio's --log-dir), and the install log's row, ``<TMP>/home/.sessionvoice/logs/
+install.log``, became ``<TMP>/home/.sessionkit/voice/log/install.log``. No other byte changed.
+
 Two kinds of case:
 
 - **success** (every prerequisite present): rc, stdout, stderr and the bytes of every plist

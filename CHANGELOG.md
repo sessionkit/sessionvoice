@@ -10,6 +10,205 @@ All notable changes to sessionvoice are documented here. The format is
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-28
+
+### Added
+
+- `mouth split FILE...` separates a song into its four stems (vocals,
+  drums, bass, other) and its instrumental, the song without its vocals.
+  They go into the file's sidecar, `.<file>.d/` beside it, with a
+  `split.json` manifest that says what made them and from which bytes
+  (`docs/sidecar.md`). A file whose outputs are current is left alone, and
+  `--force` splits it again. Outputs appear all at once, and a split that
+  fails leaves none. It prints one JSON line per file and exits 0 (made or
+  already there), 2 (refused) or 1 (failed).
+- `mouth split --install [--dry-run]` installs the separator, only when
+  asked: Demucs 4.1.0 and torch in a venv of its own, built with uv from a
+  hash-locked list, and the `htdemucs` model, fetched at a pinned revision
+  and checked against its full SHA-256 (`docs/models.md`). About 1 GB, on an
+  Apple-silicon Mac on macOS 14 or later. It is never a dependency of the
+  package, and `ears services install` never installs it.
+  `MOUTH_SEPARATOR_HOME` moves it, and `MOUTH_SEPARATOR` names a command to
+  run in its place.
+- `mouth play --stem NAME[,NAME]` plays one stem of a song, or several
+  mixed in one ffmpeg so they stay in step. A stem that has not been made
+  is refused, naming the command that makes it; a stem is never made on
+  its own.
+- The `music_instrumental` setting in `mouth.json` (on by default, read
+  from every settings layer), `MOUTH_MUSIC_INSTRUMENTAL`, and
+  `mouth play --instrumental` / `--no-instrumental`, which win in that
+  order: the flag, the variable, then the settings.
+- `mouth status` lists the running splits, and the `saying` and `said`
+  rows of a played file carry `source_file`, `instrumental_from`, `stem`
+  and `split`.
+- `sessionvoice-web web-room`: Talk's room descriptor for the kit's web
+  page, printed as one line of JSON (a name, a title, the package and the
+  command that starts the room). The same descriptor is `talk.web:room` in
+  the `sessionkit.web` entry-point group, for a front door installed in the
+  same environment. Its command runs the answering environment's own
+  interpreter with `-I`, so nothing looks `talk` up on `PATH` and a
+  `talk.py` in the front door's working directory is never served. It loads
+  no audio or model code. See `docs/talk.md`.
+- `talk serve --kit --unix PATH`: Talk as a room behind the kit's web front
+  door. It listens on the unix socket only and lets in only its own uid
+  (`--proxy-uid` is refused with it). It trusts the front door's
+  `X-Sessionkit-User` header on every route, so there is no token and no
+  pairing, and `POST pair` is a 404. It answers the browser's Host as the
+  front door forwards it, never `localhost`, and an Origin only when it
+  names that same host and port. `--kit` without a unix socket exits 2
+  before anything binds. Without `--kit`, `talk serve` is unchanged.
+
+### Changed
+
+- The ears skill points to the kit's etiquette for several agents in one
+  seat, the sessionkit skill's "Several agents in one seat" card, in one
+  line after its lead paragraph, and does not repeat it.
+- The ears and the mouth find a Delta call's sockets at sessionphone's new
+  root, `~/.sessionkit/phone/state`, as well as at the old `~/.sessionphone`.
+  While the old root is a symlink to the new one, a call is found once.
+  `$SESSIONPHONE_ROOT`, when it is set, is the only sessionphone root
+  searched. `$DC_ROOT` is searched too when it is set, and each
+  `~/.<agent>/delta-chat` still is. `ears-mail` skips sessionphone web's
+  leg at either root.
+- Every voice log moves to `~/.sessionkit/voice/log/`, beside the settings,
+  through one resolver (`ears.home.log_dir()`). The services' logs, the
+  install log (was `<home>/logs/install.log`), the mouth's `player.log` and
+  `split.log`, the keeper's capture and call logs, and the sound agents'
+  logs all follow it, and `EARS_LOG_DIR` still moves the folder. Old logs in
+  `~/Library/Logs/ears/` and in an older log folder are left in place and
+  never deleted or copied; `ears services status` prints the new folder, and a
+  pointer line while the old ones still hold a file. The two HAND jobs, a
+  hand-made launch job for the speakers and `dev.voicemode.ears-sounds`, keep
+  logging to that older log folder until each is given its own GO (a re-install
+  skips a present HAND label). No host step ships with this change: a deploy
+  re-renders the plists.
+- `mouth play` now plays a song's instrumental, without its vocals, by
+  default. A file with an instrumental in its sidecar plays that. A song
+  with none, 30 s or more of a file of 10 min or less, played locally and
+  not on a call, gets one made first when the separator is installed: the
+  play waits until it is made and says on stderr about how long that
+  takes. Spoken lines are not held. With no separator the file plays as it
+  is, with a line naming `mouth split --install`. Short sounds, plays on a
+  call and mailed plays never start a split. To keep the old behaviour, set
+  `"music_instrumental": false` in `mouth.json`, or pass
+  `--no-instrumental` for one play.
+- Room turns now go to one address, `heard+room`, whatever input the
+  capture follows; the device is in `Ears-Device`. Before, each input
+  device had its own address, so when the capture followed a new input
+  (a headset, say) its turns went to an address no session had subscribed
+  to, and they were lost. Run `message subscription add heard+room` once in
+  each session that hears the room. Until `--device-copy off`, each turn is
+  also copied to `heard+<device>` on the same send (one message, one
+  Message-ID), so existing subscriptions keep working. `--room` (or
+  `EARS_MAIL_ROOM`) names the room's tag; `ears services install` names
+  `heard+room` in its setup text. Delta call turns are unchanged.
+- Talk's page asks for its manifest with credentials
+  (`crossorigin="use-credentials"`), so behind a login, such as the kit's
+  front door, the manifest still loads and the page can be added to a home
+  screen. On its own, Talk is the same origin, so nothing changes there.
+- The entry above on the move out of `~/Library/Logs/` was reworded to drop
+  a personal name. What it says is unchanged.
+
+### Removed
+
+- Call dirs from before sessionphone renamed the call recording to
+  `caller-call.wav` and `caller-call.json` are no longer read. `ears eval
+  --call`, the speaker side-car's call leg and `bench/clock_check.py` read
+  `caller-call` only, and a call dir without it is reported as having no
+  `caller-call.wav` (or `.json`).
+
+### Fixed
+
+- `ears services status` no longer reads as if the ears had no
+  speech-to-text. Its `stt` row is the optional Apple STT server
+  (`ears services install --apple`), so on a default install it said
+  `stt    not installed` while the speech server on :8890 was transcribing.
+  The row keeps those words, says which server it means, and names what the
+  ears hear through, read from `final` in ears.json:
+  `stt    not installed (the optional --apple STT server); the ears hear
+  through http://127.0.0.1:8890/v1 (<model>), the speech server`. It probes
+  nothing; the `speech` row still says whether :8890 answers.
+- The speaker side-car finds a sessionphone web call's recording at
+  sessionphone's new root, `~/.sessionkit/phone/state/web/calls`, as well as
+  at the old `~/.sessionphone/web/calls`. It looked only at the old one, so
+  speaker names for web calls would have stopped once the old root's symlink
+  to the new one is removed. While that symlink is there, the dir is
+  searched once. `$SESSIONPHONE_ROOT`, when it is set, is still the only
+  sessionphone root it searches, and every `~/.<agent>/delta-chat/calls`
+  still is.
+- `ears services install` refuses to install the keeper when `call-ears`
+  or `phone_roots.py` is missing beside `ears-keeper.sh`, naming the missing
+  file, and writes nothing. It checked only for `ears-keeper.sh`, so a
+  keeper could be installed whose call ears could not start.
+- `mouth play` with no `--device` now plays on a one-channel system default
+  output, as `mouth say` does. Before, a played file asked the default for
+  two channels without checking how many it had. AirPods in hands-free mode,
+  while their microphone is in use, have one, so the play played nothing
+  while a spoken line on the same output played. A named device was
+  already asked. The same fix covers a spoken line with a pan.
+- A device that is there but refuses to open is now filed
+  `said reason=open-failed`, with the audio system's words in `detail`.
+  Before, it was filed `device-absent`, the same as a device that is not
+  there. `device-absent` now means only that the device, or PortAudio,
+  is missing.
+
+- With `--turn-text redecode`, a turn whose whole-turn decode lost its
+  first words no longer lands without them. On AirPods turns that decode
+  sometimes drops the head ("to make a change ..." for "They need to make
+  a change ..."). When the decode's opening words are found later in the
+  turn's joined partials, the partials' words before them are put back in
+  front, and the turn row says so with `head: "spliced"` and the restored
+  words in `head_words`. A decode that differs at the start any other way,
+  such as a better first word, is kept as it is. The cause is still open.
+
+- The speech server that `ears services install` installs no longer lets
+  MLX's buffer cache grow to almost all of the Mac's memory (a 12 GB
+  footprint and a 23 GB peak were seen). It is now capped at 512 MiB
+  before the server starts, and each start logs the cap. Set
+  `MLX_AUDIO_CACHE_LIMIT` (whole bytes) when you run install to change it:
+  install writes it into the plist, so it holds across restarts and
+  logins, and an install run without it goes back to 512 MiB. A server installed
+  before this runs uncapped until it is reinstalled
+  (`ears services uninstall --only speech`, then install again).
+- A speakers side-car stream that is covered and still hears nobody is now
+  caught. Blocks arrived and lines were covered, but the audio held no speech
+  where the capture heard words, and both deaf checks counted only cover. Three
+  such turns in a row now reopen the side-car's stream, and six make the
+  keeper mail `ears: speakers DEAF, no speech in N turns on DEVICE EOM`
+  (`EARS_SPEAKERS_SILENT_TURNS`) and then `hearing again` when a turn is named.
+  Only turns of 2 or more words that are not the mouth's own count, so a
+  quiet room never does.
+- The speakers side-car stamps each block of audio by the stream's own clock,
+  the moment the audio was taken, not the moment it arrived. A Bluetooth input
+  that stalls and then delivers a burst used to have the whole burst stamped on
+  arrival, so a line's window could hold audio from another moment and still
+  read 100% covered. A line's `cover` is now the share of its span that has
+  audio, and a moment claimed by two blocks counts once. The side-car also logs
+  stalls, at most once every 10 s, as
+  `mic: stalls on '<device>': blocks=N wait_max_s=… late_max_s=… lost_s=… stamps=stream|arrival`
+  in `ears-speakers.log`. This is a diagnostic as much as a fix: stall lines
+  beside AirPods rows that say `no speech found` point to a stalling stream;
+  no stall lines point elsewhere.
+- The speakers side-car opens its mic at the device's own default input
+  rate, and resamples each block to 16 kHz itself. It used to ask for 16 kHz
+  first and keep any stream that opened, leaving the conversion to the audio
+  driver. 16 kHz is now only the fallback when the default rate will not
+  open, and a device whose default is already 16 kHz is opened once, as
+  before. The `mic: open` line in `ears-speakers.log` names the rate it
+  opened at (`mic: open 'airpods' at 24000 Hz`). This is a hardening: on
+  AirPods, whose input runs at 24000, lines the capture heard came out
+  "no speech found" in the side-car and went out as `unknown@<host>`. The
+  16 kHz stream is the suspect, not a proven cause. After the update, the
+  `mic: open` line shows the new rate is in use, and AirPods rows that name
+  the speaker again show the fix worked.
+- The settings-schema copies (`.ears.schema.json`, `.ears-sounds.schema.json`,
+  `.mouth.schema.json`) follow an upgrade. Before, only `ears services
+  install` wrote them, so after `uv tool upgrade` or a pull a copy kept the
+  old schema, and a settings screen refused the keys the new version writes.
+  `ears services schema` brings them up to date by their bytes, with no
+  service reinstalled and no plist touched, and the keeper does the same at
+  its start. A copy that already matches is not written.
+
 ## [0.3.1] - 2026-10-25
 
 ### Added

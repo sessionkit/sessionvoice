@@ -12,11 +12,11 @@ woken by mail. Code: `src/ears/`, `keeper/`, `bin/`.
 - **Out:** the heard log,
   `<home>/logs/conversations/heard_YYYY-MM-DD.jsonl` (the home:
   [logs.md](logs.md#sessionvoices-home)), and, where
-  the mail agent runs, a mail to `heard+<device>@<host>` for a finished
-  turn heard in the room. A call's turns go to the log only.
+  the mail agent runs, a mail to `heard+room@<host>` for a finished
+  turn heard in the room, on whatever input device. A call's turns go to the log only.
 - **A seat uses it** in one of three ways:
-  - subscribe to the device's box, e.g. the built-in mic's:
-    `message subscription add heard+macbook`. The pager reads each turn
+  - subscribe to the room's address, which every input device's turns go to:
+    `message subscription add heard+room`. The pager reads each turn
     mail's headers to wake the seat or let the mail ride. By mail, "hey
     NAME" wakes only a seat that `ears wake add NAME` has made a wake seat;
   - arm a waiter on the log, in the background, re-armed on every fire:
@@ -68,8 +68,13 @@ woken by mail. Code: `src/ears/`, `keeper/`, `bin/`.
   `recogniser-lag` event for the episode. [logs.md](logs.md) gives each
   kind of line with its fields, and every log file the ears and the mouth
   write.
-- **The turn mail** is sent To and From `heard+<device>@<host>` by
-  `keeper/ears-mail.py`, through sessionmail's `message send`
+- **The turn mail** is sent To and From `heard+room@<host>` by
+  `keeper/ears-mail.py`, whatever input device the capture is following
+  (the device is the `Ears-Device` header; `--room`, or `EARS_MAIL_ROOM`,
+  names the room's tag). While `--device-copy` is on (the default), the same
+  send also goes Cc `heard+<device>@<host>`: one message with one
+  Message-ID, so a session subscribed to a device's address keeps hearing
+  that device's turns. It goes through sessionmail's `message send`
   (`$EARS_MAIL_MESSAGE`, else `message` on PATH, else where uv installs
   it: `~/.local/bin/message`, then
   `~/.local/share/uv/tools/sessionmail/bin/message`), never straight to an
@@ -99,16 +104,17 @@ woken by mail. Code: `src/ears/`, `keeper/`, `bin/`.
   postfix instead, set `"sendmail": "/usr/sbin/sendmail"` in that file:
   the launch agents do not see a `SESSIONMAIL_SENDMAIL` set in your
   shell. The turn mail is what pages a subscribed agent: an agent hears
-  a heard turn only once it subscribes to `heard+<device>`. A heard line
+  a heard turn only once it subscribes to `heard+room`. A heard line
   on its own pages nobody; only a reader of the log (a waiter, the
-  hook) sees it. `--to device` mails the room's turns to `heard+<device>`;
+  hook) sees it. `--to device` mails the room's turns to `heard+room`;
   a Delta call's turns go to the call's own box (the next item). Turns heard
   on a BlackHole input (the call tap), the mouth's echo and empty turns are
   skipped.
 - **The call-box mail** (`--to device`, `--calls on`, the default): each
   FINISHED `turn` of a Delta call (source `call`, device `call:N`) is
   mailed To `calls+<bot>-<N>@<host>`, the box the mouth reads. It is one
-  send per turn, and the turn never goes to `heard+<device>`, so a call
+  send per turn, and the turn never goes to any `heard+` address, To or
+  Cc, so a call
   turn marks no room line answered. The box carries both directions: the
   caller's turns come in from this mailer, and a seat's replies go To the
   same box, where the mouth says them into `call:N`. Only the caller's
@@ -130,10 +136,15 @@ woken by mail. Code: `src/ears/`, `keeper/`, `bin/`.
     leg names is skipped (`call-bot`) and the mailer goes on.
   - **Where the legs are:** `$EARS_CALL_SOCKS` (colon-separated; old name
     `VOICEMODE_CALL_EARS_SOCKS`), else `call-ears.sock` in sessionphone's
-    root (`$SESSIONPHONE_ROOT`, default `~/.sessionphone`) and in each
-    `~/.<agent>/delta-chat`, each `[/<profile>]/call-ears.sock`. So a Delta
-    bot kept in sessionphone's root (`~/.sessionphone[/<profile>]`) gets
-    call-box mail too, as well as one under `~/.<agent>/delta-chat`. The
+    root, in `$DC_ROOT` when it is set, and in each `~/.<agent>/delta-chat`,
+    each `[/<profile>]/call-ears.sock`. sessionphone's root is
+    `$SESSIONPHONE_ROOT` when it is set, and then only that. Otherwise it is
+    both `~/.sessionkit/phone/state` (the new root) and `~/.sessionphone`
+    (the old one). While the old root is a symlink to the new one, a socket
+    under it is counted once. So a Delta bot kept in sessionphone's root
+    (`<root>[/<profile>]`) gets call-box mail too, as well as one under
+    `~/.<agent>/delta-chat`. The mouth looks for `call-mouth.sock` in the
+    same places, so the two halves of a call pair up. The
     one leg left out is sessionphone web's, `<sessionphone root>/web/`: its
     server mails its own web turns, and its probe would name an agent that
     collides with a Delta bot's box. A Delta profile named `web` in
@@ -288,7 +299,7 @@ shows every failure. Its row says `FAILED:` and launchctl's reason, and one
 block on stderr names each service that did not load, the install log and
 `ears services status` as the next step. The `proof` line is not printed
 then. Every real run appends what it printed, and launchctl's answers, each
-timestamped, to the install log, `<sessionvoice's home>/logs/install.log`
+timestamped, to the install log, `install.log` in the log folder, `~/.sessionkit/voice/log/`
 ([logs](logs.md#the-log-files)), and prints that path as its `log` row. A
 dry run writes no log.
 
@@ -331,7 +342,7 @@ in by running it on `PostToolUse` and `PostToolBatch`, as
   own speech move its cursor and show nothing. A seat with no cursor yet
   starts at the end of the log.
 - **Partials-only.** A seat that gets heard mail (it subscribes to
-  `heard+<device>`) already gets each finished turn by mail. Run the hook
+  `heard+room`) already gets each finished turn by mail. Run the hook
   with `--partials-only` there, as `ears heard hook --partials-only || exit 1`:
   it then drops every finished turn, with the partials that turn covers,
   and carries only the partial preview, the shown events and the said
@@ -514,8 +525,9 @@ it ends.
 | `beat` | no heartbeat from the capture for 120 s (`EARS_BEAT_STALE`) | `ears: DEAF, no heartbeat since HH:MM on DEVICE EOM` | `room: beat: since HH:MM` |
 | `zeros` | 4 heartbeats in a row with `peak` 0 (`EARS_ZERO_BEATS`) | `ears: DEAF, mic gives only zeros on DEVICE at HH:MM EOM` | `room: zeros: 4 beats of peak 0` |
 | `cover` | 20 of the side-car's mic rows in a row with 0% of the line covered (`EARS_SPEAKERS_DEAF_LINES`) | `ears: speakers DEAF, 0% of N lines on DEVICE EOM` | `speakers: cover: N` |
+| `speech` | 6 of the side-car's covered mic turns in a row where the capture heard 2 or more words and the side-car found no speech (`EARS_SPEAKERS_SILENT_TURNS`) | `ears: speakers DEAF, no speech in N turns on DEVICE EOM` | `speakers: speech: N` |
 | room recovery | its last cause no longer holds | `ears: hearing again on DEVICE at HH:MM EOM` | `ears-hearing`: `room: hearing again, was CAUSE for DURATION` |
-| speakers recovery | a mic row with some of its line covered | `ears: speakers hearing again at HH:MM EOM` | `ears-hearing`: `speakers: hearing again, was cover for DURATION` |
+| speakers recovery | `cover`: a mic row with some of its line covered; `speech`: a mic row where the side-car named who spoke | `ears: speakers hearing again at HH:MM EOM` | `ears-hearing`: `speakers: hearing again, was CAUSE for DURATION` |
 
 - `CODE` is the HTTP status in the capture's error, or `?` when it has
   none. `DEVICE` is cut to 20 characters, and to 15 in the `zeros` mail.
@@ -562,6 +574,15 @@ it ends.
   are then a consequence, not a second fault. A row from a mic that gives
   only zeros is covered and does not count. A speakers episode that opened
   before such a mute stays open, silently, until a covered row arrives.
+- **`speech`** is the stream that is covered and still hears nobody. Its row's
+  `why` starts `words in the line, no speech found`. Only a `turn` counts,
+  with 2 or more words and no `mouth_utt`, so a quiet room (no words) never
+  counts. The side-car reopens its stream at 3 such turns, and the keeper
+  reports at 6, which is what the reopen did not cure. A 0% row and a covered
+  row that is no evidence either way (zeros, a partial, one word) leave the
+  run as it is, so `cover` and `speech` cannot hide each other. A row where
+  the side-car named who spoke ends it. It is muted as `cover` is. The
+  device is cut to 14 characters in its mail.
 - The heard log gets one `ears-deaf` event as an episode opens, one for
   each new cause during it, and one `ears-hearing` as it ends
   ([logs.md](logs.md)). The keeper log has a `DEAF (CHANNEL): CAUSE` line

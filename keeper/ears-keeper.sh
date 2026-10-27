@@ -94,16 +94,23 @@ fi
 NOTIFY="${EARS_NOTIFY:-}"
 # Paths: settings in the voice settings folder, VOICE_SETTINGS (a copy of
 # ears.home.SETTINGS; tests/test_settings_dir.py holds it to the module),
-# logs in ~/Library/Logs/<thing>/: ~/Library/Logs/ears, as `ears services` (src/ears/
-# services.py LOGS) has it (a host may set EARS_LOG_DIR to keep
-# another log dir). RUN (stop files, the input-watch binary
+# logs in the voice log folder, asked of the ONE resolver (ears.home.log_dir, as `ears
+# services` (src/ears/services.py LOGS) has it; $EARS_LOG_DIR moves it, and the resolver
+# reads that too). No copy of the path here: a python that cannot answer stops the keeper
+# (exit 2) before it writes anything. RUN (stop files, the input-watch binary
 # and state) has no fixed home yet: it defaults beside the package's other assets
 # in ~/.cache/ears, and EARS_RUN moves it.
 VOICE_SETTINGS="$HOME/.sessionkit/voice/settings"
 CONF="${EARS_CONF:-$VOICE_SETTINGS/ears.json}"
-LOGDIR="${EARS_LOG_DIR:-$HOME/Library/Logs/ears}"
+LOGDIR="$("$PY" -m ears.home log-dir)" && [ -n "$LOGDIR" ] || { echo "ears-keeper: $PY -m ears.home log-dir named no log folder - run \`uv sync\` in $ROOT, or set EARS_PY" >&2; exit 2; }
 RUN="${EARS_RUN:-$HOME/.cache/ears/run}"
 mkdir -p "$LOGDIR" "$RUN"
+# The settings-schema copies (.ears.schema.json and the rest), brought up to date with the
+# schemas this python's package ships, once per start: an upgrade replaces the schemas, never
+# the copies. A copy whose bytes already match is left alone, and the log gets a line only
+# when one was written. It never stops the keeper.
+SCHEMA_LINE="$("$PY" -m ears.services schema --quiet 2>/dev/null || true)"
+[ -n "$SCHEMA_LINE" ] && echo "$(date +%H:%M:%S) $SCHEMA_LINE"
 SILERO="${EARS_SILERO_ONNX:-$HOME/.cache/ears/silero_vad.onnx}"   # where `ears install` puts it (src/ears/vad.py)
 WATCH_SRC="$(cd "$(dirname "$0")" && pwd)/input-watch.swift"
 WATCH_BIN="${EARS_WATCH_BIN:-$RUN/input-watch}"
@@ -506,6 +513,9 @@ deaf_subject() {  # $1 channel, $2 cause, $3 detail, $4 device -> the DEAF mail'
       if [ "$1" = room ]; then echo "$who DEAF, mic gives only zeros${4:+ on ${4:0:15}} at $(date +%H:%M) EOM"; return; fi ;;
     cover) # the side-car's: "ears: speakers DEAF, 0% of N lines on DEVICE EOM" (detail N, <= 3 digits)
       if [ "$1" = speakers ]; then echo "$who DEAF, 0% of ${3:0:3} lines${dev:+ on $dev} EOM"; return; fi ;;
+    speech) # the side-car's: "ears: speakers DEAF, no speech in N turns on DEVICE EOM" (detail N,
+      # <= 2 digits). The device is cut to 14 to keep 64.
+      if [ "$1" = speakers ]; then echo "$who DEAF, no speech in ${3:0:2} turns${4:+ on ${4:0:14}} EOM"; return; fi ;;
   esac
   max=$(( 64 - ${#head} - ${#tail} )); [ "$max" -ge 1 ] || max=1
   body="${body:0:$max}"; body="${body%% }"; body="${body%:}"   # no dangling ": " when cut
@@ -648,14 +658,21 @@ heard_events() {  # $1 = heard log, $2 = byte offset -> line 1 the offset after 
   #   heard PID SESSION SOURCE DEVICE          a partial or turn with text: speech to text works.
   #                                            A run of the same line is printed once
   # With $3 = the side-car's speakers log and $4 = its byte offset, it reads that too, after them:
-  #   spk COVERED DEVICE                       a mic row (no `leg`: a call's rows are not the
-  #                                            room's). COVERED 0 = 0% of the line covered:
+  #   spk STATE DEVICE                         a mic row (no `leg`: a call's rows are not the
+  #                                            room's). STATE 0 = 0% of the line covered:
   #                                            `cover` == 0, or, before the side-car writes
   #                                            `cover`, a why ending "(0% of the line covered)".
-  #                                            1 = some: a row with no why was heard, and a
-  #                                            "no signal: the device gave only zeros" row says
-  #                                            "(N% ...)" with N > 0. A row that says neither
-  #                                            (a window in the future) is not printed
+  #                                            Some covered (a row with no why, or a why saying
+  #                                            "(N% ...)" with N > 0) is one of three:
+  #                                            1 = heard: no why, and a speaker named;
+  #                                            2 = covered and silent: a `turn` of 2 or more
+  #                                            words, no `mouth_utt`, whose why starts "words in
+  #                                            the line, no speech found" (the capture heard
+  #                                            words; the side-car's audio held no speech);
+  #                                            3 = covered, no evidence either way (zeros, a
+  #                                            partial, one word, the mouth's words, `silent`).
+  #                                            A row that says neither (a window in the future)
+  #                                            is not printed
   #   spkoff OFFSET                            last: the offset after its last whole line
   # Every field is non-empty ("?" for none): the TAB read would close up an empty one.
   python3 -c 'import json,re,sys
@@ -717,6 +734,10 @@ if len(sys.argv)>4:
     elif why.endswith("(0% of the line covered)"): z=0
     elif re.search(r"\(\d+% of the line covered\)$",why): z=1
     else: continue
+    if z==1 and (isinstance(why,str) or d.get("speaker") in ("silent","unheard")):
+      w="".join(ch.lower() if ch.isalnum() else " " for ch in str(d.get("text") or "")).split()
+      z=2 if (isinstance(why,str) and why.startswith("words in the line, no speech found")
+              and d.get("kind")=="turn" and len(w)>=2 and not d.get("mouth_utt")) else 3
     print("spk\t%d\t%s" % (z,txt(d.get("device"),20)))
   print("spkoff\t%d" % (so+se))' "$@"
 }
@@ -943,7 +964,7 @@ zeros_check() {  # the ONE reopen; call it every loop, after heard_watch (and be
   stop_capture || note "capture $zeros_pid did not stop"
 }
 # --- end zeros ---
-# --- speakers: the side-car hears nothing, 0% of its lines covered (tests/test_keeper_speakers_deaf.py runs this alone) ---
+# --- speakers: the side-car hears nothing: 0% of its lines covered, or covered with no speech (tests/test_keeper_speakers_deaf.py runs this alone) ---
 # The speaker side-car (speakers/speaker-sidecar2.py) opens the room capture's mic and names who
 # spoke each heard line. Its stream can open, stay active and deliver nothing: every line then gets
 # a row `why: "no audio from 'DEV' (0% of the line covered)"`. 27k such rows in 3h19m went unread
@@ -953,19 +974,37 @@ zeros_check() {  # the ONE reopen; call it every loop, after heard_watch (and be
 #   N lines on DEVICE`. The reopen is the side-car's own; the keeper only reports.
 # - A mic row with any coverage ends it: ONE recovery mail, `ears: speakers hearing again`. A
 #   "no signal: the device gave only zeros" row is covered (the room's zeros cause says that one).
+# - The other deaf: the stream is covered and its audio holds no speech while the capture heard
+#   words in the line. EARS_SPEAKERS_SILENT_TURNS (6) such turns in a row (state 2: a turn of 2+
+#   words, no mouth_utt; see heard_events) is DEAF, cause `speech`: ONE mail, `ears: speakers
+#   DEAF, no speech in N turns on DEVICE`. 6 because the side-car reopens its stream at 3 of
+#   them: the keeper reports what the reopen did not cure. A row with no words is no evidence,
+#   so a quiet room never counts. Only a heard row (state 1) ends this run and clears `speech`;
+#   a 0% row or a row that is no evidence (3) leaves it, so the two causes cannot hide each
+#   other. Every covered row (1, 2, 3) ends the 0% run and clears `cover`, as before.
 # - MUTED while the room is DEAF or no room capture runs: the side-car hears only while the keeper's
 #   capture runs, so its 0% rows are then a consequence, not a second fault. A muted row counts
-#   nothing and starts the run again. "No room capture" is the beat region's beat_pid: what
+#   nothing and starts its run again. "No room capture" is the beat region's beat_pid: what
 #   capture_pid said at the top of this loop (beat_track), so no row costs a second ps.
 SPK_DEAF_LINES="${EARS_SPEAKERS_DEAF_LINES:-20}"
 [[ "$SPK_DEAF_LINES" =~ ^[1-9][0-9]{0,2}$ ]] || SPK_DEAF_LINES=20   # 1-999: N fits the subject
-spk_n=0
+SPK_SILENT_TURNS="${EARS_SPEAKERS_SILENT_TURNS:-6}"
+[[ "$SPK_SILENT_TURNS" =~ ^[1-9][0-9]?$ ]] || SPK_SILENT_TURNS=6   # 1-99: N fits the subject
+spk_n=0; spk_q=0
 spk_muted() { deaf_room || [ -z "${beat_pid:-}" ]; }
-spk_seen() {  # $1 = 0 (a mic row with 0% of its line covered) or 1 (some covered), $2 = its device
-  if [ "$1" != 0 ]; then spk_n=0; deaf_clear speakers cover "$2"; return 0; fi
-  if spk_muted; then spk_n=0; return 0; fi
-  spk_n=$(( spk_n + 1 ))
-  [ "$spk_n" -ge "$SPK_DEAF_LINES" ] && deaf_set speakers cover "$SPK_DEAF_LINES" "$2"
+spk_seen() {  # $1 = the row's state (heard_events: 0 none covered, 1 heard, 2 covered and
+  # silent, 3 covered, no evidence), $2 = its device
+  case "$1" in
+    0) if spk_muted; then spk_n=0; return 0; fi
+       spk_n=$(( spk_n + 1 ))
+       [ "$spk_n" -ge "$SPK_DEAF_LINES" ] && deaf_set speakers cover "$SPK_DEAF_LINES" "$2" ;;
+    1) spk_n=0; spk_q=0; deaf_clear speakers cover "$2"; deaf_clear speakers speech "$2" ;;
+    2) spk_n=0; deaf_clear speakers cover "$2"
+       if spk_muted; then spk_q=0; return 0; fi
+       spk_q=$(( spk_q + 1 ))
+       [ "$spk_q" -ge "$SPK_SILENT_TURNS" ] && deaf_set speakers speech "$SPK_SILENT_TURNS" "$2" ;;
+    *) spk_n=0; deaf_clear speakers cover "$2" ;;
+  esac
   return 0
 }
 # --- end speakers ---

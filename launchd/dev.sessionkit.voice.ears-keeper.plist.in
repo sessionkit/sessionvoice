@@ -46,12 +46,13 @@
     <key>EARS_AGENT</key><string>ears</string>
     <key>EARS_SESSION</key><string>ears-keeper</string>
     <key>TM_AGENT_ADDRESS</key><string>ears</string>
+    <key>EARS_LOG_DIR</key><string>@EARS_LOG_DIR@</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>AbandonProcessGroup</key><true/>
-  <key>StandardOutPath</key><string>@HOME@/Library/Logs/ears/ears-keeper.log</string>
-  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/ears/ears-keeper.log</string>
+  <key>StandardOutPath</key><string>@EARS_LOG_DIR@/ears-keeper.log</string>
+  <key>StandardErrorPath</key><string>@EARS_LOG_DIR@/ears-keeper.log</string>
 </dict>
 </plist>

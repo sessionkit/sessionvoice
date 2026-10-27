@@ -100,7 +100,7 @@
     },
     "heard_partials_only": {
       "title": "Heard hook: partials only",
-      "description": "Off (the default): the heard hook (ears heard hook) shows each finished turn. On: it drops every finished turn and shows only the partial preview of a turn still being spoken, the shown events (wake word, barge-in, device change, call start and end) and other seats' said lines; it still moves past what it dropped. For seats that get each finished turn by mail (heard+<device>), so a turn is not shown twice. The hook's --partials-only or --no-partials-only wins over $EARS_HEARD_PARTIALS_ONLY, which wins over this. A value that is not true or false counts as off. Read on every hook run, with no restart.",
+      "description": "Off (the default): the heard hook (ears heard hook) shows each finished turn. On: it drops every finished turn and shows only the partial preview of a turn still being spoken, the shown events (wake word, barge-in, device change, call start and end) and other seats' said lines; it still moves past what it dropped. For seats that get each finished turn by mail (heard+room), so a turn is not shown twice. The hook's --partials-only or --no-partials-only wins over $EARS_HEARD_PARTIALS_ONLY, which wins over this. A value that is not true or false counts as off. Read on every hook run, with no restart.",
       "type": "boolean",
       "default": false
     }

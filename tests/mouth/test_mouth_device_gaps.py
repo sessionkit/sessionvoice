@@ -359,21 +359,24 @@ def test_unfaked_the_line_reaches_the_hosts_airpods(box, monkeypatch, tmp_path):
     say("hello", device="airpods")
     run_player(box.d).join(5)
     said = _said(box.logs)
-    assert said["reason"] == "device-absent" and "the host's airpods were opened" in said["detail"]
+    # the host fake's OutputStream raises: a device that is there and refused to
+    # open, so open-failed (EARS-489), not device-absent
+    assert said["reason"] == "open-failed" and "the host's airpods were opened" in said["detail"]
     assert "OPEN:1" in log.read_text().splitlines()   # index 1: airpods
 
 
 def test_unfaked_the_fence_refuses_the_line_and_names_the_test(box, monkeypatch):
     """The other half of EARS-320: no fake and no host fake, the real sounddevice is what
     the player would reach. The fence refuses it, installed or not; the player's broad
-    except still writes the line as device-absent, but the refusal is recorded, so a
-    test that forgot its fake fails at teardown instead of passing as "absent"."""
+    except still writes the line as unplayed (``open-failed`` since EARS-489: the
+    refusal is no DeviceAbsent), but the refusal is recorded, so a test that forgot
+    its fake fails at teardown instead of passing as "absent"."""
     monkeypatch.delitem(sys.modules, "sounddevice", raising=False)
     with expect_refusal() as got:
         say("hello", device="airpods")
         run_player(box.d).join(5)
     said = _said(box.logs)
-    assert said["reason"] == "device-absent" and said["detail"].startswith("RealAudioDevice: ")
+    assert said["reason"] == "open-failed" and said["detail"].startswith("RealAudioDevice: ")
     assert got and got[0]["test"].startswith(
         "tests/mouth/test_mouth_device_gaps.py::test_unfaked_the_fence_refuses_the_line_and_names_the_test")
 

@@ -1,7 +1,7 @@
 """talk command line.
 
   talk serve [--host H] [--port N] [--person NAME] [--smart-turn DIR] [--settings-url URL]
-             [--call-url URL] [--allow-host NAME ...] [--unix [PATH]] [--proxy-uid UID]
+             [--call-url URL] [--allow-host NAME ...] [--unix [PATH]] [--proxy-uid UID] [--kit]
       the live view: the page at /, its events at /events
   talk pair [--url URL]
       print this install's pairing link, URL#pair=<token>, to a terminal only
@@ -57,6 +57,14 @@ and --proxy-uid (default 0, root, as tailscaled runs) may connect. There
 whenever TALK_UNIX_SOCKET is set or a socket sits at the default PATH: give the
 proxy's address with --url.
 
+`talk serve --kit --unix PATH` is the kit's web front door running talk as a
+room; you never run it by hand. It is socket mode with only talk's own uid let
+in (so --proxy-uid is refused with it), and the front door's login trusted:
+each request must carry its X-Sessionkit-User header, there is no token and no
+pairing, and the Host is the browser's, forwarded (never localhost), with an
+Origin that names the same host and port. --kit without a unix socket
+(--unix, or TALK_UNIX_SOCKET) exits 2 before anything binds.
+
 `talk token --rotate` writes a fresh token over the old one in one step. A
 running talk sees it at the next request, with no restart; open streams end
 within one keep-alive, and every browser shows its pairing panel. It prints the
@@ -101,9 +109,13 @@ def parser():
                     help="bind a unix socket at PATH and NO TCP port (env TALK_UNIX_SOCKET=PATH; PATH defaults"
                          " to <sessionvoice home>/talk/talk.sock). For a proxy such as tailscale serve"
                          " --set-path /talk unix:PATH; --host and --port are then unused")
-    sp.add_argument("--proxy-uid", metavar="UID", type=int, default=server.PROXY_UID,
+    sp.add_argument("--proxy-uid", metavar="UID", type=int, default=None,      # None: not given (--kit refuses it)
                     help="with --unix: the proxy's uid, which may connect besides talk's own"
-                         f" (default {server.PROXY_UID}, root, as tailscaled runs)")
+                         f" (default {server.PROXY_UID}, root, as tailscaled runs; not with --kit)")
+    sp.add_argument("--kit", action="store_true",
+                    help="run as a room behind the kit's web front door: needs --unix PATH; only talk's own"
+                         " uid may connect; the front door's X-Sessionkit-User is trusted, so there is no"
+                         " token and no pairing")
     pp = sub.add_parser("pair", help="print this install's pairing link (to a terminal only)",
                         description="Print URL#pair=<token>: open it in the browser to pair it with this"
                                     " install's talk. Printed only when stdout is a terminal; otherwise exit 2"
@@ -229,7 +241,20 @@ def main(argv=None):
         except ValueError as e:
             print(f"talk serve: --allow-host / TALK_ALLOW_HOSTS: {e}", file=sys.stderr)
             return 2
-        unix = {"unix": args.unix, "proxy_uid": args.proxy_uid} if args.unix else {}   # socket mode: no TCP port
+        if args.kit and not args.unix:          # before anything binds
+            print("talk serve: --kit needs --unix PATH (kit mode listens on a unix socket only)", file=sys.stderr)
+            return 2
+        if args.kit and args.proxy_uid is not None:
+            print("talk serve: --proxy-uid does not apply with --kit: kit mode admits talk's own uid only",
+                  file=sys.stderr)
+            return 2
+        if args.kit:                            # the kit's room: own uid only, no proxy uid
+            unix = {"unix": args.unix, "kit": True}
+        elif args.unix:                         # socket mode: no TCP port
+            unix = {"unix": args.unix,
+                    "proxy_uid": server.PROXY_UID if args.proxy_uid is None else args.proxy_uid}
+        else:
+            unix = {}
         try:
             server.serve(args.host, args.port, person=args.person,
                          smart_dir=args.smart_turn, settings_url=args.settings_url, call_url=call_url,

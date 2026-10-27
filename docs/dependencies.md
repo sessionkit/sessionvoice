@@ -10,8 +10,8 @@ The full resolved set, every package at the version this repo is tested with, is
   (`ears services install` fetches it too when it is missing).
 - **Optional:** the speech server and its weights, sessionmail's `message`,
   Claude Code, Apple's Command Line Tools, SwitchAudioSource, the speaker
-  side-car, the Apple speech helper, Nemotron, Smart Turn, and a few tools
-  single scripts use.
+  side-car, the Apple speech helper, Nemotron, Smart Turn, the separator,
+  and a few tools single scripts use.
 - **Pending a ruling:** Homebrew, tmux, notmuch and ffmpeg. Whether the
   family requires them is not decided yet; their entries say what uses each
   one today ([pending a ruling](#pending-a-ruling)).
@@ -34,7 +34,7 @@ the speech server. The engine alone (`ears file`, and `ears listen` with the
 
 | Dependency | What needs it | How you get it | How you upgrade it |
 |---|---|---|---|
-| Python 3.10 to 3.14 | Every command: `ears`, `ears-serve`, `mouth`, `talk`. The launch agents run on the same Python, and the keeper's JSON reads run its `python3`: install puts that Python's own folder first on the agents' `PATH`. | uv fetches one when it installs sessionvoice. | It stays with the install: `uv tool upgrade` keeps it. |
+| Python 3.10 to 3.14 | Every command: `ears`, `ears-serve`, `mouth`, `talk`, `sessionvoice-web`. The launch agents run on the same Python, and the keeper's JSON reads run its `python3`: install puts that Python's own folder first on the agents' `PATH`. | uv fetches one when it installs sessionvoice. | It stays with the install: `uv tool upgrade` keeps it. |
 | [uv](https://docs.astral.sh/uv/) | Installing sessionvoice; `ears services install`, which builds the speech server's venv with it, and the speaker side-car's with `--only speakers`; `make test`, which runs `uv run --locked`. | The uv installer. | `uv self update`. |
 | The Python packages | Every command. | The installer brings them from PyPI (below). | With sessionvoice: `uv tool upgrade`. |
 | The voice-activity model (Silero VAD) | The ears telling speech from silence: the keeper, every call ear, `ears listen` and `ears file`. | `ears install`, 2.3 MB to `~/.cache/ears/silero_vad.onnx`, pinned to one upstream release and checked against its SHA-256 ([models](models.md#silero-vad)). `ears services install` fetches the same file in the same way when it is missing and VoiceMode's copy is not there to link. | `ears install` leaves a model already on disk alone (your own `EARS_SILERO_ONNX`, or VoiceMode's copy) and only says whether it matches the pin. To replace it, remove the file and run `ears install`. |
@@ -76,6 +76,7 @@ The Python packages, from `pyproject.toml`:
 | The Apple speech helper | The `apple` backend and `ears serve`: macOS 27, Xcode's `swift`, and a source checkout. | No `apple` backend. The wheel does not ship `swift/`, so `--apple` without a checkout refuses. | `uv run ears install --apple`, from a checkout ([models](models.md#apple-speechtranscriber)). | Pull the checkout, then run it again. |
 | Nemotron | The `nemotron` backend and Nemotron partials. | No streaming Nemotron partials. | The `nemotron` extra; mlx-audio fetches the model, 1.28 GB, on first use ([models](models.md#nemotron-35-asr-streaming-06b)). | With sessionvoice. |
 | The Smart Turn model | `ears listen --turns smart`. | That turn stage cannot load. | `ears install` does not fetch it. With mlx-audio it is fetched from Hugging Face on first use; the ONNX file you download yourself ([models](models.md#smart-turn-v3)). | Fetch it again. |
+| The separator | The instrumental `mouth play` plays by default, and the stems `mouth play --stem` plays. An Apple-silicon Mac on macOS 14 or later. | A song with no instrumental yet plays as it is, and `mouth play` names `mouth split --install`; `--stem` is refused with the command that makes the stems. | `mouth split --install` builds its own venv with uv from [`separator/requirements.lock`](../separator/requirements.lock) (Demucs and torch, about 1 GB) and fetches its model, about 84 MB, checked against a pinned sha256 ([models](models.md#htdemucs)). | `mouth split --install` again: it re-applies the lock's pins. |
 
 A few tools serve one script each, outside the commands above: `bin/call-tap`
 needs sox and the BlackHole audio drivers ([call tap](call-tap.md)), and
@@ -142,19 +143,25 @@ researched.
 uv tool upgrade sessionkit             # or: uv tool upgrade sessionvoice
 ears services uninstall --only speech
 ears services install --agent NAME     # or --no-agent: what the first install used
+ears services schema                   # the settings-schema copies
 ```
 
 - **The first line** upgrades sessionvoice and its Python packages, and keeps
   the Python the install chose. Use `uv tool upgrade sessionkit` when the
   kit installed sessionvoice. From a checkout, pull, then run the same
   `uv pip install -e` again.
-- **The other two** apply only when sessionvoice runs its own speech server
+- **The next two** apply only when sessionvoice runs its own speech server
   (`ears services status` says `(ours)` on its `speech` row). While that
   server runs, a re-install only uses it, so remove it first; install then
   re-applies the new pins to its venv, which uninstall keeps. A bare
   `ears services install` is refused when the wake file names no seat, as
   on a Mac first installed with `--no-agent`, so give it the flag the first
   install used. A server someone else installed is theirs to upgrade.
+- **The last line** brings the settings-schema copies up to date with the
+  new schemas, so a settings screen does not refuse a key the new version
+  writes ([the schema copies](settings.md#the-files)). A copy that
+  already matches is left alone. The keeper does it at its next start too;
+  this line does it now.
 - **The speaker side-car**, if you installed it: `ears services install
   --only speakers` again.
 - **The plugin:** `claude plugin update sessionvoice@MARKETPLACE`, then

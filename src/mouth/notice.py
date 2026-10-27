@@ -181,6 +181,8 @@ _MSGID = re.compile(r"<[^<>\s\"]{1,250}>")
 _ADVICE = {
     "device-absent": "The device was not there when the line's turn came. "
                      "`mouth devices` lists what is there.",
+    "open-failed": "The device was there but would not open for this line; why says "
+                   "what the audio system answered.",
     "device-lost": "The device stopped taking audio part way through the line.",
     "error": "The mouth could not synthesise or play it.",
     "stop": "A stop cut it (`mouth stop`).",

@@ -16,6 +16,10 @@ from ears import envnames
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
+#: The separator home every test sees: a path that never exists, under a root no test may
+#: write (``tests/mouth/test_mouth_split.py`` holds it absent).
+NO_SEPARATOR_HOME = "/nonexistent/sessionvoice-test/separator-home"
+
 FENCE: dict = {
     # ...nor reaches a real audio device (EARS-320): the host's choice of output device
     # never reaches a test.
@@ -84,10 +88,36 @@ FENCE: dict = {
     # 2.9 GB when it installs the speech server. Off for every test; the prefetch's own tests
     # (tests/test_services_prefetch.py) unset it and fake the fetch seam.
     "EARS_NO_PREFETCH": "1",
+    # ...nor the runner's speech cache cap (EARS-478): install writes $MLX_AUDIO_CACHE_LIMIT
+    # into the speech plist, so a runner that exports one (a hand-capped Mac does) would
+    # change every plist a test writes. tests/test_services_speech_cache.py sets it.
+    "MLX_AUDIO_CACHE_LIMIT": None,
     # ...nor the runner's room-hold switch (EARS-434): MOUTH_ROOM_HOLD=off would play every
     # room line at once, so a test of the default would pass or fail on the runner's shell.
     # tests/mouth/test_mouth_room_hold.py sets it where it means to.
     "MOUTH_ROOM_HOLD": None,
+    # ...nor the runner's instrumental switch: $MOUTH_MUSIC_INSTRUMENTAL beats every
+    # settings layer, so a runner that exports it would decide every test of the
+    # default. tests/mouth/test_mouth_instrumental_setting.py sets it where it means to.
+    "MOUTH_MUSIC_INSTRUMENTAL": None,
+    # ...nor the runner's separator: set at all, $MOUTH_SEPARATOR counts as a separator
+    # present, so every eligible play in any test would start a split. A test that splits
+    # sets it to tests/fixtures/fake_separator.py itself.
+    "MOUTH_SEPARATOR": None,
+    # ...nor the runner's installed one: the home is pinned to a path that never exists, so
+    # no install stamp is ever found (and nothing could be written there). The install's
+    # own tests set a home in tmp.
+    "MOUTH_SEPARATOR_HOME": NO_SEPARATOR_HOME,
+    # ...nor the fake separator's knobs (tests/fixtures/fake_separator.py): a runner that
+    # exported one would fail or slow every split. Its tests set them where they mean to.
+    "MOUTH_FAKE_SEPARATOR_LOG": None,
+    "MOUTH_FAKE_SEPARATOR_FAIL": None,
+    "MOUTH_FAKE_SEPARATOR_SLEEP": None,
+    "MOUTH_FAKE_SEPARATOR_SPEECH": None,
+    # ...nor the runner's log folder (EARS-483): $EARS_LOG_DIR moves every voice log
+    # (ears.home.log_dir), so a runner that exports one would decide every test of the
+    # default. The tests that move it set it themselves, in tmp.
+    "EARS_LOG_DIR": None,
 }
 
 

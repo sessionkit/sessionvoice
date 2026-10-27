@@ -5,7 +5,7 @@
      names who said each heard line, into speakers_YYYY-MM-DD.jsonl beside the heard log.
      It follows the ears keeper's capture from device to device (SPEAKER_DEVICE=follow).
      A TEMPLATE: render it, then install (no machine paths live here):
-       mkdir -p ~/Library/Logs/ears
+       mkdir -p "$(.venv/bin/python -m ears.home log-dir)"   # the voice log folder
        SPEAKER_PY=/path/to/a/python/with/mlx-audio AGENT_REFS=ada \
            bin/render-plist launchd/dev.sessionkit.voice.ears-speakers.plist.in > ~/Library/LaunchAgents/dev.sessionkit.voice.ears-speakers.plist
      bin/render-plist fills @HOME@ and @EARS_REPO@ (the checkout it runs from) itself;
@@ -22,7 +22,7 @@
      The microphone: macOS asks for a grant per binary, so that copy (the venv's
      bin/ears-speakers) under launchd may need its own, again after a python upgrade
      refreshes it. Without one the stream gives only zeros, and every row says
-     speaker "unheard", why "no signal". Check ~/Library/Logs/ears/ears-speakers.log
+     speaker "unheard", why "no signal". Check ears-speakers.log in the voice log folder
      (run.sh runs in the foreground here; speakers.log is only for run.sh detached) for
      "mic: open" and for the rows.
      It opens the mic only while the keeper's capture runs. Never run it beside a
@@ -62,7 +62,7 @@
     <key>SuccessfulExit</key><false/>
   </dict>
   <key>ThrottleInterval</key><integer>30</integer>
-  <key>StandardOutPath</key><string>@HOME@/Library/Logs/ears/ears-speakers.log</string>
-  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/ears/ears-speakers.log</string>
+  <key>StandardOutPath</key><string>@EARS_LOG_DIR@/ears-speakers.log</string>
+  <key>StandardErrorPath</key><string>@EARS_LOG_DIR@/ears-speakers.log</string>
 </dict>
 </plist>

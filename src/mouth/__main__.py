@@ -1,4 +1,4 @@
-"""mouth CLI: say, again, stop, status, duck, gain, timeline, devices, voices, resolve, render, audio, serve.  ``python -m mouth --help``"""
+"""mouth CLI: say, again, stop, status, duck, gain, timeline, devices, voices, resolve, render, audio, split, serve.  ``python -m mouth --help``"""
 
 from __future__ import annotations
 
@@ -132,6 +132,15 @@ def main(argv=None) -> int:
                        "it still mixes, and speech never cuts it")
     pl.add_argument("--duck-level", metavar="N",
                     help="its level while ducked, 0-100 of its own (else mouth.music_duck_level, 20)")
+    pinst = pl.add_mutually_exclusive_group()
+    pinst.add_argument("--instrumental", dest="instrumental", action="store_const", const=True,
+                       help="play the file's instrumental, without its vocals "
+                       "(the default: mouth.music_instrumental, on)")
+    pinst.add_argument("--no-instrumental", dest="instrumental", action="store_const", const=False,
+                       help="play the file as it is, vocals and all (beats the setting)")
+    pinst.add_argument("--stem", metavar="NAME[,NAME]",
+                       help="play one stem from the file's sidecar, or a comma list mixed: "
+                       "vocals, drums, bass, other (made by `mouth split FILE`)")
     pl.add_argument("--wait", action="store_true")
     ppri = pl.add_mutually_exclusive_group()
     ppri.add_argument("--next", dest="priority", action="store_const", const="next")
@@ -250,6 +259,16 @@ def main(argv=None) -> int:
     au = sub.add_parser("audio", help="JSON lines: the lines the mouth kept (a WAV each), newest first")
     au.add_argument("--voice", help="only this voice's lines")
     au.add_argument("--last", type=int, help="at most this many")
+    sp = sub.add_parser("split", help="make a song's stems and instrumental in its sidecar; "
+                        "--install builds the separator they are made with")
+    sp.add_argument("files", nargs="*", metavar="FILE")
+    sp.add_argument("--install", action="store_true",
+                    help="build the separator: its venv (about 1 GB, with uv) and its model "
+                         "(about 84 MB), each checked against its pinned sha256")
+    sp.add_argument("--dry-run", action="store_true",
+                    help="with --install: say what it would build and fetch, and do nothing")
+    sp.add_argument("--force", action="store_true",
+                    help="split FILE again even if its outputs are current")
     v = sub.add_parser("serve", help="run the player in the foreground (say starts one for you)")
     v.add_argument("--idle", type=float, help="exit after this long with nothing queued (default 600 s)")
 
@@ -286,7 +305,8 @@ def main(argv=None) -> int:
         try:
             r = play(a.source, start=a.start, end=a.end, device=a.device, pan=a.channel or a.pan,
                      log_dir=a.log_dir, wait=a.wait, priority=a.priority, volume=a.volume,
-                     duck=a.duck, duck_level=a.duck_level)
+                     duck=a.duck, duck_level=a.duck_level, instrumental=a.instrumental,
+                     stem=a.stem)
         except (ValueError, TimeoutError) as e:
             print(str(e), file=sys.stderr)
             return 2
@@ -294,7 +314,9 @@ def main(argv=None) -> int:
         if a.wait and r.get("cut"):
             from . import notice, sound_label
 
-            print(notice.cli_line(sound_label(r.get("file") or a.source, r.get("start"), r.get("end")), r),
+            # the file asked for: its instrumental, when one played, is named by source_file
+            asked = r.get("source_file") or r.get("file") or a.source
+            print(notice.cli_line(sound_label(asked, r.get("start"), r.get("end")), r),
                   file=sys.stderr)
         return 0 if not a.wait or r.get("reason") == "done" else 1
     if a.cmd in ("amend", "retract"):
@@ -397,6 +419,23 @@ def main(argv=None) -> int:
         for meta in kept(voice=a.voice, last=a.last):
             print(json.dumps(meta, ensure_ascii=False))
         return 0
+    if a.cmd == "split":
+        if a.dry_run and not a.install:
+            print("mouth split: --dry-run goes with --install", file=sys.stderr)
+            return 2
+        if a.install:
+            if a.files or a.force:
+                print("mouth split --install takes no FILE and no --force", file=sys.stderr)
+                return 2
+            from . import separator
+
+            return separator.install(dry_run=a.dry_run)
+        if not a.files:
+            print("mouth split: name a FILE to split, or --install", file=sys.stderr)
+            return 2
+        from . import split as _split
+
+        return _split.main(a.files, force=a.force)
     if a.cmd == "serve":
         import signal
 

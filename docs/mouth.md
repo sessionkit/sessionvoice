@@ -122,7 +122,15 @@ line names. A sound from `mouth play` plays on its own lane beside them
   absent at play gets `said reason=device-absent` and never falls back to
   another one. On a machine with no default output at all, a line that
   reached the last rung gets the same, with the detail "no default output
-  device" (`src/mouth/output.py`).
+  device" (`src/mouth/output.py`). A device that is there but refuses to
+  open gets `said reason=open-failed` instead, with the audio system's own
+  words in `detail` (for example `PortAudioError: Error opening
+  OutputStream: Invalid number of channels [-9998]`). It is never filed as
+  absent. A line that pans, and every played file (a played file opens
+  through the mixer, which pans), asks the device for two channels only when
+  the device has two. That includes the system default, so a one-channel
+  default output, such as AirPods in hands-free mode while their microphone
+  is in use, plays in mono.
 - **A host that can play nothing is refused before the id.** `mouth say`,
   `mouth play` and `mouth again` ask PortAudio in the caller's own process
   before a line is queued (`src/mouth/canplay.py`). If PortAudio is not
@@ -371,11 +379,16 @@ the current output, the current input and the volume makes one call.
 ## Play music or a sound
 
 To play music or a sound file for the user, queue it on the mouth, not on a
-separate player:
+separate player. By default a song plays without its vocals: the mouth plays
+the instrumental from the file's [sidecar](sidecar.md), and makes one first
+when the separator is installed. `--no-instrumental` plays the file as it is.
 
     mouth play FILE --device <the user's device>   # prints the utt id
     mouth play FILE --start 30 --end 90            # a section, in seconds
     mouth play FILE --volume 40                    # this file's level, 0-100
+    mouth play FILE --no-instrumental              # as it is, vocals and all
+    mouth play FILE --stem drums,bass              # stems from its sidecar, mixed
+    mouth split --install                          # the separator, once (about 1 GB)
 
 - **It ducks under speech.** A played file plays on its own lane beside the
   spoken lines. Lines mix over it, and it dips while one plays, to
@@ -383,6 +396,88 @@ separate player:
   even under a `mouth duck off` override; `--no-duck` never dips it (it
   still mixes); `--duck-level N` sets its level while ducked. The user's
   voice never cuts it.
+- **It plays without its vocals when it can.** If the file's sidecar holds
+  an instrumental (`mixes/instrumental.*` in `.<file>.d/`, the folder beside
+  it; [sidecar.md](sidecar.md) lists every layout it reads), the mouth plays that in its place, on any device, a call's included.
+  `mouth.music_instrumental` (on by default) turns this off;
+  `--no-instrumental` plays the file as it is for one play, and
+  `--instrumental` plays the instrumental even of a file a split judged to be
+  speech. With no instrumental, the file plays as it is. The `saying` and
+  `said` rows, and `mouth status`'s music row, name the file that played as
+  `file`, the file asked for as `source_file`, and the layer that answered as
+  `instrumental_from`. A mailed play takes an instrumental only from inside the
+  sounds directory, as it takes its file.
+- **A song with no instrumental gets one made first.** When you play 30 s or
+  more of a file of 10 min or less that has no instrumental yet, `mouth play`
+  starts `mouth split FILE` in the background. It prints one line on stderr
+  saying about how long that takes. The play waits in the queue until the
+  instrumental is made, then plays it; spoken lines are not held.
+  `--no-instrumental` plays the file now. A second play of the file during
+  its split waits on the same split.
+  - **While it waits,** later files for the same device wait behind it, so
+    plays keep their order; files for other devices play. `mouth status`
+    lists each running split under `splits` (`file`, `pid`, `started_t`,
+    `eta_s`, `left_s`, `deadline_t`, and the `plays` that wait on it).
+    `mouth retract <utt>` drops a waiting play; the split goes on, and its
+    instrumental serves the next play.
+  - **If the split fails,** stops, or runs past its deadline, the play goes
+    on with the file as it is. Its `said` row's `split` says what happened:
+    `state` (`done`, `failed`, `dead`, `overdue` or `missing`), `eta_s`, and
+    a `detail` when it played as it is. A play waits only while its file's
+    split is really running: a mailed play never waits.
+  - **What never starts a split:** a shorter span (a chime, or a short
+    `--start`/`--end` section), a play on a call device (`call` or
+    `call:<N>`), a file ffmpeg cannot read, a mailed play, and a file whose
+    split already failed (the line repeats the reason). A file over 10 min
+    plays as it is, with a line naming `--instrumental`.
+  - **With no separator installed** the file plays as it is, with a line on
+    stderr naming `mouth split --install`, on every such play. It is never
+    spoken.
+  - **`--instrumental` makes it first** whatever the length, and tries a
+    failed file again. When the file has no instrumental it is refused
+    (exit 2) on a call device, naming `mouth split FILE`; with no separator,
+    naming `mouth split --install`; and for a file ffmpeg gives no duration
+    for, which cannot be split.
+  - **`--wait` waits for the split too,** and its JSON carries
+    `split.eta_s`.
+- **The separator makes the instrumental,** and is installed only when you
+  ask: `mouth split --install` builds its own venv with uv (Demucs and torch,
+  about 1 GB, every package checked against a hash-locked list) and fetches
+  its model (about 84 MB, from a pinned revision, checked against its full
+  SHA-256). It runs on an Apple-silicon Mac on macOS 14 or later, and is
+  refused elsewhere. `--dry-run` prints what it would build and fetch, with
+  the sizes, and does nothing. It lives in `~/.local/share/ears/separator`, or
+  `$MOUTH_SEPARATOR_HOME`, and writes `installed.json` there last, once the
+  venv and the model are both in.
+- **`mouth split FILE...` makes the stems and the instrumental** into the
+  file's sidecar, `.<file>.d/`: `stems/{vocals,drums,bass,other}.flac`,
+  `mixes/instrumental.flac` and `split.json`, the manifest that says what
+  made them and from which bytes. It runs in the foreground, below the
+  audio's priority, one split at a time on the host; a second split of the
+  same file waits for the first and makes nothing. A file whose outputs are
+  current is left as it is; `--force` splits it again. The outputs appear
+  all at once, and a split that fails leaves none. It prints one JSON line
+  per file (`state`: `made`, `present`, `refused` or `failed`) and exits 0
+  when every file is made or already there, 2 when one is refused (no
+  separator, a file ffmpeg cannot read, a folder it cannot write), else 1. A
+  file whose instrumental is far below its mix is recorded as speech, and
+  the setting then plays it as it is. Each split's state is kept in
+  `<mouth dir>/splits/`. The layout and the manifest are a contract for
+  other tools: [sidecar.md](sidecar.md).
+- **`--stem NAME[,NAME]` plays the file's stems instead:** one of
+  `vocals`, `drums`, `bass` and `other`, or a comma list of them, summed in
+  one ffmpeg so they stay in step. A repeated name counts once, and any other
+  name is refused, listing the four. Every stem must be in the sidecar
+  already (`stems/<NAME>.*`, as `mouth split FILE` writes them). A missing
+  one is refused (exit 2), naming the command that makes it: `mouth split
+  FILE`, or `mouth split --install` when no separator is installed. A stem is
+  never made on its own. `--stem` cannot be combined with `--instrumental` or
+  `--no-instrumental`, and it ignores `mouth.music_instrumental`.
+  `--start`, `--end`, `--volume` and the duck work as for any played file.
+  The rows and `mouth status`'s music row carry `stem` (the names), with
+  `file` the first stem and `source_file` the song. The line carries the
+  names, not paths: the player finds the stems when it takes the line, so a
+  mailed play takes stems only from inside the sounds directory.
 - **Its level** is `--volume N`, else `mouth.play_volume`, else
   `mouth.volume`, in the settings cascade.
 - **To stop it,** `mouth retract <utt>` with the id `mouth play` printed.

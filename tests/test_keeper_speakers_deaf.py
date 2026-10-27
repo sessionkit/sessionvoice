@@ -18,6 +18,8 @@ import subprocess
 from datetime import date, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from tests._anchor import ANCHOR, ANCHOR_SUMMER
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,7 +56,7 @@ heard_start
 
 def _bash(script: str, tmp: Path, **env) -> str:
     e = dict(os.environ, EARS_HEARD_DIR=str(tmp), T=str(tmp), EARS_SESSION="room-s")
-    e.pop("EARS_SPEAKERS_DEAF_LINES", None)
+    e.pop("EARS_SPEAKERS_DEAF_LINES", None); e.pop("EARS_SPEAKERS_SILENT_TURNS", None)
     e.update(env)
     out = subprocess.run(["bash", "-c", "set -uo pipefail\n" + _program() + PRE + script],
                          env=e, capture_output=True, text=True, timeout=60)
@@ -272,3 +274,84 @@ def test_the_heard_reader_hands_speakers_rows_to_this_region():
     assert 'spk) spk_seen "$a" "$b" ;;' in watch and 'spkoff) spk_off="$a" ;;' in watch
     assert 'heard_events "$f" "$heard_off" "$s" "$spk_off"' in watch
     assert s.index("# --- end zeros ---") < s.index("# --- speakers:") < s.index("# --- beat:")
+
+
+# -- covered and still deaf: words in the line, no speech in the side-car's audio ----------------
+
+SILENT_WHY = "words in the line, no speech found in its audio (100% of the line covered)"
+SPOKEN = "Oh okay, something short."
+
+
+def _silent(tmp: Path, n: int, **over) -> str:
+    """n covered turns the capture heard words in and the side-car found no speech in."""
+    return _rows(tmp, n, why=SILENT_WHY, kind="turn", text=SPOKEN, cover=1.0, **over)
+
+
+def _heard(tmp: Path, n: int) -> str:
+    return _rows(tmp, n, why=None, kind="turn", text=SPOKEN, cover=1.0)
+
+
+def test_six_covered_turns_with_no_speech_are_one_speakers_deaf_mail(tmp_path):
+    out = _bash(_silent(tmp_path, 5) + "step; echo =AT5=; " + _silent(tmp_path, 1) + "step; "
+                + _silent(tmp_path, 10) + "step", tmp_path)
+    before, after = out.split("=AT5=")
+    assert not _mails(before), out
+    assert _mails(after) == [f"ears: speakers DEAF, no speech in 6 turns on {DEV} EOM"], out
+    assert "HEARD ears-deaf --device AirPods Pro --text speakers: speech: 6" in after
+
+
+def test_a_heard_turn_ends_it_and_only_a_heard_turn(tmp_path):
+    """A 0% row, or a covered row that is no evidence, leaves the episode open; a row where
+    the side-car named someone is the ONE recovery mail."""
+    out = _bash(_silent(tmp_path, 6) + "step; echo =HELD=; " + _rows(tmp_path, 3)
+                + _rows(tmp_path, 3, why=ZEROS_WHY) + "step; echo =BACK=; " + _heard(tmp_path, 1) + "step", tmp_path)
+    held, back = out.split("=HELD=")[1].split("=BACK=")
+    assert not _spk_mails(held), out
+    mails = _spk_mails(back)
+    assert len(mails) == 1 and re.fullmatch(r"ears: speakers hearing again at \d\d:\d\d EOM", mails[0]), out
+    assert "speakers: hearing again, was speech for" in back
+
+
+def test_0pc_rows_do_not_reset_the_silent_run_nor_silent_rows_hide_a_0pc_run(tmp_path):
+    """The two causes cannot hide each other: silent turns between 0% rows still add up to 6,
+    and a heard turn starts the silent run again."""
+    out = _bash(_silent(tmp_path, 3) + _rows(tmp_path, 4) + _silent(tmp_path, 3) + "step", tmp_path)
+    assert _spk_mails(out) == [f"ears: speakers DEAF, no speech in 6 turns on {DEV} EOM"], out
+    d = tmp_path / "reset"; d.mkdir()
+    out = _bash(_silent(d, 5) + _heard(d, 1) + _silent(d, 5) + "step", d)
+    assert not _mails(out), out
+
+
+@pytest.mark.parametrize("over", [
+    {"text": "", "why": None, "speaker": "silent"},                      # a quiet room: no words
+    {"text": "Short."},                                                 # one word
+    {"kind": "partial"},                                                # partials repeat and flap
+    {"mouth_utt": "u-7"},                                               # the mouth's own words
+], ids=["quiet-room", "one-word", "partial", "mouth"])
+def test_no_evidence_never_reports(tmp_path, over):
+    base = {"why": SILENT_WHY, "kind": "turn", "text": SPOKEN, "cover": 1.0}
+    base.update(over)
+    why = base.pop("why")
+    out = _bash(_rows(tmp_path, 30, why=why, **base) + "step", tmp_path)
+    assert not _mails(out), out
+
+
+def test_silent_turns_are_muted_while_the_room_is_deaf(tmp_path):
+    out = _bash("deaf_set room stt 500 AirPods; " + _silent(tmp_path, 10) + "step; deaf_on speakers || echo SPK-OK",
+                tmp_path)
+    assert not _spk_mails(out) and "SPK-OK" in out, out
+
+
+def test_EARS_SPEAKERS_SILENT_TURNS_is_a_seam(tmp_path):
+    out = _bash(_silent(tmp_path, 2) + "step", tmp_path, EARS_SPEAKERS_SILENT_TURNS="2")
+    assert _spk_mails(out) == [f"ears: speakers DEAF, no speech in 2 turns on {DEV} EOM"], out
+    for bad in ("0", "x", "100", "-3"):
+        d = tmp_path / f"b{bad}"; d.mkdir()
+        out = _bash(_silent(d, 5) + "step; echo TURNS=$SPK_SILENT_TURNS", d, EARS_SPEAKERS_SILENT_TURNS=bad)
+        assert "TURNS=6" in out and not _mails(out), (bad, out)
+
+
+def test_the_speech_subject_fits():
+    script = "note() { :; }\n" + _region("deaf") + "\ndeaf_subject speakers speech 99 'Microsoft Teams Audio Device'"
+    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=30, check=True).stdout.strip()
+    assert out == "ears: speakers DEAF, no speech in 99 turns on Microsoft Team EOM" and len(out) == 64

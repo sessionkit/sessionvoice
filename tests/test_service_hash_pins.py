@@ -18,8 +18,12 @@ import pytest
 
 from ears import services
 
+from mouth.separator import separator_file
+
 REPO = Path(__file__).resolve().parents[1]
-LOCKS = {"speakers": (services._speakers_file, 35), "speech": (services._speech_file, 111)}
+# every shipped service lock, by name: a lock not listed here is checked by nothing below
+LOCKS = {"speakers": (services._speakers_file, 35), "speech": (services._speech_file, 111),
+         "separator": (separator_file, 32)}
 LOADERS = ("speaker-sidecar2.py", "make-refs.py", "cluster-room.py")
 HASH = re.compile(r"--hash=sha256:[0-9a-f]{64}")
 

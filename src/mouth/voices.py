@@ -242,7 +242,8 @@ def voices(d: Optional[Path] = None, sid: Optional[str] = None) -> dict:
 
 #: The keys a line reads from the cascade: one ``session settings`` run for all.
 LINE_KEYS = ("voice", "volume", "play_volume", "music_duck", "music_duck_level",
-             "music_duck_restore_s", "normalize", "normalize_lufs", "lead_s")
+             "music_duck_restore_s", "normalize", "normalize_lufs", "lead_s",
+             "music_instrumental")
 
 BUILTIN_VOLUME = 100
 BUILTIN_DUCK = {"music_duck": True, "music_duck_level": 20, "music_duck_restore_s": 1.0}
@@ -256,6 +257,13 @@ BUILTIN_NORMALIZE = {"normalize": True, "normalize_lufs": -16.0}
 #: lead covers every stall measured but one 90 s starve: a seat that wants
 #: no chop sets ``lead_s`` to 2.5 (``mouth say --lead 2.5`` for one line).
 BUILTIN_LEAD_S = 0.0
+#: a played file plays its instrumental (a song without its vocals), on unless
+#: turned off. Which plays get one, and how, is the player's (design section 3).
+BUILTIN_INSTRUMENTAL = {"music_instrumental": True}
+#: the caller's own switch for it, read at call time, as $MOUTH_ROOM_HOLD is
+INSTRUMENTAL_ENV = "MOUTH_MUSIC_INSTRUMENTAL"
+#: the words that turn a boolean variable off (``hold._OFF``)
+_OFF = ("off", "0", "no", "false")
 
 
 def _pct(v) -> Optional[int]:
@@ -304,7 +312,8 @@ def _lufs(v) -> Optional[float]:
 
 _CHECK = {"volume": _pct, "play_volume": _pct, "music_duck": _flag,
           "music_duck_level": _pct, "music_duck_restore_s": _secs,
-          "normalize": _flag, "normalize_lufs": _lufs, "lead_s": _secs}
+          "normalize": _flag, "normalize_lufs": _lufs, "lead_s": _secs,
+          "music_instrumental": _flag}
 
 
 def _resolve(key: str, cascaded: dict, host: dict) -> tuple[object, str]:
@@ -324,6 +333,8 @@ def _resolve(key: str, cascaded: dict, host: dict) -> tuple[object, str]:
         return BUILTIN_DUCK[key], "builtin"
     if key in BUILTIN_NORMALIZE:
         return BUILTIN_NORMALIZE[key], "builtin"
+    if key in BUILTIN_INSTRUMENTAL:
+        return BUILTIN_INSTRUMENTAL[key], "builtin"
     if key == "lead_s":
         return BUILTIN_LEAD_S, "builtin"
     return None, "unset"
@@ -403,6 +414,49 @@ def lufs_setting(*, item: Optional[dict] = None, cascaded: Optional[dict] = None
     return float(v), src
 
 
+#: The layers an ``instrumental_from`` may name on a line: the caller's (the flag,
+#: its env, its cascade, the host file it read) or a mail's own ask.
+INSTRUMENTAL_FROM = ("flag", "env", *CASCADE, "settings", "mail")
+
+
+def instrumental_env() -> Optional[bool]:
+    """``$MOUTH_MUSIC_INSTRUMENTAL`` as the caller sees it now: ``off``, ``0``,
+    ``no``, ``false`` (any case) are False, any other non-empty value True; unset
+    or empty is None. Read on every call, as ``hold.room_hold`` reads
+    ``$MOUTH_ROOM_HOLD``."""
+    env = envnames.get(INSTRUMENTAL_ENV)
+    if env is None or not env.strip():
+        return None
+    return env.strip().lower() not in _OFF
+
+
+def instrumental_setting(*, flag: Optional[bool] = None, cascaded: Optional[dict] = None,
+                         d: Optional[Path] = None, caller: bool = True) -> tuple[bool, str]:
+    """(on, from) for whether a played file plays its instrumental.
+
+    Highest first: the line's own (``mouth play --instrumental`` or
+    ``--no-instrumental``, ``play(instrumental=)``), ``$MOUTH_MUSIC_INSTRUMENTAL``,
+    the caller's cascade (session, seat, agent), ``music_instrumental`` in the host
+    file, on. ``from`` is 'flag' | 'env' | 'session' | 'seat' | 'agent' |
+    'settings' | 'builtin'. A bad flag raises ValueError; a bad value in a layer is
+    skipped.
+
+    ``caller``: the env is the CALLER's, at call time. The player passes False for
+    a line that carries no answer (:func:`fill_item`): the environment it inherited
+    is whichever seat started it, never the line's caller.
+    """
+    if flag is not None:
+        if not isinstance(flag, bool):
+            raise ValueError("mouth: instrumental is on or off")
+        return flag, "flag"
+    if caller:
+        env = instrumental_env()
+        if env is not None:
+            return env, "env"
+    v, src = _resolve("music_instrumental", cascaded or {}, settings(d))
+    return bool(v), src
+
+
 def secs(v, what: str) -> Optional[float]:
     """A line's own seconds (``--lead``): None stays None; else a finite number
     0 or more (a numeric string counts), or ValueError before anything is written."""
@@ -449,12 +503,14 @@ def lead_setting(*, item: Optional[dict] = None, cascaded: Optional[dict] = None
 
 def fill_item(item: dict, d: Optional[Path] = None) -> dict:
     """A line taken by the player that carries no level: fill ``volume``/
-    ``volume_from``, and a file's ``duck``, from the host file and the built-in.
+    ``volume_from``, and a file's ``duck`` and ``instrumental``/``instrumental_from``,
+    from the host file and the built-in.
 
     Two kinds carry none: a mail from outside (no caller to read a cascade
     for), and a ``say`` whose caller found only the built-in (left off so its
     mail stays today's, byte for byte). A level given by a mail header alone
-    is ``volume_from: mail``. Lines that carry them are returned as they are.
+    is ``volume_from: mail``, and so is an ``instrumental`` that rode with no layer
+    a caller names. Lines that carry them are returned as they are.
     """
     file = played_file(item)   # a say-again replay takes a line's volume, and no duck
     add = {}
@@ -464,4 +520,9 @@ def fill_item(item: dict, d: Optional[Path] = None) -> dict:
         add["volume_from"] = "mail"
     if file and not isinstance(item.get("duck"), dict):
         add["duck"] = duck_setting(d=d)
+    if file and "stem" not in item:   # a --stem line ignores the setting (mouth.stems)
+        if not isinstance(item.get("instrumental"), bool):
+            add["instrumental"], add["instrumental_from"] = instrumental_setting(d=d, caller=False)
+        elif item.get("instrumental_from") not in INSTRUMENTAL_FROM:
+            add["instrumental_from"] = "mail"   # an extra alone: the line's own ask
     return {**item, **add} if add else item

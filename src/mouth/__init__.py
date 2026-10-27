@@ -69,7 +69,8 @@ def _player_running(d: Path) -> bool:
 
 
 def ensure_player(d: Optional[Path] = None) -> bool:
-    """Start a player unless one holds the lock. True if one was started."""
+    """Start a player unless one holds the lock. True if one was started. Its stdout and
+    stderr go to ``player.log`` in the voice log folder (``ears.home.log_dir``)."""
     d = d or mouth_dir()
     d.mkdir(parents=True, exist_ok=True)
     if _player_running(d):
@@ -77,7 +78,10 @@ def ensure_player(d: Optional[Path] = None) -> bool:
     import subprocess  # here, not at the top: the timeline reader never spawns
 
     env = {**os.environ, "MOUTH_DIR": str(d)}
-    with open(d / "player.log", "ab") as log:
+    from ears.home import log_dir   # player.log in the voice log folder, never in the mouth dir
+    logs = log_dir()
+    logs.mkdir(parents=True, exist_ok=True)
+    with open(logs / "player.log", "ab") as log:
         subprocess.Popen([sys.executable, "-m", "mouth", "serve"], env=env,
                          stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                          start_new_session=True)
@@ -165,7 +169,7 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
         expires_s: Optional[float] = None, interest: Optional[str] = None,
         in_reply_to: Optional[str] = None, volume=None, duck: Optional[bool] = None,
         duck_level=None, normalize: Optional[bool] = None, lead_s=None,
-        barge_words=None) -> dict:
+        barge_words=None, instrumental: Optional[bool] = None) -> dict:
     """Queue ``text``; return the queued item (``utt``), or with ``wait`` its ``said`` record.
 
     ``priority`` (a playlist, lower plays sooner): None (50, the back of the
@@ -196,6 +200,18 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
     clone rendering below real time. A bad one is refused before anything is
     written.
 
+    ``instrumental``: a played file's own ``--instrumental/--no-instrumental``,
+    else ``$MOUTH_MUSIC_INSTRUMENTAL`` (the caller's, now), the caller's cascade
+    (``music_instrumental``), the host file, on (``voices.instrumental_setting``).
+    Only what a layer above the built-in answered rides on the line, as
+    ``instrumental``/``instrumental_from``. A spoken line takes none: asking for one
+    is refused, as is a value that is not on or off, before anything is written.
+    For a played file with no instrumental yet, the caller decides here, before the
+    drop, whether to start (or join) its split (``mouth.autosplit``): the play is then
+    stamped ``split_wait``/``split_eta_s``, a ``wait`` timeout grows by the split's
+    deadline, and the decision's lines go to stderr, never spoken. An
+    ``--instrumental`` that cannot be met is refused, before anything is written.
+
     ``barge_words``: this line's own barge count, the model's
     layer (``mouth say --barge-words N|off``, ``--no-barge``): a whole number of
     1 or more, or ``off`` (no cut on a word count; the user's voice still ducks it and
@@ -224,6 +240,11 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
         raise ValueError("mouth: duck is on or off")
     if normalize is not None and not isinstance(normalize, bool):
         raise ValueError("mouth: normalize is on or off")
+    if instrumental is not None:
+        if not isinstance(instrumental, bool):
+            raise ValueError("mouth: instrumental is on or off")
+        if backend != "file":
+            raise ValueError("mouth: instrumental is for a played file (mouth play)")
     lead_s = _voices.secs(lead_s, "lead")
     from .hold import check_barge_words
 
@@ -308,6 +329,25 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
                                   none_if_builtin=True)
         if dk is not None:
             item["duck"] = dk
+    # the caller's env is read here, at call time; a resume's is the player's, so it
+    # keeps what its first line carried, or the player fills it in (voices.fill_item)
+    plan = None
+    # a --stem line ignores the setting: no instrumental rides, no split starts (mouth.stems)
+    if is_file and not resuming and "instrumental" not in item and "stem" not in item:
+        on, src = _voices.instrumental_setting(flag=instrumental, cascaded=cascaded, d=d)
+        if src != "builtin":
+            item["instrumental"], item["instrumental_from"] = on, src
+        if item.get("file"):
+            # the caller's half: start (or join) the split of a file with no instrumental
+            # yet, its first record written before the play is queued (mouth.autosplit).
+            # Refuses an --instrumental that cannot be met, before anything is queued.
+            from . import autosplit
+
+            plan = autosplit.decide(item["file"], on=on, src=src, device=device,
+                                    start=item.get("start"), end=item.get("end"), d=d)
+            item.update(plan.stamp)
+            if plan.deadline_t is not None:   # a waited play is not timed out by its own split
+                timeout += max(0.0, plan.deadline_t - time.time())
     if rid:
         from .box import REPLY
 
@@ -343,6 +383,10 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
         if spawn:
             ensure_player(d)
         item.setdefault("device_from", device_from)   # the caller is told, whether it rode or not
+        if plan is not None:
+            from . import autosplit
+
+            autosplit.tell(plan)     # the caller's stderr, never spoken
         if not wait:
             return item
         done = d / "done" / f"{item['utt']}.json"
@@ -351,6 +395,8 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
             while time.monotonic() < deadline:
                 rec = _take_done(done)
                 if rec is not None:
+                    if item.get("split_wait"):
+                        rec.setdefault("split", {"eta_s": item.get("split_eta_s")})
                     return rec
                 time.sleep(0.02)
             raise TimeoutError(f"mouth: no said for {item['utt']} within {timeout:.0f}s")
@@ -443,8 +489,21 @@ def sound_label(source: str, start: Optional[float] = None, end: Optional[float]
 
 
 def play(source: str, *, start: Optional[float] = None, end: Optional[float] = None,
-         extra_tag: Optional[dict] = None, **kw) -> dict:
+         extra_tag: Optional[dict] = None, instrumental: Optional[bool] = None,
+         stem=None, **kw) -> dict:
     """Queue a sound file (or ``start``..``end`` seconds of it). Same queue, stop, log.
+
+    ``stem``: play the file's stems instead (``mouth play --stem NAME[,NAME]``), one or a
+    comma list (or a list) of ``vocals``, ``drums``, ``bass``, ``other``, mixed in ONE
+    ffmpeg (``mouth.stems``). It is exclusive with ``instrumental`` and ignores the
+    setting. Every stem must be in the file's sidecar already: a missing one is refused,
+    before anything is queued, naming the one command that makes it (``mouth split``).
+    The line carries the names only; the player finds the files at take time.
+
+    ``instrumental``: True or False is this play's own answer to whether it plays
+    the file's instrumental (``--instrumental``/``--no-instrumental``); None reads
+    the setting's layers (``say``). With no instrumental yet, a play of a song may
+    start its split and wait for it in the queue (``mouth.autosplit``).
 
     A URL is refused before anything is queued: the decoder reads files only
     (``-protocol_whitelist file``)."""
@@ -456,8 +515,18 @@ def play(source: str, *, start: Optional[float] = None, end: Optional[float] = N
     source = str(path)
     if start is not None and end is not None and end <= start:
         raise ValueError("mouth: --end must be after --start")
-    return say(sound_label(source, start, end), backend="file",
-               extra={"file": source, "start": start, "end": end, **(extra_tag or {})}, **kw)
+    extra = {"file": source, "start": start, "end": end, **(extra_tag or {})}
+    if stem is not None:
+        from . import stems
+
+        if instrumental is not None:
+            raise ValueError("mouth: --stem plays stems, not the instrumental: "
+                             "drop --instrumental/--no-instrumental")
+        names = stems.names(stem)
+        stems.check(source, names)       # a missing stem: refused with the command that makes it
+        extra["stem"] = names
+    return say(sound_label(source, start, end), backend="file", instrumental=instrumental,
+               extra=extra, **kw)
 
 
 #: How long a say-again replay waits for the end of the user's turn before it is dropped.
@@ -689,12 +758,15 @@ def status(d: Optional[Path] = None) -> dict:
 
     q = Queue(d)
     running = _player_running(d) if d.exists() else False
-    from . import duckswitch, hold
+    from . import duckswitch, hold, splitwait
 
     dk = duckswitch.readout(d)
+    queued = q.lines()
     return {"dir": str(d), "box": str(q.bx), "player": running,
-            "pid": pid, "queued": len(q.lines()), "playing": playing,
+            "pid": pid, "queued": len(queued), "playing": playing,
             "music": _music(d) if running else [],
+            # the splits running on this host, and the plays that wait on each
+            "splits": splitwait.running(d, queued),
             "duck": {k: dk[k] for k in ("effective", "by", "override")},
             # the host's barge policy, each value with its layer and source
             "barge": hold.barge_status(d)}
@@ -737,6 +809,9 @@ def _music(d: Path) -> list:
     for b in bed.read(d):
         row = {"device": b.get("device"), "utt": b.get("utt"), "file": b.get("file"),
                "text": str(b.get("text") or "")[:80],
+               # file is what plays: the instrumental, when source_file names the original
+               "source_file": b.get("source_file"), "instrumental_from": b.get("instrumental_from"),
+               "stem": b.get("stem"),   # --stem: the stems that play, mixed in one ffmpeg
                "played_s": round(now - b["started_t"], 1) if b.get("started_t") else None,
                "volume": b.get("volume"), "volume_from": b.get("volume_from")}
         dk = b.get("duck")

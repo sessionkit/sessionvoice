@@ -8,7 +8,7 @@
      It reads the heard log only (no microphone, so no TCC grant) and runs on the system
      python: stdlib only, like the rest of keeper/.
      A TEMPLATE: render it, then install (no machine paths live here):
-       mkdir -p ~/.cache/ears ~/Library/Logs/ears
+       mkdir -p ~/.cache/ears "$(.venv/bin/python -m ears.home log-dir)"   # and the voice log folder
        PYTHON=/usr/bin/python3 \
            bin/render-plist launchd/dev.sessionkit.voice.ears-mail.plist.in > ~/Library/LaunchAgents/dev.sessionkit.voice.ears-mail.plist
      bin/render-plist fills @HOME@, @EARS_REPO@ (the checkout it runs from) and @RULES@
@@ -70,7 +70,7 @@
     <string>--sender</string><string>heard</string>
     <string>--rules</string><string>@RULES@</string>
     <string>--state</string><string>@HOME@/.cache/ears/ears-mail.state.json</string>
-    <string>--fire-log</string><string>@HOME@/Library/Logs/ears/ears-mail.fire.jsonl</string>
+    <string>--fire-log</string><string>@EARS_LOG_DIR@/ears-mail.fire.jsonl</string>
     <string>--mouth</string><string>@EARS_REPO@/.venv/bin/python -m mouth</string>
   </array>
   <key>WorkingDirectory</key><string>@HOME@</string>
@@ -82,7 +82,7 @@
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
-  <key>StandardOutPath</key><string>@HOME@/Library/Logs/ears/ears-mail.log</string>
-  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/ears/ears-mail.log</string>
+  <key>StandardOutPath</key><string>@EARS_LOG_DIR@/ears-mail.log</string>
+  <key>StandardErrorPath</key><string>@EARS_LOG_DIR@/ears-mail.log</string>
 </dict>
 </plist>

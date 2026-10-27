@@ -18,7 +18,7 @@ CALL_TAP = ROOT / "bin" / "call-tap"
 
 @pytest.fixture
 def fence(tmp_path):
-    home = tmp_path / "home" / "jim"; home.mkdir(parents=True)
+    home = tmp_path / "home" / "someone"; home.mkdir(parents=True)
     stubs = tmp_path / "stubs"; stubs.mkdir()
     argv = tmp_path / "py-argv"
     sox = stubs / "sox"; sox.write_text("#!/bin/sh\nexit 0\n"); sox.chmod(0o755)

@@ -163,7 +163,7 @@ def test_the_talk_agent(tk):
 
 
 def _template() -> dict:
-    vals = {"HOME": "/Users/x", "TALK": "/x/venv/bin/talk"}
+    vals = {"HOME": "/Users/x", "TALK": "/x/venv/bin/talk", "EARS_LOG_DIR": "/Users/x/logs"}
     body = re.sub(r"<!--.*?-->", "", (REPO / f"launchd/{LABEL}.plist.in").read_text(), flags=re.S)
     return plistlib.loads(re.sub(r"@([A-Z_]+)@", lambda m: vals[m.group(1)], body).encode())
 

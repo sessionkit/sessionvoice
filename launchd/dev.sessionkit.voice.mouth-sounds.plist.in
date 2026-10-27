@@ -16,7 +16,7 @@
      Repo defaults throughout (keeper/mouth-sounds.py): the fired marker and the canned
      utterances under EARS_RUN, the settings at
      ~/.sessionkit/voice/settings/mouth-sounds.json, the sound log
-     (~/Library/Logs/ears/mouth-sounds.jsonl), the STOP file (keeper/STOP-mouth-sounds),
+     (mouth-sounds.jsonl in the voice log folder), the STOP file (keeper/STOP-mouth-sounds),
      the cursors and heard logs, the queue and the maildir.
      A machine whose producers write elsewhere may add, under EnvironmentVariables:
        MOUTH_SOUNDS_FIRED     the file its mid-turn waiter touches
@@ -25,7 +25,7 @@
      KeepAlive: it exits 3 after MOUTH_SOUNDS_MAX_FAILS (20) failed sounds in a row, to be
      restarted fresh. ThrottleInterval 30.
      A TEMPLATE: render it (on the go only), then install by hand:
-       mkdir -p ~/Library/Logs/ears
+       mkdir -p "$(.venv/bin/python -m ears.home log-dir)"   # the voice log folder
        bin/render-plist launchd/dev.sessionkit.voice.mouth-sounds.plist.in > ~/Library/LaunchAgents/dev.sessionkit.voice.mouth-sounds.plist
        launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.sessionkit.voice.mouth-sounds.plist
      bin/render-plist fills @HOME@, @EARS_REPO@ and @PYTHON@ from this machine (see its
@@ -52,7 +52,7 @@
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>30</integer>
-  <key>StandardOutPath</key><string>@HOME@/Library/Logs/ears/mouth-sounds.log</string>
-  <key>StandardErrorPath</key><string>@HOME@/Library/Logs/ears/mouth-sounds.log</string>
+  <key>StandardOutPath</key><string>@EARS_LOG_DIR@/mouth-sounds.log</string>
+  <key>StandardErrorPath</key><string>@EARS_LOG_DIR@/mouth-sounds.log</string>
 </dict>
 </plist>

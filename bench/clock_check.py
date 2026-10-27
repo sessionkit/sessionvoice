@@ -1,8 +1,7 @@
 """clock_check.py [DELAY] - the bot call leg's tap clock. Run with the bot venv.
 Pre-roll test: the first frame arrives DELAY s late (so the leg writes
 pre-roll silence); a tone burst sits 1.0 s into the real audio. Pass iff
-start_epoch + (burst onset in caller-call.wav) == wall time the burst was delivered.
-A bot from an older sessionphone writes mike-call.wav/.json: still read."""
+start_epoch + (burst onset in caller-call.wav) == wall time the burst was delivered."""
 import asyncio, fractions, importlib.util, json, os, pathlib, sys, tempfile, time, wave
 import numpy as np
 os.environ["PIP_CHAT_EARS"] = "1"
@@ -11,7 +10,7 @@ os.environ["PIP_CHAT_CALLS_DIR"] = tempfile.mkdtemp(prefix="ears-preroll-")
 sys.path.insert(0, os.path.expanduser(os.environ.get("EARS_BOT_DIR")
                                       or sys.exit("set EARS_BOT_DIR to the Delta bot checkout with calls.py")))
 import calls
-# src/ears/callrec.py, by its path: the recording's name (caller-call, then mike-call). Stdlib
+# src/ears/callrec.py, by its path: the recording's name (caller-call). Stdlib
 # only, so the bot venv this runs in needs nothing from ears.
 _spec = importlib.util.spec_from_file_location(
     "callrec", pathlib.Path(__file__).resolve().parents[1] / "src" / "ears" / "callrec.py")
@@ -46,7 +45,7 @@ async def main():
     d = s.dir
     meta_path, wav_path = callrec.call_file(d, "json"), callrec.call_file(d, "wav")
     for path, ext in ((meta_path, "json"), (wav_path, "wav")):
-        if path is None: sys.exit(f"clock_check: no {callrec.looked_for(ext)} in {d}")
+        if path is None: sys.exit(f"clock_check: no {callrec.name(ext)} in {d}")
     meta = json.loads(meta_path.read_text())
     w = wave.open(str(wav_path)); a = np.frombuffer(w.readframes(w.getnframes()), np.int16)
     onset = int(np.argmax(np.abs(a) > 1000)) / meta["rate"]

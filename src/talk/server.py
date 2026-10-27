@@ -64,6 +64,17 @@ uid (LOCAL_PEERCRED; SO_PEERCRED on Linux) must be talk's own or the proxy's
 socket the proxy's portless `Host: localhost` is answered, pairing there is not
 refused (the browser's cookie belongs to the proxy's name), and Origin is
 checked against --allow-host as before; the token gate is unchanged.
+Kit mode (`talk serve --kit --unix PATH`) is how the kit's web front door runs
+talk as a room. It is socket mode with three changes. Only talk's own uid may
+connect (there is no proxy uid). Every route, the page and the manifest
+included, needs exactly one X-Sessionkit-User header (non-empty printable
+ASCII, at most 64 characters): the front door's login is the one login, so
+there is no token, no token file, no pairing panel, and POST pair is a 404. And
+the Host rule is the front door's: the browser's Host, forwarded verbatim, is
+answered unless it is localhost (or *.localhost), which the front door never
+forwards; an Origin, when sent, must name that same host and port (a missing
+port is the Origin's scheme default, on both sides). The page's links are all
+relative, so they resolve under whatever prefix the front door serves it at.
 Stdlib only, plus the kit's own ears.heard (itself stdlib only) for the log
 and cursor paths.
 """
@@ -99,6 +110,11 @@ REDACT = re.compile(r"(talk_token=)[^&;\s\"']*", re.IGNORECASE)
 PAIR_HEADER = "X-Talk-Token"  # POST pair: the one place a browser shows the token itself
 COOKIE_MAX_AGE = 34560000     # 400 days: RFC 6265bis section 5.5's cap
 SESSIONS = os.path.expanduser("~/.sessionmail/sessions")
+KIT_USER = "X-Sessionkit-User"   # kit mode: the front door's login name, the one login (never logged)
+KIT_USER_MAX = 64                 # characters, at most
+KIT_REFUSED = "this request did not come through the kit's front door"
+KIT_HOST_HINT = "kit mode answers what the kit's front door forwards"
+DEFAULT_PORT = {"http": 80, "https": 443}
 
 
 def home(*parts):
@@ -535,6 +551,35 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return self.configured(name, port, origin)
 
+    def kit_allowed(self, name, port):
+        """Kit mode's Host rule. The front door forwards the browser's Host verbatim and has
+        checked it already; it passes talk no list of its names (kit_names), so any name is
+        answered but localhost and *.localhost, which the front door never forwards.
+        --allow-host names are answered too, as everywhere."""
+        if name == "localhost" or name.endswith(".localhost"):
+            return False
+        names = kit_names()
+        return names is None or name in names or self.configured(name, port, False)
+
+    def check_kit_origin(self, host):
+        """Kit mode's Origin rule, the front door's own same-origin rule applied at the room:
+        exactly one Origin, http or https, whose authority is the Host's (the same name, and
+        the same port once each missing port is the ORIGIN's scheme default). None if it may
+        be served, else why it is refused."""
+        origins = self.headers.get_all("Origin") or []
+        if not origins:
+            return None                     # same-origin EventSource, navigation, curl
+        if len(origins) > 1:
+            return "a request with more than one Origin"
+        m = ORIGIN.fullmatch(origins[0])
+        auth = split_host(m.group(2)) if m else None
+        if auth is None:
+            return f'Origin "{shown(origins[0])}"'
+        default = DEFAULT_PORT[m.group(1).lower()]
+        if (auth[0], auth[1] or default) != (host[0], host[1] or default):
+            return f'Origin "{shown(origins[0])}"'
+        return None
+
     def check_host(self):
         """None when the request may be served, else why it is refused.
         Host is the check that stops DNS rebinding; Origin is defence in depth."""
@@ -542,6 +587,10 @@ class Handler(BaseHTTPRequestHandler):
         if len(hosts) != 1:
             return "a request with no Host" if not hosts else "a request with more than one Host"
         parsed = split_host(hosts[0])
+        if kit_server(self.server):
+            if parsed is None or not self.kit_allowed(*parsed):
+                return f'Host "{shown(hosts[0])}"'
+            return self.check_kit_origin(parsed)
         if parsed is None or not self.allowed(*parsed):
             return f'Host "{shown(hosts[0])}"'
         origins = self.headers.get_all("Origin") or []
@@ -561,9 +610,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def paired(self):
         """Does a talk_token cookie match the per-install token (constant time)? A
-        missing or refused token file matches nothing (token_store.matches)."""
+        missing or refused token file matches nothing (token_store.matches).
+        In kit mode there is no token: the front door's X-Sessionkit-User is the pairing."""
+        if kit_server(self.server):
+            return self.kit_user()
         values = cookie_values(self.headers.get_all("Cookie"))[:MAX_COOKIES]
         return any(token_store.matches(v) for v in values)
+
+    def kit_user(self):
+        """Kit mode: does the request carry exactly one X-Sessionkit-User, non-empty printable
+        ASCII of at most KIT_USER_MAX characters? The front door strips every inbound
+        X-Sessionkit-* and sets its own, so over the socket it is the front door's. The
+        X_Sessionkit_User spelling is a different header and is never read."""
+        values = self.headers.get_all(KIT_USER) or []
+        if len(values) != 1:
+            return False
+        v = values[0]
+        return bool(v.strip()) and len(v) <= KIT_USER_MAX and all(32 <= ord(c) < 127 for c in v)
 
     def refuse_unpaired(self):
         """The gate's 403. The log line says why the token file is unusable, if it is."""
@@ -576,7 +639,11 @@ class Handler(BaseHTTPRequestHandler):
         With no hint it is the Host/Origin refusal; with one, `talk: WHY (HINT)`.
         The log line comes first: once the client has its 403, the line is there,
         and a client that hangs up before the 403 is written is still logged."""
-        text = f"talk: {why} is not allowed ({ALLOW_HINT})" if hint is None else f"talk: {why} ({hint})"
+        if hint is None:
+            hint = KIT_HOST_HINT if kit_server(self.server) else ALLOW_HINT
+            text = f"talk: {why} is not allowed ({hint})"
+        else:
+            text = f"talk: {why}" + (f" ({hint})" if hint else "")
         body = (text + "\n").encode()
         self.close_connection = True
         self.log_message('"%s" 403 refused: %s', shown(self.requestline, 200), log_why or why)
@@ -594,7 +661,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.refuse(why)
         u = urlparse(self.path)
         r = route(u.path)
-        if r not in OPEN_ROUTES and not self.paired():    # the gate: closed by default
+        if kit_server(self.server):
+            if not self.kit_user():         # kit mode: every route, the page included
+                return self.refuse(KIT_REFUSED, hint="")
+        elif r not in OPEN_ROUTES and not self.paired():    # the gate: closed by default
             return self.refuse_unpaired()
         if r == "events":
             return self.events(parse_qs(u.query))
@@ -615,11 +685,17 @@ class Handler(BaseHTTPRequestHandler):
         Host is localhost (or *.localhost) is refused: its cookie would be handed to
         whatever answers localhost, which may be another user's listener on [::1] (T7b).
         Not over the unix socket: there `Host: localhost` is the proxy's, and the
-        browser's cookie belongs to the proxy's name, never localhost."""
+        browser's cookie belongs to the proxy's name, never localhost.
+        In kit mode there is no pairing (the front door's login is the one login): a
+        request through the front door gets a 404, anything else the kit gate's 403."""
         self.close_connection = True        # an unread body must never be taken for a next request
         why = self.check_host()
         if why:
             return self.refuse(why)
+        if kit_server(self.server):
+            if not self.kit_user():
+                return self.refuse(KIT_REFUSED, hint="")
+            return self.send_error(404)
         if route(urlparse(self.path).path) != "pair":
             return self.send_error(404)
         name, port = split_host(self.headers["Host"])      # check_host passed: one Host, parsable
@@ -775,6 +851,19 @@ def unix_server(srv):
     return getattr(srv, "talk_unix", False)
 
 
+def kit_server(srv):
+    """Is this the kit's room (`talk serve --kit`): a unix socket, own uid only, no token?"""
+    return getattr(srv, "talk_kit", False)
+
+
+def kit_names():
+    """The names the kit's front door answers at, if it passed them; None while it passes
+    none (it does not today: not in argv, the environment or a header). With None, kit
+    mode answers any Host the front door forwarded but localhost (Handler.kit_allowed).
+    The one seam where an exact list plugs in, if the front door ever passes one."""
+    return None
+
+
 def default_socket():
     """<sessionvoice home>/talk/talk.sock: beside the token, in its 0700 directory."""
     return str(token_store.path().parent / "talk.sock")
@@ -848,10 +937,11 @@ def clear_stale_socket(path):
     os.unlink(path)
 
 
-def make_unix_server(path=None, proxy_uid=PROXY_UID):
+def make_unix_server(path=None, proxy_uid=PROXY_UID, kit=False):
     """The HTTP server on a unix socket, bound but not yet serving. `path` defaults to
     default_socket(). Its directory must be ours alone (0700, made if missing); the socket
-    is 0600. Peers other than this euid and `proxy_uid` are refused per connection.
+    is 0600. Peers other than this euid and `proxy_uid` are refused per connection; with
+    `kit` (the kit's room) only this euid, and `proxy_uid` does not apply.
     UnixSocketError or token_store.TokenError (both ValueErrors) if refused."""
     path = path or default_socket()
     if len(os.fsencode(path)) >= SUN_PATH_MAX:
@@ -860,7 +950,11 @@ def make_unix_server(path=None, proxy_uid=PROXY_UID):
     token_store.private_dir(os.path.dirname(os.path.abspath(path)), "socket directory")
     clear_stale_socket(path)
     srv = UnixHTTPServer(path, Handler)
-    srv.talk_peer_uids = frozenset({os.geteuid(), int(proxy_uid)})
+    if kit:
+        srv.talk_peer_uids = frozenset({os.geteuid()})
+        srv.talk_kit = True
+    else:
+        srv.talk_peer_uids = frozenset({os.geteuid(), int(proxy_uid)})
     return srv
 
 
@@ -906,12 +1000,28 @@ def configure(person=None, smart_dir=None, settings_url=None, call_url=None, all
     SETTINGS.update(person=person or None, settings_url=settings_url or None, call_url=call_url)
 
 
-def serve(host=HOST, port=PORT, unix=None, proxy_uid=PROXY_UID, **settings):
+def serve(host=HOST, port=PORT, unix=None, proxy_uid=PROXY_UID, kit=False, **settings):
     """Start the state poll and serve until killed (`talk serve`). The token is made
     (first start) or checked before anything binds: a refused token file raises
     token_store.TokenError, a ValueError, and nothing is served. With `unix` (a path, or
-    True for default_socket()) talk binds that socket and no TCP port."""
+    True for default_socket()) talk binds that socket and no TCP port. With `kit` too, it
+    is the kit's room: own uid only, X-Sessionkit-User trusted, and no token is made or
+    read. `kit` without `unix` raises UnixSocketError before anything binds."""
+    if kit and not unix:
+        raise UnixSocketError("--kit needs --unix PATH (kit mode listens on a unix socket only)")
     configure(**settings)
+    if kit:
+        srv = make_unix_server(None if unix is True else unix, kit=True)
+        print(f"talk-web: serving {HERE} on unix socket {srv.server_address} (no TCP port),"
+              f" following {today_log()}", flush=True)
+        print(f"talk-web: kit mode: answering uid {os.geteuid()} only; trusting {KIT_USER} over the"
+              f" socket; no pairing", flush=True)
+        threading.Thread(target=poll_state, daemon=True).start()
+        try:
+            srv.serve_forever()
+        finally:
+            srv.server_close()                   # removes the socket file it made
+        return
     token_store.load_or_create()
     if unix:
         srv = make_unix_server(None if unix is True else unix, proxy_uid)

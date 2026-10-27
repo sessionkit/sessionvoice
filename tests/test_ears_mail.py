@@ -544,7 +544,8 @@ def test_light_waits_out_a_film_too():
 
 
 # -- the device mail (EARS-6, genie X1's finished-turn slice) ------------------
-# Every finished turn of his is ONE mail To and From heard+<device>@<host>
+# Every finished turn of his is ONE mail To and From heard+room@<host>, whatever
+# input device the capture follows, Cc heard+<device>@<host> on the same send
 # (R10, P-2); Ears-Rule is keyed by address (N10); no X- headers (3970);
 # no drafts, partials or calls. The contract is sessionmail's device-mail
 # format, as of sessionmail d156f13.
@@ -565,14 +566,15 @@ def test_device_every_finished_turn_is_mailed_to_its_device():
     m = dev([turn(1, "Hey Ivy, what's the latency?", seq=1),
              turn(5, "I think Ivy said the keeper should mail it.", seq=2),
              turn(9, "Right.", seq=3)])
-    assert who(m) == [(1, ["heard+airpods"], "ivy@host1=call"),
-                      (2, ["heard+airpods"], ""), (3, ["heard+airpods"], "")]
-    assert all(x["mail"]["from"] == "heard+airpods" for x in m)
+    assert who(m) == [(1, ["heard+room"], "ivy@host1=call"),
+                      (2, ["heard+room"], ""), (3, ["heard+room"], "")]
+    assert all(x["mail"]["from"] == "heard+room" for x in m)
+    assert all(x["mail"]["cc"] == x["cc"] == ["heard+airpods"] for x in m)   # the device's copy
 
 
 def test_device_hey_everyone_is_one_everyone_entry():
     m = dev([turn(1, "Hey everyone, please commit your work.", seq=7)])
-    assert who(m) == [(7, ["heard+airpods"], "everyone=everyone")]
+    assert who(m) == [(7, ["heard+room"], "everyone=everyone")]
 
 
 def test_device_rules_are_keyed_by_address():
@@ -587,12 +589,13 @@ def test_device_rules_are_keyed_by_address():
 def test_device_a_barge_in_carries_the_seats_reply_entry():
     # Vera's seat carries `ears-rule:vera@*=reply`: this entry is what wakes her
     m = dev(BARGE + [turn(19.4, "So the secret word is pajama party.", span=3.7, seq=415092)])
-    assert who(m) == [(415092, ["heard+airpods"], "vera@host1=reply")]
+    assert who(m) == [(415092, ["heard+room"], "vera@host1=reply")]
 
 
 def test_device_the_built_in_mic_is_macbook_and_says_its_name():
     m = dev([dict(turn(1, "Hey Ivy, are you there?", seq=1), device="MacBook Pro Microphone")])
-    assert who(m) == [(1, ["heard+macbook"], "ivy@host1=call")]
+    assert who(m) == [(1, ["heard+room"], "ivy@host1=call")]
+    assert m[0]["cc"] == ["heard+macbook"]
     assert m[0]["mail"]["headers"]["Ears-Device"] == "MacBook Pro Microphone"
 
 
@@ -600,7 +603,7 @@ def test_device_calls_are_not_this_slice():
     m = dev([on_call(turn(1, "Hey Ivy, on the call", seq=1)),
              dict(turn(3, "Hey Ivy, through the tap", seq=2), device="BlackHole 16ch"),
              turn(5, "Hey Ivy, in the room", seq=3)])
-    assert who(m) == [(3, ["heard+airpods"], "ivy@host1=call")]
+    assert who(m) == [(3, ["heard+room"], "ivy@host1=call")]
     skips = [json.loads(x) for x in run.stderr.splitlines() if x.startswith('{"skip"')]
     assert [(k["skip"], k["seq"]) for k in skips] == [("call", 1), ("device", 2)]
 
@@ -621,7 +624,7 @@ def test_device_a_turn_during_a_film_is_mailed_without_its_reply():
     with KodiStub(1) as k:
         m = dev(LINE + [turn(9, "We have just received word that the villain is planning a trap.", seq=60116)],
                 args=("--kodi", k.url))
-    assert who(m) == [(60116, ["heard+airpods"], "")]      # mailed; the reply is held
+    assert who(m) == [(60116, ["heard+room"], "")]      # mailed; the reply is held
     skip = [json.loads(x) for x in run.stderr.splitlines() if x.startswith('{"skip": "film"')]
     assert skip[0]["seats"] == ["ivy"] and skip[0]["mailed"] == "without those rules"
 
@@ -629,14 +632,16 @@ def test_device_a_turn_during_a_film_is_mailed_without_its_reply():
 def test_device_mail_headers_are_the_contract():
     em = em_module()
     rec = turn(1, "Hey Ivy, check the build.", seq=42)
-    m = em.mail_for(rec, ["heard+airpods"], {"ivy": "call"}, rule=em.rule_header({"ivy": "call"}, "host1"),
-                    frm="heard+airpods", speaker="theo@host1")
+    m = em.mail_for(rec, ["heard+room"], {"ivy": "call"}, rule=em.rule_header({"ivy": "call"}, "host1"),
+                    frm="heard+room", speaker="theo@host1", cc=["heard+airpods"])
     args = em.build(m, "heard", "host1")
     msg = headers_of(args)
-    # To and From heard+airpods: To is the argument, From the seat in the child env
-    assert args[:2] == ["send", "heard+airpods@host1"]
+    # To and From heard+room: To is the argument, From the seat in the child env;
+    # the device's address is a --cc on the same send
+    assert args[:4] == ["send", "heard+room@host1", "--cc", "heard+airpods@host1"]
+    assert args.count("--cc") == 1
     env = em.child_env(m["from"], {})
-    assert env["TM_AGENT_ADDRESS"] == env["EMAIL"] == "heard+airpods"
+    assert env["TM_AGENT_ADDRESS"] == env["EMAIL"] == "heard+room"
     assert env["SESSIONMAIL_FROM_NAME"] == "Ears"
     assert msg["Ears-Kind"] == "spoken" and msg["Ears-Rule"] == "ivy@host1=call"
     assert msg["Ears-Seq"] == "42" and msg["Ears-Source"] == "mic" and msg["Ears-Device"] == "airpods"
@@ -675,7 +680,7 @@ def test_device_speaker_is_pinned_per_label_end_to_end(monkeypatch):
 def test_device_a_is_no_longer_an_opener_by_default():
     rules = {"seats": {"ivy": {"names": "ivy"}}}                 # code defaults only
     m = dev([turn(1, "It's a Ivy thing.", seq=1), turn(5, "Hey Ivy, now.", seq=2)], rules)
-    assert who(m) == [(1, ["heard+airpods"], ""), (2, ["heard+airpods"], "ivy@host1=call")]
+    assert who(m) == [(1, ["heard+room"], ""), (2, ["heard+room"], "ivy@host1=call")]
 
 
 def test_device_slug():
@@ -689,10 +694,93 @@ def test_device_box_name_is_the_sender():
     """The box is heard: ears+<device> fell into the
     ears project box (review D1). It is --sender, so a rename is configuration."""
     m = dev([turn(1, "Hey Ivy.", seq=1)])
-    assert who(m) == [(1, ["heard+airpods"], "ivy@host1=call")]       # the default
+    assert who(m) == [(1, ["heard+room"], "ivy@host1=call")]       # the default
     m = dev([turn(1, "Hey Ivy.", seq=1)], args=("--sender", "other"))
-    assert who(m) == [(1, ["other+airpods"], "ivy@host1=call")]
-    assert m[0]["mail"]["from"] == "other+airpods"
+    assert who(m) == [(1, ["other+room"], "ivy@host1=call")]
+    assert m[0]["mail"]["from"] == "other+room" and m[0]["cc"] == ["other+airpods"]
+
+
+# -- one room address, whatever device the capture follows -------------------
+# The capture follows the default input; a new device must not move the room's
+# turns to an address no session subscribes to. Room turns go To and From
+# heard+room; the device stays in Ears-Device and is a Cc on the same send.
+
+def test_device_a_new_input_device_keeps_the_room_address():
+    """The regression: the capture moved from the built-in mic to a headset (B3),
+    and its turns went To heard+b3, which no session heard. Both go To heard+room."""
+    m = dev([dict(turn(1, "Hey Ivy, are you there?", seq=1), device="MacBook Air Microphone"),
+             dict(turn(5, "Hey Ivy, and now?", seq=2), device="B3")])
+    assert who(m) == [(1, ["heard+room"], "ivy@host1=call"), (2, ["heard+room"], "ivy@host1=call")]
+    assert [x["mail"]["from"] for x in m] == ["heard+room", "heard+room"]
+    assert [x["cc"] for x in m] == [["heard+macbook"], ["heard+b3"]]
+    assert [x["mail"]["headers"]["Ears-Device"] for x in m] == ["MacBook Air Microphone", "B3"]
+
+
+def test_send_a_room_turn_is_one_send_with_the_device_cc():
+    """One message per turn: ONE call of `message send` (so ONE Message-ID; the keeper
+    mints none and the send mints one per call), To heard+room AND --cc
+    heard+<device> in that one argv, so the device's address still gets the turn,
+    and ONE fire-log row with its one id. One write per box is the delivery's
+    property, pinned in sessionmail by tests/test_mail_drop.py
+    test_no_postfix_and_one_copy_per_box_when_recipients_overlap; the fake
+    delivers nothing."""
+    rows, calls = send_run([dict(turn(1, "Hey Ivy, check the build.", seq=1), device="B3")], to=None)
+    assert len(rows) == len(calls) == 1
+    argv = calls[0]["argv"]
+    assert argv[1] == "heard+room@host1"
+    assert argv[argv.index("--cc"):argv.index("--cc") + 2] == ["--cc", "heard+b3@host1"]
+    assert argv.count("--cc") == 1
+    assert calls[0]["env"]["TM_AGENT_ADDRESS"] == calls[0]["env"]["EMAIL"] == "heard+room"
+    assert rows[0]["to"] == ["heard+room"] and rows[0]["cc"] == ["heard+b3"]
+    assert rows[0]["exit"] == 0 and rows[0]["id"] == calls[0]["id"]
+    # two turns on two devices: two sends, two ids, never four
+    rows, calls = send_run([dict(turn(1, "Hey Ivy, one.", seq=1), device="MacBook Air Microphone"),
+                            dict(turn(5, "Hey Ivy, two.", seq=2), device="B3")], to=None)
+    assert len(rows) == len(calls) == 2
+    assert [c["argv"][1] for c in calls] == ["heard+room@host1", "heard+room@host1"]
+    assert [c["argv"][c["argv"].index("--cc") + 1] for c in calls] == \
+        ["heard+macbook@host1", "heard+b3@host1"]
+    assert len({r["id"] for r in rows}) == 2 and [r["id"] for r in rows] == [c["id"] for c in calls]
+
+
+def test_device_copy_off_sends_no_cc():
+    m = dev([turn(1, "Hey Ivy.", seq=1)], args=("--device-copy", "off"))
+    assert who(m) == [(1, ["heard+room"], "ivy@host1=call")]
+    assert "cc" not in m[0] and "cc" not in m[0]["mail"]
+    rows, calls = send_run([turn(1, "Hey Ivy.", seq=1)], to=None, args=("--device-copy", "off"))
+    assert "--cc" not in calls[0]["argv"] and "cc" not in rows[0]
+    assert set(rows[0]) == {"at", "seq", "to", "rule", "subject", "exit", "id"}
+
+
+def test_device_named_like_the_room_gets_no_cc():
+    m = dev([dict(turn(1, "Hey Ivy.", seq=1), device="Room")])
+    assert who(m) == [(1, ["heard+room"], "ivy@host1=call")] and "cc" not in m[0]
+
+
+def test_a_blackhole_turn_is_still_not_mailed():
+    """The call tap's input (BlackHole) and a turn with no device stay unmailed: the
+    room's address needs no slug, but the slug is still the gate."""
+    m = dev([dict(turn(1, "Hey Ivy, through the tap", seq=1), device="BlackHole 2ch"),
+             dict(turn(3, "Hey Ivy, no device", seq=2), device="")])
+    assert m == []
+    assert [(k["skip"], k["seq"]) for k in skips()] == [("device", 1), ("device", 2)]
+
+
+def test_room_and_sender_are_configuration(monkeypatch):
+    m = dev([turn(1, "Hey Ivy.", seq=1)], args=("--sender", "other", "--room", "den"))
+    assert who(m) == [(1, ["other+den"], "ivy@host1=call")]
+    assert m[0]["mail"]["from"] == "other+den" and m[0]["cc"] == ["other+airpods"]
+    monkeypatch.setenv("EARS_MAIL_ROOM", "study")
+    m = dev([turn(1, "Hey Ivy.", seq=1)])
+    assert who(m) == [(1, ["heard+study"], "ivy@host1=call")]
+    assert "heard+study@host1" in run.stderr               # the banner names the room
+
+
+@pytest.mark.parametrize("bad", ["Den", "a+b", "a/b", "a@b", "", "den room"])
+def test_a_bad_room_exits_2(bad):
+    p = subprocess.run([sys.executable, str(SCRIPT), "--dry-run", "--once", "--room", bad],
+                       capture_output=True, text=True, timeout=30)
+    assert p.returncode == 2 and "--room" in p.stderr
 
 
 # -- Ears-Speaker: one speaker per turn (EARS-14) -----------------------------
@@ -704,7 +792,7 @@ def test_device_a_split_pair_is_two_mails_each_with_its_own_speaker():
                   speaker="alice", split="speaker-change"),
              turn(3, "Right, then we launch the boat at three.", seq=11,
                   speaker="theo", opened_by="speaker-change")])
-    assert who(m) == [(10, ["heard+airpods"], ""), (11, ["heard+airpods"], "")]
+    assert who(m) == [(10, ["heard+room"], ""), (11, ["heard+room"], "")]
     assert [x["mail"]["headers"]["Ears-Speaker"] for x in m] == ["alice@host1", "theo@host1"]
 
 
@@ -713,7 +801,7 @@ def test_device_three_speakers_each_mail_their_own_speaker():
              turn(4, "Hey Ivy, what does the forecast say?", seq=2, speaker="theo"),
              turn(7, "Wind drops after lunch.", seq=3, speaker="dave")])
     assert [x["mail"]["headers"]["Ears-Speaker"] for x in m] == ["alice@host1", "theo@host1", "dave@host1"]
-    assert who(m)[1] == (2, ["heard+airpods"], "ivy@host1=call")      # the rule is unchanged
+    assert who(m)[1] == (2, ["heard+room"], "ivy@host1=call")      # the rule is unchanged
 
 
 def test_device_a_turn_without_speaker_keeps_the_default_speaker(monkeypatch):
@@ -783,7 +871,7 @@ def own_turn(sec, text, seq, speaker="vera", **kw):
 def test_device_a_seats_own_voice_is_not_its_reply_or_light():
     m = dev(VERA_LINE + [own_turn(9, "and that is where it stands for now", 9),
                          own_turn(20, "one more thing from me", 20)], rules=_lit("vera", 60))
-    assert who(m) == [(9, ["heard+macbook"], ""), (20, ["heard+macbook"], "")]
+    assert who(m) == [(9, ["heard+room"], ""), (20, ["heard+room"], "")]
     assert [x["mail"]["headers"]["Ears-Speaker"] for x in m] == ["vera@host1", "vera@host1"]
 
 
@@ -805,7 +893,7 @@ def test_a_seats_own_voice_still_calls_it():
     m = run(VERA_LINE + [own_turn(9, "Hey Vera, the queue is clear.", 9)])
     assert who(m) == [(9, ["vera"], "vera=call")]
     m = dev([own_turn(2, "Hey Vera, are you there?", 2)])
-    assert who(m) == [(2, ["heard+macbook"], "vera@host1=call")]
+    assert who(m) == [(2, ["heard+room"], "vera@host1=call")]
 
 
 def test_a_label_names_the_seat_whatever_its_case():
@@ -892,14 +980,14 @@ def test_send_logs_the_id_the_send_returned_and_mints_none():
 
 def test_send_never_signs_as_the_seat_that_started_it():
     """A keeper started from a seat's shell inherits its session and must-sign: the
-    turn still goes as heard+<device>, named Ears, unsigned (RULINGS A1)."""
+    turn still goes as heard+room, named Ears, unsigned (RULINGS A1)."""
     caller = {"CLAUDE_SESSION_ID": "caller-sid", "CLAUDE_SESSION_AGENT_SOCK": "/caller/sock",
               "CLAUDE_SESSION_PUB": "/caller/pub", "CLAUDE_CODE_SESSION_ID": "caller-sid",
               "SESSIONMAIL_REQUIRE_SIGNATURE": "1", "SESSION_MAIL_REQUIRE_SIGNATURE": "1",
               "TM_AGENT_ADDRESS": "vera", "EMAIL": "vera@host1"}
     rows, calls = send_run([turn(1, "Hey Ivy, check the build.", seq=1)], to=None, env=caller)
-    assert rows[0]["exit"] == 0 and calls[0]["argv"][1] == "heard+airpods@host1"
-    assert calls[0]["env"] == {"TM_AGENT_ADDRESS": "heard+airpods", "EMAIL": "heard+airpods",
+    assert rows[0]["exit"] == 0 and calls[0]["argv"][1] == "heard+room@host1"
+    assert calls[0]["env"] == {"TM_AGENT_ADDRESS": "heard+room", "EMAIL": "heard+room",
                                "SESSIONMAIL_FROM_NAME": "Ears"}
 
 
@@ -907,7 +995,7 @@ def test_child_env_signs_only_with_the_keepers_own_key():
     em = em_module()
     caller = {"CLAUDE_SESSION_AGENT_SOCK": "/caller/sock", "CLAUDE_SESSION_PUB": "/caller/pub",
               "PATH": "/bin"}
-    env = em.child_env("heard+airpods", caller)
+    env = em.child_env("heard+room", caller)
     assert not [k for k in env if k.startswith("CLAUDE_SESSION_")] and env["PATH"] == "/bin"
     assert "SESSIONMAIL_REQUIRE_SIGNATURE" not in env
     # one of the pair is not a key: still unsigned
@@ -1333,25 +1421,27 @@ def test_call_a_leg_that_never_answers_does_not_stall_the_mail(legs, monkeypatch
     t = _time.monotonic()
     m = dev(call_rows() + [turn(9, "Hey Ivy, in the room", seq=9)])
     assert _time.monotonic() - t < 15
-    assert who(m) == [(215130, ["calls+ivy-1317"], None), (9, ["heard+airpods"], "ivy@host1=call")]
+    assert who(m) == [(215130, ["calls+ivy-1317"], None), (9, ["heard+room"], "ivy@host1=call")]
 
 
 def test_call_turns_never_go_to_heard_and_mic_turns_are_unchanged(legs, monkeypatch):
-    """Test plan 4: a mic turn mails heard+<device> with no call headers; --calls off
-    restores skip: call; a call:N turn never goes to heard+."""
+    """Test plan 4: a mic turn mails heard+room with no call headers; --calls off
+    restores skip: call; a call:N turn never goes to heard+, To or Cc."""
     leg = legs("ivy/call-ears.sock", {"agent": "ivy", "calls": [1317]})
     socks_env(monkeypatch, leg)
     rows = call_rows() + [turn(9, "Hey Ivy, in the room", seq=9)]
     m = dev(rows)
-    assert who(m) == [(215130, ["calls+ivy-1317"], None), (9, ["heard+airpods"], "ivy@host1=call")]
+    assert who(m) == [(215130, ["calls+ivy-1317"], None), (9, ["heard+room"], "ivy@host1=call")]
     room = m[1]["mail"]["headers"]
     assert not {"Call-Id", "Call-Bot"} & set(room) and room["Ears-Kind"] == "spoken"
     m = dev(rows, args=("--calls", "off"))
-    assert who(m) == [(9, ["heard+airpods"], "ivy@host1=call")]
+    assert who(m) == [(9, ["heard+room"], "ivy@host1=call")]
     assert [(s["skip"], s["seq"]) for s in skips()] == [("call", 215130)]
     assert leg.probes == 1                                 # off probes nothing
     assert not [x for x in dev(rows) if any(t.startswith("heard+") for t in x["to"])
                 and x["seq"] == 215130]
+    call = [x for x in dev(rows) if x["seq"] == 215130]
+    assert len(call) == 1 and "cc" not in call[0] and "cc" not in call[0]["mail"]   # no copy
 
 
 def test_call_from_is_configuration(legs, monkeypatch):
@@ -1392,6 +1482,7 @@ def test_call_the_send_carries_the_four_headers_and_from_ears(legs, monkeypatch)
     assert [(r["to"], r["exit"], r["rule"]) for r in rows] == [(["calls+ivy-1317"], 0, None)]
     c = calls[0]
     assert c["argv"][1] == "calls+ivy-1317@host1"
+    assert "--cc" not in c["argv"] and "cc" not in rows[0]   # a call turn has no device copy
     assert headers_of(c["argv"]) == {"Ears-Kind": "turn", "Ears-Seq": "215130",
                                      "Call-Id": "1317", "Call-Bot": "ivy"}
     assert c["env"]["EMAIL"] == c["env"]["TM_AGENT_ADDRESS"] == "ears"
@@ -1407,7 +1498,7 @@ def test_call_a_bad_probe_reply_names_no_call_and_stops_no_mail(legs, monkeypatc
     leg = legs("ivy/call-ears.sock", {"agent": "ivy", "calls": calls})
     socks_env(monkeypatch, leg)
     m = dev(call_rows() + [turn(9, "Hey Ivy, in the room", seq=9)])
-    assert who(m) == [(9, ["heard+airpods"], "ivy@host1=call")]
+    assert who(m) == [(9, ["heard+room"], "ivy@host1=call")]
     assert [(s["skip"], s["call"]) for s in skips("call-bot")] == [("call-bot", 1317)]
 
 
@@ -1485,7 +1576,7 @@ def test_call_a_bad_call_bots_in_state_is_ignored(bad, tmp_path):
     state = tmp_path / "state.json"
     state.write_text(json.dumps({"offsets": {}, "call_bots": bad}))
     m = dev([turn(1, "Hey Ivy, hello", seq=1)], args=("--state", str(state)))
-    assert who(m) == [(1, ["heard+airpods"], "ivy@host1=call")]
+    assert who(m) == [(1, ["heard+room"], "ivy@host1=call")]
 
 
 def started(n=1317, at=0.1):

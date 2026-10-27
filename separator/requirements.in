@@ -1,0 +1,21 @@
+# The separator's own venv: what `mouth split` runs to make a song's stems and its
+# instrumental. `mouth split --install` builds it under the separator home,
+# ~/.local/share/ears/separator/venv, only when asked. It is never a dependency of the
+# sessionvoice wheel: torch is about 1 GB, so it stays out of every pyproject.toml list.
+# Compiled into requirements.lock, which is what install uses:
+#   MACOSX_DEPLOYMENT_TARGET=14.0 uv pip compile requirements.in --python-version 3.12 \
+#     --python-platform aarch64-apple-darwin --no-header --generate-hashes -o requirements.lock
+# over the existing lock, so its pins hold (`--upgrade-package X` moves one; a fresh output
+# file re-resolves and can drift them), then put the lock's header back. Install runs
+# `uv pip install --require-hashes`, so the lock must carry a --hash for every pin. Every pin
+# is a wheel: nothing is built, so no build backend is pinned.
+# - demucs 4.1.0: the model code. 4.0.1 cannot load a local checkpoint on torch 2.6 or later
+#   and needs torchaudio; 4.1.0 needs neither. Its `train` extra (torchaudio, dora-search)
+#   is never installed.
+# - torch: the speech venv's pin, so uv's cache can share it.
+# - soundfile: writes the FLAC outputs (its wheel bundles libsndfile). run.py does the I/O
+#   itself: no ffmpeg, no torchaudio, no demucs CLI.
+demucs==4.1.0
+torch==2.14.1
+numpy
+soundfile

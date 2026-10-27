@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from ears import operator_config, services, wake
-from ears.home import SETTINGS
+from ears.home import SETTINGS, log_dir
 from test_services_label_move import OURS_ENV, ours_plist, print_out
 from tests import setup_fence
 
@@ -43,7 +43,7 @@ def fence(monkeypatch, tmp_path):
               "SESSIONMAIL_SENDMAIL"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setattr(services, "AGENTS", home / "Library/LaunchAgents")
-    monkeypatch.setattr(services, "LOGS", home / "Library/Logs/ears")
+    monkeypatch.setattr(services, "LOGS", log_dir(environ={}, home=home))   # ears.home, under HOME
     monkeypatch.setattr(services, "MESSAGE", str(message))
     calls = {"launchctl": [], "vmailbox": 0, "probe": []}
     loaded = set()
@@ -170,15 +170,31 @@ def test_from_a_wheel_the_mailer_is_the_shipped_one(monkeypatch, tmp_path):
     got = services.mail_script()
     assert got.is_file() and got.name == "ears-mail.py" and got.parent.name == "_keeper"
     assert got.read_bytes() == (REPO / "keeper/ears-mail.py").read_bytes()
+    assert (got.parent / "phone_roots.py").read_bytes() == (REPO / "keeper/phone_roots.py").read_bytes()
 
 
-def test_the_mailer_needs_nothing_beside_it():
-    # stdlib only: a shipped ears-mail.py imports no sibling file (so only it ships)
+def test_the_mailer_needs_beside_it_only_what_mail_files_names():
+    # stdlib only: a shipped ears-mail.py imports from beside itself exactly the files
+    # services.MAIL_FILES names (phone_roots.py), which install checks are there
     src = (REPO / "keeper/ears-mail.py").read_text()
     siblings = {p.stem.replace("-", "_") for p in (REPO / "keeper").glob("*.py")}
     imported = {w for line in src.splitlines() if line.lstrip().startswith(("import ", "from "))
                 for w in line.replace(",", " ").split()[1:]}
-    assert not (siblings & imported), siblings & imported
+    assert siblings & imported == {Path(n).stem for n in services.MAIL_FILES[1:]}
+
+
+def test_no_phone_roots_beside_the_mailer_refuses_and_writes_nothing(fence, monkeypatch, tmp_path, capsys):
+    shipped = tmp_path / "pkg/_keeper"
+    shipped.mkdir(parents=True)
+    (shipped / "ears-mail.py").write_text("")                     # phone_roots.py missing
+    import importlib.resources
+    monkeypatch.setattr(services, "ROOT", tmp_path / "root")
+    monkeypatch.setattr(importlib.resources, "files", lambda pkg: tmp_path / "pkg")
+    for dry in (True, False):
+        assert services.install(["mail"], dry_run=dry) == 2
+        err = capsys.readouterr().err
+        assert "REFUSED" in err and "phone_roots.py" in err
+    assert not services.AGENTS.exists() and not fence["calls"]["launchctl"]
 
 
 def test_no_mailer_anywhere_refuses_and_writes_nothing(fence, monkeypatch, tmp_path, capsys):
@@ -189,6 +205,67 @@ def test_no_mailer_anywhere_refuses_and_writes_nothing(fence, monkeypatch, tmp_p
         assert services.install(["mail"], dry_run=dry) == 2
         assert "REFUSED" in capsys.readouterr().err
     assert not services.AGENTS.exists() and not fence["calls"]["launchctl"]
+
+
+# --- EARS-486: the keeper's own siblings ----------------------------------------------------
+# ears-keeper.sh runs call-ears from beside itself, and call-ears imports phone_roots.py from
+# beside itself: install checks all three are there, as it does for the mailer (MAIL_FILES).
+
+def test_the_keeper_needs_beside_it_what_keeper_files_names():
+    """ears-keeper.sh starts call-ears from its own dir; call-ears imports, of the keeper's own
+    .py files, exactly phone_roots. Those are services.KEEPER_FILES after the script."""
+    script, *beside = services.KEEPER_FILES
+    assert script == "ears-keeper.sh"
+    assert '"$(dirname "$0")" && pwd)/call-ears' in (REPO / "keeper" / script).read_text()
+    src = (REPO / "keeper/call-ears").read_text()
+    siblings = {p.stem.replace("-", "_") for p in (REPO / "keeper").glob("*.py")}
+    imported = {w for line in src.splitlines() if line.lstrip().startswith(("import ", "from "))
+                for w in line.replace(",", " ").split()[1:]}
+    assert ["call-ears", *sorted(siblings & imported)] == [beside[0], *(Path(n).stem for n in beside[1:])]
+
+
+def test_from_a_wheel_the_keepers_siblings_are_the_shipped_ones(monkeypatch, tmp_path):
+    monkeypatch.setattr(services, "ROOT", tmp_path)                # installed: no keeper/ beside src
+    got = services.keeper_script()
+    assert got.parent.name == "_keeper"
+    for name in services.KEEPER_FILES:
+        assert (got.parent / name).read_bytes() == (REPO / "keeper" / name).read_bytes(), name
+
+
+def _keeper_dir(tmp_path, missing, wheel):
+    """A keeper dir holding KEEPER_FILES but MISSING: a checkout's keeper/ (beside settings/,
+    so the schemas are found) or a wheel's ears/_keeper/."""
+    root = tmp_path / "root"
+    (root / "settings").parent.mkdir(parents=True)
+    (root / "settings").symlink_to(REPO / "settings")
+    d = tmp_path / "pkg" / "_keeper" if wheel else root / "keeper"
+    d.mkdir(parents=True)
+    for name in services.KEEPER_FILES:
+        if name != missing:
+            (d / name).write_text("")
+    return root
+
+
+@pytest.mark.parametrize("wheel", [False, True], ids=["checkout", "wheel"])
+@pytest.mark.parametrize("missing", ["call-ears", "phone_roots.py"])
+def test_a_keeper_without_its_siblings_refuses_and_writes_nothing(fence, monkeypatch, tmp_path, capsys,
+                                                                  missing, wheel):
+    import importlib.resources
+    monkeypatch.setattr(services, "ROOT", _keeper_dir(tmp_path, missing, wheel))
+    monkeypatch.setattr(importlib.resources, "files", lambda pkg: tmp_path / "pkg")
+    with pytest.raises(services.NoKeeper) as e:
+        services.keeper_script()
+    assert f"no {missing} beside" in str(e.value) and "ears-keeper.sh" in str(e.value)
+    for dry in (True, False):
+        assert services.install(["keeper"], dry_run=dry) == 2
+        err = capsys.readouterr().err
+        assert "REFUSED" in err and f"no {missing} beside" in err
+    assert not services.AGENTS.exists() and not fence["calls"]["launchctl"]
+
+
+def test_a_keeper_with_its_siblings_is_found(monkeypatch, tmp_path):
+    monkeypatch.setattr(services, "ROOT", _keeper_dir(tmp_path, None, wheel=False))
+    assert services.keeper_script() == tmp_path / "root" / "keeper" / "ears-keeper.sh"
 
 
 def test_install_writes_and_loads_all_three(fence, capsys):
@@ -356,6 +433,7 @@ def test_drop_host_makes_the_flat_heard_box_by_setup_and_checks_no_postfix(fence
     assert not any(".tm-store" in l or "vmailbox-gen" in l or "FLAT" in l for l in out)
     assert any(l.startswith("heard  an agent hears heard turns only once it subscribes") for l in out)
     assert not any("message subscription add" in l for l in out)     # not how a stranger subscribes
+    assert any(l.startswith("heard  ") and "heard+room" in l for l in out)   # the one address
     assert not any(f in l for l in out for f in FALSE)
     assert fence["calls"]["vmailbox"] == 0
 
@@ -623,7 +701,8 @@ def test_one_store_gets_a_nested_heard_box_and_a_route(fence):
     assert all((store / "heard" / s).is_dir() for s in ("new", "cur", "tmp"))
     assert not (fence["home"] / ".mail/agents/heard").exists()      # never flat
     assert fence["calls"]["vmailbox"] == 1 and any("routed" in l for l in out)
-    assert any("heard+macbook" in l for l in out)                   # the box to subscribe to
+    assert any("`message subscription add heard+room`" in l for l in out)   # the one address
+    assert not any("heard+macbook" in l or "heard+<device>" in l for l in out)
 
 
 def test_dry_run_makes_no_box_and_runs_nothing(fence):
@@ -919,9 +998,9 @@ def test_agent_adds_the_wake_seat_and_takes_the_notices(fence, capsys):
 
 def test_notify_overrides_the_notices_alone(fence):
     _store(fence["home"])
-    services.install(["keeper", "mail"], agent="dave", notify="jim+ears")
+    services.install(["keeper", "mail"], agent="dave", notify="someone+ears")
     env = plistlib.loads(_plist(fence, "keeper").read_bytes())["EnvironmentVariables"]
-    assert env["EARS_NOTIFY"] == "jim+ears" and wake.seats() == {"dave": "dave"}
+    assert env["EARS_NOTIFY"] == "someone+ears" and wake.seats() == {"dave": "dave"}
 
 
 def test_no_agent_says_nobody_is_woken_and_notices_are_log_only(fence, capsys):
@@ -972,8 +1051,8 @@ def test_an_explicit_notify_never_asks_the_operator_reader(fence, capsys, monkey
     def boom():
         raise AssertionError("the reader was asked")
     monkeypatch.setattr(operator_config, "current", boom)
-    services.install(["keeper", "mail"], notify="jim+ears")
-    assert "notify keeper notices to jim+ears (EARS_NOTIFY)" in capsys.readouterr().out
+    services.install(["keeper", "mail"], notify="someone+ears")
+    assert "notify keeper notices to someone+ears (EARS_NOTIFY)" in capsys.readouterr().out
 
 
 def test_no_agent_but_seats_already_named(fence, capsys):
@@ -992,8 +1071,8 @@ def test_dry_run_agent_adds_nothing(fence, capsys):
 def test_main_passes_agent_and_notify(monkeypatch):
     got = {}
     monkeypatch.setattr(services, "install", lambda names, dry=False, **kw: got.update(kw, names=names) or 0)
-    services.main(["install", "--agent", "dave", "--notify", "jim"])
-    assert got == {"agent": "dave", "notify": "jim", "no_prefetch": False,
+    services.main(["install", "--agent", "dave", "--notify", "someone"])
+    assert got == {"agent": "dave", "notify": "someone", "no_prefetch": False,
                    "names": ["speech", "mouth", "keeper", "mail"]}
 
 
@@ -1086,8 +1165,8 @@ def test_no_agent_installs_as_a_bare_install_did_and_still_warns(fence, monkeypa
 def test_main_hands_install_no_agent_as_no_agent(monkeypatch):
     got = {}
     monkeypatch.setattr(services, "install", lambda names, dry=False, **kw: got.update(kw, dry=dry) or 0)
-    assert services.main(["install", "--no-agent", "--notify", "jim"]) == 0
-    assert got == {"agent": None, "notify": "jim", "no_prefetch": False, "dry": False}
+    assert services.main(["install", "--no-agent", "--notify", "someone"]) == 0
+    assert got == {"agent": None, "notify": "someone", "no_prefetch": False, "dry": False}
 
 
 def test_agent_and_no_agent_are_mutually_exclusive(fence, monkeypatch, capsys):

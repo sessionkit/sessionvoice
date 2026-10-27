@@ -1,7 +1,7 @@
 """A fake ``message send`` for keeper/ears-mail.py's tests (EARS-381). Stdlib only.
 
-Called as ``fake_message.py send TO -s SUBJ -f - --raw --no-shorten --json
-[--header 'K: V' ...]`` with the body on stdin, as ears-mail calls sessionmail's
+Called as ``fake_message.py send TO [--cc ADDR ...] -s SUBJ -f - --raw --no-shorten
+--json [--header 'K: V' ...]`` with the body on stdin, as ears-mail calls sessionmail's
 ``message``. It delivers nothing. It appends one JSON line per call to
 ``$EARS_FAKE_MESSAGE_LOG``: ``{"argv", "env", "body"}``, where ``env`` is the
 seat, its name and the signing variables it saw (and any ``CLAUDE_SESSION_*``),

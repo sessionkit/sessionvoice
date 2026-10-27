@@ -26,16 +26,17 @@ cut from the ring by its t0..t1. New here:
      phone mic through Opus is not the room's voice: on one call the room refs named only
      192 of 317 of the user's call partials; a 12 s clip of the user from a call named 289 of 309.
      With these, a heard line from source "call" (device call:N) is cut from that call's
-     caller-call.wav (mike-call.wav in a call dir from an older sessionphone) at
-     wav_s + t0 .. wav_s + t1, wav_s from the bot's ear-taps.jsonl (the
+     caller-call.wav at wav_s + t0 .. wav_s + t1, wav_s from the bot's ear-taps.jsonl (the
      audio position where the capture's tap began: the wall clock drifted 2.0 s in 21
      minutes on that call). Its row carries "leg": "call". Without them, call lines get no
      row, as before.
   --call-dirs DIR:DIR: where the call dirs are: a Delta bot's (<stamp>-chat<C>-msg<N>/) and
      sessionphone's web calls (<N>/, N the 10-digit epoch second the call began).
      Default every agent's Delta bot, ~/.*/delta-chat/calls, and sessionphone's web calls,
-     $SESSIONPHONE_ROOT/web/calls ($SESSIONPHONE_ROOT defaults to ~/.sessionphone, as the ears
-     find its sockets). Both kinds hold the same caller-call.wav and ear-taps.jsonl. A call
+     <root>/web/calls under each sessionphone root, as the ears find its sockets:
+     $SESSIONPHONE_ROOT alone when it is set, else ~/.sessionkit/phone/state and
+     ~/.sessionphone, a root reached by both (one a symlink to the other) searched once.
+     Both kinds hold the same caller-call.wav and ear-taps.jsonl. A call
      line with no recording gets unheard, its why naming the call dir it looked in, or every
      root it searched when it found no dir.
 Out: speakers_YYYY-MM-DD.jsonl beside the heard log (0600), one JSON line per heard line,
@@ -69,10 +70,23 @@ SR = 16000
 # The diarizer's pinned snapshot: equal to ears.services.SPEAKER_REVISION (a test holds them).
 REVISION = "59ed2dbfc1346dcea9d423c71306a3a2499c568f"
 LOGDIR = Path(sessionvoice_home()) / "logs/conversations"
-# every ~/.<agent>/delta-chat bot's calls, no agent named; then sessionphone's web calls,
-# under $SESSIONPHONE_ROOT as the ears' bot_roots() reads it
-CALL_DIRS = "~/.*/delta-chat/calls:" + os.path.join(os.environ.get("SESSIONPHONE_ROOT") or "~/.sessionphone",
-                                                    "web", "calls")
+def phone_roots():
+    """sessionphone's root(s): a stdlib copy of keeper/phone_roots.py's phone_roots()
+    (tests/test_speakers_call.py holds them equal), as this venv imports nothing from ears.
+    $SESSIONPHONE_ROOT when it is set, alone; else the new root, ~/.sessionkit/phone/state,
+    then the old, ~/.sessionphone, deduped by realpath (for one release the old is a symlink
+    to the new: searched once)."""
+    explicit = os.environ.get("SESSIONPHONE_ROOT")
+    if explicit:
+        return [os.path.expanduser(explicit)]
+    home, seen, out = os.path.expanduser("~"), set(), []
+    for p in (os.path.join(home, ".sessionkit", "phone", "state"), os.path.join(home, ".sessionphone")):
+        if os.path.realpath(p) not in seen:
+            seen.add(os.path.realpath(p)); out.append(p)
+    return out
+# every ~/.<agent>/delta-chat bot's calls, no agent named; then sessionphone's web calls
+# under each of its roots, as the ears' bot_roots() reads them
+CALL_DIRS = ":".join(["~/.*/delta-chat/calls"] + [os.path.join(r, "web", "calls") for r in phone_roots()])
 ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
 ap.add_argument("--device", default="follow",
                 help="follow (the keeper capture's device, moving with it) or a device name to pin")
@@ -100,7 +114,8 @@ ap.add_argument("--cover", type=float, default=0.5, metavar="F",
                 help="share of a line's window the device's audio must cover to name it")
 ap.add_argument("--deaf-lines", type=int, default=10, metavar="N",
                 help="after N mic lines in a row at 0%% coverage, close the stream, rescan the device "
-                     "list and reopen it, at most once a minute; 0 turns it off")
+                     "list and reopen it, at most once a minute (also after a run of covered turns "
+                     "with no speech in their audio); 0 turns both reopens off")
 a = ap.parse_args()
 
 def say(m): print(f"{time.strftime('%H:%M:%S')} {m}", flush=True)
@@ -256,6 +271,7 @@ def label(seg, refset=None):
     who = LABEL.get(d, "other") if share >= a.dominant else "mixed"
     return who, fr, tot, ms
 
+SILENT_WHY = "words in the line, no speech found in its audio"   # the keeper keys on this prefix
 def unheard_why(who, text, seg):
     """(who, why): a line whose words say someone spoke is never 'silent'. A device that
     hands over only zeros (the AirPods as they died, Sun 2030-06-09) is no signal;
@@ -263,7 +279,7 @@ def unheard_why(who, text, seg):
     if seg is not None and len(seg) and not np.abs(seg).max():
         return "unheard", "no signal: the device gave only zeros"
     if who == "silent" and words(text):
-        return "unheard", "words in the line, no speech found in its audio"
+        return "unheard", SILENT_WHY
     return who, None
 
 # ---- a stream that is open and active and never calls back ----
@@ -294,8 +310,42 @@ def deaf_due(dev):
             return 0
         n = deaf["n"]; deaf.update(n=0, due=False)
         return n
+# ---- a stream that is covered and still hears nobody ----
+# The other deaf: blocks arrive, the line is covered, and the audio holds no speech while the
+# capture heard words in it. A cover count cannot see that; this one counts it. Evidence is
+# narrow on purpose: a mic TURN (one per utterance; partials repeat and flap) of at least
+# SILENT_MIN_WORDS words (the diarizer can miss a one-word "Short."), cut at --cover or more,
+# whose why is SILENT_WHY (the diarizer found under 10 frames of speech), and not the mouth's
+# own words (mouth_utt: an echo of the machine's voice is not the person). No words in the line
+# is no evidence, so a quiet room never counts. A turn where speech WAS found ends the run; a
+# line that is no evidence either way (a partial, 0%, zeros, one word) leaves it as it is.
+SILENT_TURNS = 3      # three spoken turns in a row unheard: a person talking, not one miss
+SILENT_MIN_WORDS = 2
+silent = {"n": 0, "dev": None, "due": False}
+def note_speech(dev, kind, text, heard_as, why, utt):
+    """Count one covered mic line by what the diarizer found (HEARD_AS, before the mouth's
+    renaming) against what the capture heard (TEXT). Shares deaf_lock with note_cover."""
+    with deaf_lock:
+        if dev != silent["dev"]:
+            silent.update(n=0, dev=dev, due=False)
+        if heard_as not in ("unheard", "silent"):
+            silent.update(n=0, due=False)
+            return
+        if kind != "turn" or utt or why != SILENT_WHY or len(words(text)) < SILENT_MIN_WORDS:
+            return
+        silent["n"] += 1
+        if a.deaf_lines > 0 and SILENT_TURNS <= silent["n"]:   # --deaf-lines 0: no reopens
+            silent["due"] = True
+def silent_due(dev):
+    """The count of covered turns with no speech on DEV if a reopen is due, else 0. Clears
+    the request and the count, as deaf_due does."""
+    with deaf_lock:
+        if not silent["due"] or not same_dev(silent["dev"], dev):
+            return 0
+        n = silent["n"]; silent.update(n=0, due=False)
+        return n
 def deaf_reset():
-    with deaf_lock: deaf.update(n=0, due=False)
+    with deaf_lock: deaf.update(n=0, due=False); silent.update(n=0, due=False)
 
 def record(r, seg, w0, w1, day, cover=None, why=None, leg=None):
     # a mic line with a window: count it, in every mode (a call leg's row has its own recording)
@@ -320,6 +370,8 @@ def record(r, seg, w0, w1, day, cover=None, why=None, leg=None):
         heard_as = who
         who, fr, utt = mouth_name(who, fr, r.get("text", ""), w0, w1, mouth, a.mouth_tail, agent_refs)
         by_mouth = named_by_mouth(heard_as, utt, agent_refs)
+        if leg is None and cover is not None:   # a covered mic line: did its audio hold speech
+            note_speech(r.get("device"), r.get("kind"), r.get("text", ""), heard_as, why, utt)
     if why and cover is not None:
         why += f" ({cover:.0%} of the line covered)"
     append(Path(a.logdir) / f"speakers_{day}.jsonl",
@@ -371,7 +423,8 @@ def target_device():
     return a.device if any(pinned.search(l) for l in ps_text().splitlines()) else None
 class Ring:
     """Wall-clock-stamped 20 ms blocks, each tagged with the device it came from, so a line
-    is cut only from its own device's audio, and a gap (the device away) is a gap."""
+    is cut only from its own device's audio, and a gap (the device away) is a gap. A block's
+    stamp is when its audio was taken (block_start), not when it arrived."""
     def __init__(self, keep): self.keep, self.blocks, self.lock = keep, collections.deque(), threading.Lock()
     def add(self, t_end, x, dev):
         with self.lock:
@@ -383,13 +436,17 @@ class Ring:
         if not mine: return None, None
         return mine[0][0], mine[-1][0] + len(mine[-1][1]) / SR
     def cut(self, w0, w1, dev):
-        """(audio, covered share of w0..w1): only dev's blocks, each sliced on its own stamp."""
+        """(audio, covered share of w0..w1): only dev's blocks, each sliced on its own stamp.
+        The share is of the window's span, not of samples found: where blocks claim the same
+        moment (a burst after a stall, stamped on arrival, piles onto one moment), that
+        moment is cut once, from the block stamped first. Audio from the wrong moment does
+        not count as cover, so a stalled stream's line reads as the gap it is."""
         with self.lock:
             parts = [(t, x) for t, x, d in self.blocks if same_dev(d, dev) and t + len(x) / SR > w0 and t < w1]
-        out = []
-        for t, x in parts:
-            i0 = max(0, int(round((w0 - t) * SR))); i1 = min(len(x), int(round((w1 - t) * SR)))
-            if i1 > i0: out.append(x[i0:i1])
+        out, edge = [], w0
+        for t, x in sorted(parts, key=lambda p: p[0]):
+            i0 = max(0, int(round((max(w0, edge) - t) * SR))); i1 = min(len(x), int(round((w1 - t) * SR)))
+            if i1 > i0: out.append(x[i0:i1]); edge = t + i1 / SR
         if not out: return np.zeros(0, np.float32), 0.0
         seg = np.concatenate(out).astype(np.float32) / 32768
         return seg, min(1.0, len(seg) / SR / max(w1 - w0, 1e-6))
@@ -408,20 +465,88 @@ def rescan(sd):
     start: AirPods put in after that are invisible, and a reconnect can leave a stale entry
     that fails -9986 (shadow.py find_input, ears-sounds.py reinit, mouth/output.py)."""
     sd._terminate(); sd._initialize()
+# ---- block timing: when a block's audio was taken, and the stalls between blocks ----
+# A Bluetooth input can stall and then deliver what it held in a burst. Stamped on arrival,
+# the burst's blocks all land on one moment, and a line's window holds audio from another
+# moment. So each block is stamped by the stream's own clock, and the stalls are logged
+# (a rate-limited line from the mic thread, never from the audio callback).
+GAP_S = 0.25        # a wait between blocks over a block's length plus this, or a block this
+                    # much later than the stream's least delay, or this much audio missing,
+                    # is a stall
+GAP_LOG_S = 10.0    # at most one stall line per 10 s; it counts what it held back
+STAMP_MAX_S = 10.0  # a stream clock that puts a block in the future, or older than this, is
+                    # not trusted for it: that block is stamped on arrival
+gaps = {}           # dev -> the stalls since the last line
+gaps_lock = threading.Lock()
+gaps_said = {"t": None}
+def block_start(ti, now, dur):
+    """(wall time the block's first sample was taken, "stream" or "arrival"). PortAudio
+    gives the block's time on the stream's clock (inputBufferAdcTime) and what that clock
+    reads now (currentTime), so the block began now - (currentTime - inputBufferAdcTime),
+    however late it arrives. With no stream clock (no time_info, or 0, which some hosts
+    give), or one out of range, it is stamped on arrival: it ends now."""
+    try:
+        adc, cur = float(ti.inputBufferAdcTime), float(ti.currentTime)
+    except (AttributeError, TypeError, ValueError):
+        adc = cur = 0.0
+    if adc > 0 and 0.0 <= cur - adc <= STAMP_MAX_S:
+        return now - (cur - adc), "stream"
+    return now - dur, "arrival"
+def note_gap(dev, clk, now, t0, dur, how):
+    """Count a block that stalled, from the audio callback: no I/O here. CLK is the stream's
+    own last arrival, last end and least delay. A stall is a block that came more than GAP_S
+    after the last one was due (wait), or more than GAP_S later after its own audio ended
+    than the stream's least delay so far (late: a Bluetooth input's steady latency is not a
+    stall), or one whose stream clock starts more than GAP_S after the last block ended
+    (lost audio)."""
+    wait = None if clk["arr"] is None else now - clk["arr"]
+    delay = now - (t0 + dur)
+    if how == "stream":   # an arrival stamp shows no delay: it must not set the least delay
+        clk["base"] = delay if clk["base"] is None else min(clk["base"], delay)
+    late = delay - clk["base"] if how == "stream" else 0.0
+    lost = max(0.0, t0 - clk["end"]) if clk["end"] is not None and how == "stream" else 0.0
+    clk["arr"], clk["end"] = now, t0 + dur
+    if (wait is None or wait <= dur + GAP_S) and late <= GAP_S and lost <= GAP_S:
+        return
+    with gaps_lock:
+        g = gaps.setdefault(dev, {"blocks": 0, "wait": 0.0, "late": 0.0, "lost": 0.0})
+        g["blocks"] += 1; g["wait"] = max(g["wait"], wait or 0.0); g["late"] = max(g["late"], late)
+        if lost > GAP_S: g["lost"] += lost
+        g["stamps"] = how
+def gap_report(now):
+    """The mic thread's line for the stalls noted since the last one, at most once per
+    GAP_LOG_S: blocks that stalled, the longest wait between two blocks, the latest a block
+    came after its audio ended beyond the stream's least delay, the seconds of audio the
+    stream clock says are missing, and whether the stamps are the stream's clock or arrival
+    (arrival: the late and lost figures cannot be seen). A steady stream says nothing."""
+    with gaps_lock:
+        if not gaps or (gaps_said["t"] is not None and now - gaps_said["t"] < GAP_LOG_S):
+            return
+        held = dict(gaps); gaps.clear(); gaps_said["t"] = now
+    for dev, g in held.items():
+        say(f"mic: stalls on {dev!r}: blocks={g['blocks']} wait_max_s={g['wait']:.2f} "
+            f"late_max_s={g['late']:.2f} lost_s={g['lost']:.2f} stamps={g['stamps']}")
 def try_open(sd, want):
-    """An open, started stream on the first input whose name holds WANT, or None."""
+    """An open, started stream on the first input whose name holds WANT, or None.
+    It opens at the device's own default rate first and resamples each block to SR in the
+    callback; SR is only the fallback when the default will not open. A 16 kHz stream asked
+    of a device that runs at another rate (AirPods' input runs at 24000) can open, deliver
+    blocks on time and carry no speech, so the side-car hears nobody while the capture does."""
     idx = next((i for i, d in enumerate(sd.query_devices())
                 if d["max_input_channels"] > 0 and want.lower() in d["name"].lower()), None)
     if idx is None:
         say(f"mic: no input matching {want!r}"); return None
     dflt = int(sd.query_devices(idx, kind="input")["default_samplerate"])
-    for rate in (SR, dflt):
-        def cb(indata, frames, ti, status, rate=rate, dev=want):
-            x = indata[:, 0].copy()
+    for rate in dict.fromkeys((dflt, SR)):   # one try when the default is SR
+        clk = {"arr": None, "end": None, "base": None}   # this stream's own timing
+        def cb(indata, frames, ti, status, rate=rate, dev=want, clk=clk):
+            now, x = time.time(), indata[:, 0].copy()
+            t0, how = block_start(ti, now, len(x) / rate)
+            note_gap(dev, clk, now, t0, len(x) / rate, how)
             if rate != SR:
                 n = int(len(x) * SR / rate)
                 x = np.interp(np.linspace(0, len(x) - 1, n), np.arange(len(x)), x).astype(np.int16)
-            ring.add(time.time(), x, dev)
+            ring.add(t0 + len(x) / SR, x, dev)
         try:
             stream = sd.InputStream(samplerate=rate, channels=1, dtype="int16",
                                     blocksize=int(rate * 0.02), device=idx, callback=cb)
@@ -434,8 +559,11 @@ def mic_step(sd, st, now):
     """One look: close a stream whose capture moved, stopped or died; open the capture's
     device if none is open, rescanning PortAudio's list once when it will not open.
     A stream that is open and active but whose lines all come out at 0% (--deaf-lines in a
-    row) is closed, the list rescanned at once and the device reopened: the same
-    name, the stream 'active', and still deaf. At most once per REOPEN_S."""
+    row), or whose covered turns hold no speech while the capture heard words (SILENT_TURNS
+    in a row), is closed, the list rescanned at once and the device reopened: the same
+    name, the stream 'active', and still deaf. At most once per REOPEN_S. Each look first
+    says what stalls the callback noted (gap_report)."""
+    gap_report(now)
     try: want = target_device()
     except Exception as exc:  # noqa: BLE001 - ps failing must not close a good stream
         say(f"mic: cannot read the capture's device: {exc}"); want = st["dev"]
@@ -444,10 +572,11 @@ def mic_step(sd, st, now):
     elif st["stream"] is not None and not st["stream"].active:
         close_stream(st, "the stream died")
     elif st["stream"] is not None and now - st.get("reopened", -REOPEN_S) >= REOPEN_S \
-            and (n := deaf_due(st["dev"])):
+            and ((n := deaf_due(st["dev"])) or (q := silent_due(st["dev"]))):
         st["reopened"] = st["rescanned"] = now   # the rescan here stands for RESCAN_S's too
-        say(f"mic: {n} lines at 0% coverage: reopening {st['dev']!r}")
-        close_stream(st, f"{n} lines at 0% coverage")   # close first: rescan must not run under a live stream
+        why = f"{n} lines at 0% coverage" if n else f"{q} covered turns with no speech"
+        say(f"mic: {why}: reopening {st['dev']!r}")
+        close_stream(st, why)   # close first: rescan must not run under a live stream
         say("mic: rescanning the device list"); rescan(sd)
     if not want or st["stream"] is not None:
         return
@@ -475,14 +604,13 @@ threading.Thread(target=mic_thread, daemon=True).start()
 
 # ---- the call leg: a call line is cut from the bot's own recording of the call ----
 # The capture of call:N hears the bot's ear tap, and the bot writes the same frames to
-# caller-call.wav (mike-call.wav in a call dir from an older sessionphone). Its t0/t1 are seconds
-# into the tap, so wav second = wav_s + t0, where wav_s is where the tap began (the bot's
-# ear-taps.jsonl). No ring and no wall clock: on one call the wall clock drifted 2.0 s from
-# the capture's audio in 21 minutes.
+# caller-call.wav. Its t0/t1 are seconds into the tap, so wav second = wav_s + t0, where
+# wav_s is where the tap began (the bot's ear-taps.jsonl). No ring and no wall clock: on one
+# call the wall clock drifted 2.0 s from the capture's audio in 21 minutes.
 CALL_ID = re.compile(r"call:(\d+)")
 def _load_callrec():
-    """src/ears/callrec.py, by its path: the one place the recording's name is spelt (caller-call,
-    then mike-call). Stdlib only, so this venv still needs nothing from ears. Only a
+    """src/ears/callrec.py, by its path: the one place the recording's name is spelt
+    (caller-call). Stdlib only, so this venv still needs nothing from ears. Only a
     call leg needs it: a copy run outside the repo with no --call-enroll never looks for it.
     From a wheel this file is ears/_speakers/speaker-sidecar2.py, so the helper is
     ears/callrec.py, one up: the second candidate. In a checkout the first still wins."""
@@ -554,7 +682,7 @@ def take_call(r, day):
     if wav is None:   # the why names where it looked, so the next miss explains itself
         where = (f"in {d}" if d is not None else f"(no dir *-msg{n} or {n}/ under "
                  + ":".join(str(Path(x).expanduser()) for x in roots if x) + ")")
-        record(r, None, now, now, day, why=f"no {callrec.looked_for('wav')} for call {n} {where}",
+        record(r, None, now, now, day, why=f"no {callrec.name('wav')} for call {n} {where}",
                leg="call"); return
     off = tap_offset(read_taps(d), listen_t.get((r.get("session"), r.get("device"))), epoch(r["ts"]))
     if off is None:
