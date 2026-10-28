@@ -6,6 +6,6 @@
 # file re-resolves and can drift them), then put the lock's header back. Install runs
 # `uv pip install --require-hashes`, so the lock must carry a --hash for every pin.
 # mlx-audio 0.5.6+ ships nemotron_diarization (0.5.5 has none); a bump is one line here, gated by speakers/test-labels-unchanged.sh on recorded lines.
-mlx-audio==0.5.8
+mlx-audio==0.6.1
 numpy
 sounddevice
