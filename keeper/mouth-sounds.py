@@ -10,7 +10,7 @@ Watches (no model, no mouth changes). The loop WAITS on a kqueue over these plac
 once slept 50 ms between looks, 5% of a core), with a 250 ms backstop that also paces
 the cursor look; where kqueue is not there (or MOUTH_SOUNDS_WAIT=poll) it polls every 250 ms:
   - where a line lands, a NEW file = a line landed; one line fires once, deduped by its utt:
-      the mouth maildir ~/.mail/agents/mouth/new/ (front = X-Mouth-Priority
+      the mouth's box, new/ ($MOUTH_MAILDIR, else `message path mouth`) (front = X-Mouth-Priority
       next | now | a number under 50, or Importance: high; utt = X-Mouth-Utt,
       else the name's middle part; log entries go to cur/, never new/)
     The old voice_mode.mouth queue folder (~/.voicemode/mouth/queue) is no longer watched:
@@ -61,41 +61,44 @@ import sounddevice as sd
 VOICE_SETTINGS = ".sessionkit/voice/settings"
 
 
-def sessionvoice_home():
-    """sessionvoice's home: a copy of ears.home.sessionvoice_home (tests/test_home.py holds
-    it). $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it
-    holds the heard log, else ~/.sessionvoice."""
-    import glob, os
-    for name in ("SESSIONVOICE_HOME", "VOICEMODE_BASE_DIR"):
-        if os.environ.get(name):
-            return os.path.expanduser(os.path.expandvars(os.environ[name]))
-    for d in ("~/.sessionvoice", "~/.voicemode"):
-        c = os.path.expanduser(d + "/logs/conversations")
-        if os.path.exists(c + "/heard.lock") or glob.glob(glob.escape(c) + "/heard_*.jsonl"):
-            return os.path.expanduser(d)
-    return os.path.expanduser("~/.sessionvoice")
-
-
 HERE = Path(__file__).resolve().parent
+
+
+def voice_home():
+    """ears/home.py, the ONE place voice names its state root and its log folder.
+    keeper/ imports nothing from the ears package, so it loads home.py
+    (standard library only) by its path, once: the checkout's src/ears/home.py, else the wheel's
+    ears/home.py above ears/_keeper/.
+    Not there: exit 2, naming where it looked; there is no copy of the rule to fall back
+    on."""
+    mod = getattr(voice_home, "mod", None)
+    if mod is None:
+        import importlib.util, sys
+        tried = [HERE.parent / "src/ears/home.py", HERE.parent / "home.py"]
+        f = next((f for f in tried if f.is_file()), None)
+        if f is None:
+            print(f"mouth-sounds: no ears/home.py at {' nor '.join(map(str, tried))}: it names "
+                  "voice's state root. Run it from a sessionvoice checkout, the plugin or the "
+                  "package", file=sys.stderr)
+            sys.exit(2)
+        spec = importlib.util.spec_from_file_location("_voice_home", f)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        voice_home.mod = mod
+    return mod
+
+
+def voice_state_dir() -> Path:
+    """voice's state root, as the PACKAGE answers it (ears.home.asked_state_dir, design.md
+    D4.1): asked once per process, and exit 2, naming both answers, when the package cannot
+    be asked or disagrees with this checkout's home.py."""
+    return voice_home().asked_state_dir("mouth-sounds")
 
 
 def voice_log_dir() -> Path:
     """ears.home.log_dir(), the ONE place the voice log folder is named ($EARS_LOG_DIR, else
-    the kit's log home). keeper/ imports nothing from the ears package, so it loads home.py
-    (standard library only) by its path: the checkout's src/ears/home.py, else the wheel's
-    ears/home.py above ears/_keeper/. Neither: exit 2, naming both; there is no copy to fall
-    back on."""
-    import importlib.util, sys
-    tried = [HERE.parent / "src/ears/home.py", HERE.parent / "home.py"]
-    for f in tried:
-        if f.is_file():
-            spec = importlib.util.spec_from_file_location("_voice_home", f)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            return mod.log_dir()
-    print(f"mouth-sounds: no ears/home.py at {' nor '.join(map(str, tried))}: it names the log "
-          "folder. Set MOUTH_SOUNDS_LOG, or run it from a checkout or the package", file=sys.stderr)
-    sys.exit(2)
+    the kit's log home). Loaded by voice_home()."""
+    return voice_home().log_dir()
 
 ENV = os.environ.get
 
@@ -104,7 +107,50 @@ def _p(var, default):
     return Path(ENV(var) or default).expanduser()
 
 
-MAILDIR = _p("MOUTH_MAILDIR", Path.home() / ".mail/agents/mouth")
+def _ears_module(name: str):
+    """src/ears/NAME.py (standard library only), loaded by its path the way voice_home()
+    loads home.py: the checkout's, else the wheel's beside the keeper. Exit 2 when neither
+    is there."""
+    import importlib.util, sys
+    tried = [HERE.parent / "src/ears" / f"{name}.py", HERE.parent / f"{name}.py"]
+    f = next((f for f in tried if f.is_file()), None)
+    if f is None:
+        print(f"mouth-sounds: no ears/{name}.py at {' nor '.join(map(str, tried))}. Run it from a "
+              "sessionvoice checkout, the plugin or the package", file=sys.stderr)
+        sys.exit(2)
+    spec = importlib.util.spec_from_file_location(f"_voice_{name}", f)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def mouth_box() -> Path:
+    """The mouth's queue: $MOUTH_MAILDIR, else the box sessionmail names for `mouth`
+    (`message path mouth`, asked once at start; `message` found as ears.message_bin finds
+    it). Never a path of ours (SM 0.3.3, the mail root move). With neither, exit 2: there
+    is no queue to watch, and the line says what to install."""
+    import sys
+    env = ENV("MOUTH_MAILDIR")
+    if env:
+        return Path(env).expanduser()
+    msg = _ears_module("message_bin").find()
+    if msg:
+        try:
+            r = subprocess.run([msg, "path", "mouth"], capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            r = None
+        if r is not None and r.returncode == 0 and r.stdout.strip():
+            return Path(r.stdout.strip().splitlines()[-1]).expanduser()
+        why = (r.stderr.strip().splitlines() or ["it did not answer"])[-1] if r else "it could not run"
+        print(f"mouth-sounds: `message path mouth` names no box ({why}): nothing to watch until "
+              "the mouth has spoken once (it asks `message setup --box mouth`)", file=sys.stderr)
+        sys.exit(2)
+    print("mouth-sounds: no `message` on PATH (install sessionmail): the mouth's queue is a box "
+          "sessionmail names, and there is none to watch", file=sys.stderr)
+    sys.exit(2)
+
+
+MAILDIR = mouth_box()
 NEW = MAILDIR / "new"
 RUN = _p("EARS_RUN", Path.home() / ".cache/ears/run")
 FIRED = _p("MOUTH_SOUNDS_FIRED", RUN / "mid-turn.fired")
@@ -113,8 +159,8 @@ SETTINGS = _p("MOUTH_SOUNDS_SETTINGS", Path.home() / VOICE_SETTINGS / "mouth-sou
 LOG = Path(ENV("MOUTH_SOUNDS_LOG") or voice_log_dir() / "mouth-sounds.jsonl").expanduser()
 LOG.parent.mkdir(parents=True, exist_ok=True)
 STOP = _p("MOUTH_SOUNDS_STOP", HERE / "STOP-mouth-sounds")
-CURSORS = _p("MOUTH_SOUNDS_CURSORS", Path(sessionvoice_home()) / "state/heard-cursor")
-HEARD_DIR = _p("MOUTH_SOUNDS_HEARD_DIR", Path(sessionvoice_home()) / "logs/conversations")
+CURSORS = _p("MOUTH_SOUNDS_CURSORS", Path(voice_state_dir()) / "state/heard-cursor")
+HEARD_DIR = _p("MOUTH_SOUNDS_HEARD_DIR", Path(voice_state_dir()) / "logs/conversations")
 DRY = ENV("MOUTH_SOUNDS_DRY") == "1"
 DEFAULT = {"sounds": {
     "drop":   {"on": True, "notes": [[1568, 35], [1175, 55]], "volume": 0.10},

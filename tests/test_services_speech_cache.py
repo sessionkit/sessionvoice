@@ -64,7 +64,7 @@ def stubs(tmp_path):
 
 
 def _env(stubs, limit=None):
-    env = {"PATH": os.environ["PATH"], "PYTHONPATH": str(stubs)}
+    env = {"PATH": os.environ["PATH"], "PYTHONPATH": str(stubs), "HOME": str(stubs.parent)}
     if limit is not None:
         env["MLX_AUDIO_CACHE_LIMIT"] = limit
     return env

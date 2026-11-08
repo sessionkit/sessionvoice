@@ -10,15 +10,17 @@ woken by mail. Code: `src/ears/`, `keeper/`, `bin/`.
   input, as the installed keeper follows it, or one input it pins), or
   one leg of a call.
 - **Out:** the heard log,
-  `<home>/logs/conversations/heard_YYYY-MM-DD.jsonl` (the home:
-  [logs.md](logs.md#sessionvoices-home)), and, where
+  `<root>/logs/conversations/heard_YYYY-MM-DD.jsonl` (the state root:
+  [logs.md](logs.md#the-state-root)), and, where
   the mail agent runs, a mail to `heard+room@<host>` for a finished
   turn heard in the room, on whatever input device. A call's turns go to the log only.
 - **A seat uses it** in one of three ways:
   - subscribe to the room's address, which every input device's turns go to:
     `message subscription add heard+room`. The pager reads each turn
     mail's headers to wake the seat or let the mail ride. By mail, "hey
-    NAME" wakes only a seat that `ears wake add NAME` has made a wake seat;
+    NAME" wakes only a wake seat: one that `ears wake add NAME` added, or
+    that its own agent file registers at every launch
+    ([Wake seats](#wake-seats));
   - arm a waiter on the log, in the background, re-armed on every fire:
     `ears-arm <seat> [talk|alone|room]` (count first with `ears-count <seat>`);
   - opt into the `ears heard hook` ride-along, the canonical heard hook:
@@ -49,13 +51,17 @@ woken by mail. Code: `src/ears/`, `keeper/`, `bin/`.
   echo, and Parakeet ignores it. No re-decode, no hint: under
   `--turn-text joined` it never applies. It is off by default. `ears wake
   add SEAT --hint NAME` sets how a name is spelled there (in capitals
-  for an acronym, say).
+  for an acronym, say), and adds NAME to the seat's names, so a turn that
+  says it is a call. A seat given a hint by an older `ears wake add`
+  gains the name when it is added again; `--hint ''` drops the hint, not
+  the name.
 - **The heard log** is append-only, one JSON line per partial, turn and
   event (a heartbeat, a voice onset, a start, a stop and others), beside
   the mouth's `saying` and `said`. Each line gets a `seq` as it is written.
-  Its base is sessionvoice's home: `$SESSIONVOICE_HOME`, else
-  `~/.voicemode` on a host that already keeps the log there, else
-  `~/.sessionvoice` (`src/ears/home.py`, [logs.md](logs.md#sessionvoices-home)).
+  Its base is voice's state root: `$SESSIONVOICE_HOME`, else
+  `~/.sessionkit/voice/state`, or the old `~/.sessionvoice` or `~/.voicemode`
+  on a host that already keeps the log there (`src/ears/home.py`,
+  [logs.md](logs.md#the-state-root); `ears home state-dir` prints it).
   On a fresh host that also runs VoiceMode's `converse` as a heard guest, set
   `SESSIONVOICE_HOME=~/.voicemode` (or `VOICEMODE_BASE_DIR`), so that both
   write one log; otherwise whichever writes first decides. `ts` is when a line was written. On the mic or a
@@ -109,7 +115,60 @@ woken by mail. Code: `src/ears/`, `keeper/`, `bin/`.
   hook) sees it. `--to device` mails the room's turns to `heard+room`;
   a Delta call's turns go to the call's own box (the next item). Turns heard
   on a BlackHole input (the call tap), the mouth's echo and empty turns are
-  skipped.
+  skipped. The room's turn mail carries `Ears-Said`, each session's newest
+  line the turn came after, for sessionmail's pager linger (the grammar is
+  in the README). It carries spoken lines only: a line on
+  `lane: file` (a music bed or a sound file) is left out.
+  - **`Ears-Addressed`** names the seats the turn names. Its form is
+    `Ears-Addressed: <seat>@<host>[, <seat>@<host>...]`, with `everyone`
+    for an all-call, for example `Ears-Addressed: everyone, ivy@host1`.
+    Entries are sorted, separated by a comma and a space, and each appears
+    once. `<seat>` is the seat's key in the wake file, whole, and `<host>`
+    is the keeper's `--domain`: the same form as the left side of an
+    `Ears-Rule` entry. A turn that names nobody has no `Ears-Addressed`;
+    the header is never empty. It goes on the room mail only: not on the
+    `--to seats` mail, and not on the call-box mail.
+  - **Who can be named:** every seat in the wake file, whatever `--seats`
+    says, each by its own `names` (the seat key when `names` is unset) and,
+    for a key of two words or more, by the key's spoken form: `mini-me` is
+    also "mini me" and "minime" ([Wake seats](#wake-seats)). These are the
+    same names the `call`, `first` and named-reply rules read.
+    A wake file with no seats names nobody, not even for "hey everyone".
+  - **How a name is matched:** whole words, in any case, over the whole of
+    the user's words once the mouth's echo is cut out, at any length. The
+    Subject is not read: it is cut at 69 characters, so a name late in a
+    long turn was lost. "Vera's build" names `vera`; "veranda" does not.
+    A name said to a seat ("Vera, check the build") and a name said about
+    one ("I told Vera") both count. The one guess is the key's own spoken
+    form ("mini me" for `mini-me`), which `"spoken": false` turns off. Any
+    other mishearing counts only when the seat's `names` lists it
+    (`ears wake add vera --names 'vira'`). So keep `names` to words that are
+    not everyday speech: a sound-alike such as "assistance" names its seat
+    every time anyone says it, and so does the spoken form of a key built of
+    everyday words.
+  - **`everyone`** is written for an all-call only: an opener, then the
+    everyone word ("hey everyone", "...and hey everybody, dinner's ready"),
+    anywhere in the turn. It is the same test that writes `Ears-Rule`'s
+    `everyone=everyone`. "I think everyone agrees" and a turn that starts
+    "Everyone, ..." are not all-calls.
+  - **Withheld while a film plays** (`--kodi`): a named seat whose verdict
+    is not `call` gets no entry, because the film's dialogue is not the
+    user's. `everyone` and a `call` stay. stderr then gets one line,
+    `{"skip": "addressed", "seq", "seats", "cause": "film", "media",
+    "mailed": "without those entries"}`. Kodi is asked at most once per
+    turn, and only when the answer could change the header.
+  - **A say-again and a seat's own voice are listed.** "Vera, say again."
+    carries `Ears-Addressed: vera@<host>` beside `Ears-Rule:
+    vera@<host>=again`, and a turn labelled `vera` that names Vera lists
+    her. A raw `Ears-Addressed` entry is NOT on its own "wake this seat":
+    any reader of the header must apply the same two withholds, from
+    `Ears-Rule` (`=again`) and `Ears-Speaker` (own voice), that the pager
+    applies.
+  - **Names only.** The value is built from the wake file's seat keys, the
+    `--domain` and the word `everyone`. It never holds the words that
+    matched ("Vira" is listed as `vera@<host>`) or any other word of the
+    turn. When the keeper signs, the signature covers it as it covers every
+    `Ears-*` header.
 - **The call-box mail** (`--to device`, `--calls on`, the default): each
   FINISHED `turn` of a Delta call (source `call`, device `call:N`) is
   mailed To `calls+<bot>-<N>@<host>`, the box the mouth reads. It is one
@@ -326,6 +385,94 @@ The proof of an install: say "hey NAME", and NAME wakes and answers. A
 heard line alone proves only the capture. The README's Install section
 says how to opt a seat into the hook.
 
+## Wake seats
+
+"Hey NAME" wakes a seat only when the wake file names it. The wake file is
+`~/.sessionkit/voice/settings/wake.json`: `ears wake add` writes it,
+`ears wake list` shows it, and ears-mail reads it.
+
+- **Who "hey NAME" wakes:** each seat in the wake file, by its key and its
+  `names`. The key is the seat's address local part, whole (`mini-me`,
+  `sessionmail+engineer`). The same names list the seat in `Ears-Addressed`
+  whenever a turn names it.
+- **Add a seat:**
+  - `ears wake add mini-me`
+- **Or let the seat register itself at every launch.** Its agent file
+  (`mini-me.md`, wherever `session start` finds it in sessiontools) lists `ears wake add --self` as a system-prompt generator, and
+  every `session start mini-me` runs it before the seat starts. Nobody
+  edits the wake file, and a running ears-mail calls the seat from its
+  next turn. The line, in the agent file's front matter:
+
+  ```yaml
+  start:
+    context:
+      system-prompt:
+        - ears wake add --self
+  ```
+
+  - **The key** is the address the pager calls the seat by: a plus address
+    on this host in `EMAIL`, then `TM_AGENT_ADDRESS`, then
+    `CLAUDE_CODE_AGENT`, which `session start NAME` sets to NAME.
+  - **The seat learns its name:** `--self` prints one line, which lands in
+    the seat's system prompt, for example `"hey Mini Me" calls it`.
+  - **A launch that changes nothing writes nothing,** so ears-mail reloads
+    nothing. Adds take turns on a lock file beside the wake file
+    (`.wake.json.lock`), so seats launched together keep every seat.
+  - **Started from another seat's shell, it registers nothing.** That
+    shell's plus `EMAIL` reaches the generator, and it names another seat
+    than the one launched. `--self` refuses, in one line naming both, and
+    the seat's context shows a `CONTEXT GENERATOR FAILED` block. Start a
+    voiced seat from a plain shell, or put its key in the line:
+    - `ears wake add mini-me`
+  - **`ears` must be on the PATH** `session start` hands its generators.
+    Otherwise the seat's context shows the same failed block, and the
+    launch goes on.
+  - **Only a plain start runs it.** `--idle`, a resume, `session start -`
+    and a bare `claude` run no generator. A seat registered at an earlier
+    start stays registered. `session start --dry-run` runs it too.
+  - **A seat whose agent file lacks the line** is not registered. Add it
+    once by hand:
+    - `ears wake add NAME`
+- **The wake file is followed live.** ears-mail checks the file once a poll
+  (0.1 s) and reloads it when it changes, so a seat added while ears-mail
+  runs is called on the next turn, with no restart. A hand edit is picked up
+  the same way.
+  - **A bad or missing file mid-run** keeps the last good rules: not JSON,
+    a wrong shape, a `reply_window`, `again_window` or `light` that is not a
+    number, or a `names`, `openers` or `everyone` that is not a string
+    (`everyone` may also be false or null, which turns the all-call off).
+    ears-mail says so once on stderr, naming the file, the reason and the
+    seats it kept, and loads the file again once it is fixed. To clear
+    every seat, write `{"seats": {}}`.
+  - **A bad file at start** counts as missing: ears-mail starts with the
+    `--seats` seats only (none without `--seats`), says so in one line, and
+    picks up the fixed file live. It no longer exits with a traceback.
+    `--to seats` with no seats at all is still refused.
+- **Spoken forms, with no names added:** a key of two words or more is also
+  called by its words joined by spaces, hyphens or nothing, in any case.
+  `mini-me` answers "hey mini me", "Hey Mini-Me" and "hey minime";
+  `sessionmail+engineer` answers "hey sessionmail engineer". A one-word key
+  (`dave`) gains nothing. The words must stand side by side, in the key's
+  order: "minimal" and "a mini, me" do not name `mini-me`. ears-mail derives
+  the forms from the key each time it loads the wake file, whatever `names`
+  holds, so no wake file is rewritten.
+- **`"spoken": false` turns the spoken forms off**, in one seat's entry or
+  for every seat in `defaults`. `ears wake add` has no flag for it: edit the
+  seat's entry, as for `name_first` or `light`. Use it for a key built of
+  everyday words. Its spoken form names the seat in ordinary speech, in
+  `Ears-Addressed`, and the pager can wake a seat that header names.
+  Measured: `a-team` is named by "we need a team", `data-set` by "the data
+  set is big" and `note-book` by "open my notebook".
+- **A mishearing is one more name.** When speech to text writes a seat's
+  name another way ("Minnie Me" for `mini-me`), add that spelling:
+  - `ears wake add mini-me --names 'minnie me'`
+  - Then "Hey Minnie Me, what time is it" calls `mini-me` and lists it in
+    `Ears-Addressed`.
+  - A `--names` alternative is a regex, matched as written, in any case:
+    'minnie me' matches "Minnie Me", not "Minnie-Me". The spoken forms are
+    derived from the key only.
+  - Keep it to words that are not everyday speech, as for any name.
+
 ## The heard hook
 
 `ears heard hook` is the canonical heard hook: the one command this project
@@ -415,8 +562,8 @@ set:
   is more than 0. With recording off, audio already on disk stays there
   until recording is on again or someone deletes it. Each prune deletes only
   the files the ears wrote, in their own folders: turn audio in
-  `<home>/audio/<YYYY-MM-DD>/`, and `missed-reply_*.wav` in
-  `<home>/state/missed-reply/`.
+  `<root>/audio/<YYYY-MM-DD>/`, and `missed-reply_*.wav` in
+  `<root>/state/missed-reply/`.
 - **The file is followed live.** A capture checks the switch as each turn
   or clip is about to be written, so a change to `ears.json` lands at the
   next turn or clip with no restart. The flag and the environment are fixed for the life of
@@ -459,7 +606,7 @@ While recording is on, the capture keeps each final turn's audio as one
 WAV file. **Every turn is kept, whoever spoke: every voice the mic hears,
 guests and TV included.**
 
-- The file is `<home>/audio/<YYYY-MM-DD>/<HHMMSS-mmm>-<n>.wav`, beside the
+- The file is `<root>/audio/<YYYY-MM-DD>/<HHMMSS-mmm>-<n>.wav`, beside the
   heard logs: 16 kHz mono 16-bit, mode 0600, in 0700 folders. `n` is 1, or
   the next free number when two turns close in the same millisecond. It is
   written to a temporary name and then moved into place, before the turn's
@@ -477,7 +624,7 @@ guests and TV included.**
   the next turn is kept. Recording off when the turn closes means no file.
 - **Retention.** At each capture start, and then at most once an hour, the
   capture deletes the date folders older than `record_days` (7 by default;
-  `0` never deletes), but only while recording is on. It touches only `<home>/audio/`, only folders named
+  `0` never deletes), but only while recording is on. It touches only `<root>/audio/`, only folders named
   like a date, and in them only the files it names this way. A folder is
   removed only once it is empty. The missed-reply clips, the mouth's audio
   and anything else are never touched by it.
@@ -621,7 +768,7 @@ read, with no warning, and to be removed by a later release.
   voice-clone settings the mouth reads from VoiceMode's config.
 - `EARS_HEARD_PARTIALS_ONLY` is new, and has no old name.
 - `VOICEMODE_BASE_DIR` is the old name of `SESSIONVOICE_HOME`, and it is
-  still read after it ([logs.md](logs.md#sessionvoices-home)).
+  still read after it ([logs.md](logs.md#the-state-root)).
 
 The table is `src/ears/envnames.py`. It holds the mouth's 39 renamed settings
 too (`VOICEMODE_MOUTH_<X>` is now `MOUTH_<X>`): see

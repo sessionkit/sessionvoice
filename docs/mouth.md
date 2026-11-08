@@ -29,8 +29,11 @@ line names. A sound from `mouth play` plays on its own lane beside them
 
 ## How it works
 
-- **The queue** is a maildir: `~/.mail/agents/mouth` for the live mouth,
-  unless `$MOUTH_MAILBOX` names another. The box and its `tmp/`, `new/`
+- **The queue** is a maildir: the mouth's own box, `mouth`, wherever
+  sessionmail keeps it (`message path mouth`; the mouth asks
+  `message setup --box mouth` to make it the first time), unless
+  `$MOUTH_MAILBOX` names another. With no `message` on the host, `mouth say`
+  refuses and makes no box: sessionvoice never spells the mail root. The box and its `tmp/`, `new/`
   and `cur/` are 0700, like every agent box, and a box found with another
   mode is set back to 0700 when the mouth next uses it. `new/` holds lines to
   speak. `cur/` holds the line playing and the lines done, each flagged S
@@ -211,6 +214,7 @@ line names. A sound from `mouth play` plays on its own lane beside them
   | --- | --- | --- | --- |
   | `resume_answer_words` | 2 | `$MOUTH_RESUME_ANSWER_WORDS` | Content words of the user's turn that answer a cut line (a whole number, 1 or more) |
   | `resume_answer_question` | `true` | `$MOUTH_RESUME_ANSWER_QUESTION` (`off`) | `false`: drop any cut line the user's turn answered, not only a question |
+
 - **A say-again replay** plays a kept line again, from its WAV, with no
   new synthesis (`mouth.again(utt)`, `src/mouth/__init__.py`). It is a
   spoken line, not a played file: every played file is a bed, which the
@@ -297,6 +301,21 @@ line names. A sound from `mouth play` plays on its own lane beside them
   from any sender, or this host's `MAILER-DAEMON` or `postmaster` with the
   bounced notice inside) and logs `{"skipped": "delivery-report", ...}`. A
   report from another host is refused as any foreign mail is.
+- **A reply threads to the heard turn it answers.** `mouth say
+  --in-reply-to ID` writes `In-Reply-To: ID` on the line's mail, and
+  `References` and `Call-ID` from the parent, which it looks up in the
+  heard box (`src/mouth/reply.py`). The heard box is `$MOUTH_HEARD_BOX`
+  (`:`-separated maildirs) when it is set. Unset, it is the box
+  `ears services install` made or found, by the same rule
+  (`src/ears/heardbox.py`): sessionmail's own answer for `heard`
+  (`message path heard`), else `<store>/heard` under a store box
+  (`message box list`), else the flat `<boxes>/heard` that
+  `message setup --box heard` makes on a mail-drop host (`message path
+  --boxes` names the folder). sessionvoice never spells the mail root, and
+  a box counts only once its `new/` exists.
+  With no box set or found, or no parent in it, the line still threads on
+  the ID alone, and one stderr line says so (with no box, it names where it
+  looked).
 - **The player:** `say` starts one if none holds `player.lock`. On a Mac
   set up with `ears services install`, the launch agent
   `dev.sessionkit.voice.ears-mouth` keeps one running as `mouth mail`
@@ -497,19 +516,22 @@ sets nothing. A line's voice is the first of these that answers
 (`src/mouth/voices.py`, and `mouth say --help`):
 
 1. **The line's own:** `mouth say --voice`, or a mail's `X-Mouth-Voice`.
-2. **The caller's session layer:** `mouth.voice` in
-   `~/.session/sessions/<sid>/settings/mouth.json` (or `mouth.d/*.json`).
-3. **The caller's seat layer:** `~/.session/seats/<seat>/settings/mouth.json`
-   (or `mouth.d/*.json`).
+2. **The caller's session layer:** `mouth.voice` in the session's own
+   `settings/mouth.json` (or `mouth.d/*.json`), in the session's folder in
+   sessiontools.
+3. **The caller's seat layer:** `settings/mouth.json` (or `mouth.d/*.json`)
+   in the seat's folder in sessiontools.
 4. **The caller's agent layer:** `settings:` → `mouth:` → `voice:` in the
-   front matter of `~/.session/agent/config/<name>.md`.
+   front matter of the agent's file in sessiontools. Steps 2-4 are what
+   `session settings --json <sid> mouth` merges: the mouth asks tools, and
+   never names tools' folders itself.
 5. **`$MOUTH_VOICE`, in the caller's environment.** It is skipped
    when the host locks `voice` (step 6's `_locked`).
 6. **The settings file's voice** (the host's shared pick, which the phone's
    Settings app writes): `voice` in `$MOUTH_SETTINGS`, else
    `~/.sessionkit/voice/settings/mouth.json` when it exists, else the old
-   `<home>/mouth/settings.json` under sessionvoice's home
-   ([logs.md](logs.md#sessionvoices-home); `~/.voicemode/mouth/` in 0.1.0).
+   `<root>/mouth/settings.json` under voice's state root
+   ([logs.md](logs.md#the-state-root); `~/.voicemode/mouth/` in 0.1.0).
 7. **`af_sky`**, the built-in voice.
 
 `mouth voices` prints the voice your next bare `say` would get, and the step

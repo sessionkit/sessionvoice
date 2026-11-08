@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "talk.schema.json",
+  "title": "Talk",
+  "description": "Talk's page settings: ~/.sessionkit/voice/settings/talk.json. Read by `talk serve` on every page load (src/talk/server.py talk_settings); no restart. Drawn by Settings; `ears services install` writes this copy as .talk.schema.json (a dot schema beside each file).",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "This schema's name, when the file names it.",
+      "type": "string"
+    },
+    "show_debug": {
+      "title": "Show Debug in Talk",
+      "description": "A Debug button in Talk's row of names, for testers: every partial, who it reached, and the turn detector's score at each pause. Off: no button, and the debug view is off.",
+      "x-hint": "For testers: every partial, and who each line reached.",
+      "type": "boolean",
+      "default": false
+    }
+  }
+}

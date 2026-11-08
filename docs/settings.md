@@ -52,8 +52,8 @@ Which files and variables each part of sessionvoice reads:
   starts with `_` (such as `_about`) is a note, and the tools never read
   it. The schema refuses any other key; the tools ignore one.
 - **The mouth's old file.** Until `~/.sessionkit/voice/settings/mouth.json` exists, the
-  mouth reads `<home>/mouth/settings.json` instead, where `<home>` is
-  [sessionvoice's home][home].
+  mouth reads `<root>/mouth/settings.json` instead, where `<root>` is
+  [voice's state root][home].
 - **No file is installed.** The copies in `keeper/defaults/` are examples
   of the shape, and nothing copies them for you.
 
@@ -252,4 +252,4 @@ hint for a settings screen, and in these cases the code does not apply it.
 [configuration]: configuration.md
 [mouth-config]: configuration.md#the-mouth
 [mouth-device]: mouth.md#how-it-works
-[home]: logs.md#sessionvoices-home
+[home]: logs.md#the-state-root

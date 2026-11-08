@@ -15,8 +15,9 @@ format.
     tmp/   being written.
 
 Where: ``$MOUTH_MAILBOX``; else, for the live mouth dir, the
-mouth's own mailbox ``~/.mail/agents/mouth`` (the box is the queue and the
-log, the single source of truth); else
+mouth's own mailbox, the one sessionmail names (``message path mouth``,
+made by ``message setup --box mouth`` the first time; the box is the queue
+and the log, the single source of truth); else
 ``<mouth dir>/box``, so a test or a dry run never touches the live one.
 
 Order, a playlist: ``X-Mouth-Priority`` sorts first,
@@ -71,7 +72,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping, NamedTuple, Optional
 
-from ears import envnames, message_bin, operator_config
+from ears import boxes, envnames, message_bin, operator_config
 from ears.maildir import private as _private_maildir
 
 from .paths import default_mouth_dir, mouth_dir
@@ -109,18 +110,37 @@ _POLICY = email.policy.default.clone(header_factory=_REGISTRY)
 
 # -- where, and the maildir moves ---------------------------------------------
 
+#: The mouth's own box, by name: sessionmail says where it is.
+MOUTH_BOX = "mouth"
+
+
+def live_box() -> Path:
+    """The live mouth's own mailbox: ``$MOUTH_MAILBOX``, else the box sessionmail names
+    for ``mouth`` (``message path mouth``), made by ``message setup --box mouth`` the
+    first time (``ears.boxes.make``). Never a path of ours: with no ``message`` on the
+    host this raises ``ears.boxes.NoMessage``, and no box is made anywhere."""
+    env = envnames.get("MOUTH_MAILBOX")
+    if env:
+        return Path(env).expanduser()
+    return boxes.make(MOUTH_BOX)
+
+
 def box_dir(d: Optional[Path] = None) -> Path:
     env = envnames.get("MOUTH_MAILBOX")
     if env:
         return Path(env).expanduser()
     d = Path(d or mouth_dir()).expanduser()
     if os.path.abspath(d) == os.path.abspath(default_mouth_dir()):
-        return Path.home() / ".mail" / "agents" / "mouth"
+        return live_box()
     return d / "box"
 
 
 def ensure(bx: Path) -> Path:
-    """BX as a maildir, the box and its tmp/new/cur 0700 (an existing 0755 one repaired)."""
+    """BX as a maildir, the box and its tmp/new/cur 0700 (an existing 0755 one repaired).
+    A scratch box (``<mouth dir>/box``) gets its mouth dir made; the live box's parents
+    are sessionmail's (it made them with the box) and are never made here."""
+    if bx.name == "box" and not bx.parent.is_dir():
+        bx.parent.mkdir(parents=True, exist_ok=True)
     _private_maildir(bx)
     return bx
 
@@ -300,7 +320,7 @@ def mail_log_root() -> Path:
     mouth's own box (what ``1`` means there). The PLAYER's env."""
     from . import maillog
 
-    return Path(maillog.box_from_env() or Path.home() / ".mail" / "agents" / "mouth")
+    return Path(maillog.box_from_env() or live_box())
 
 
 def confined(path, root: Path) -> Optional[str]:

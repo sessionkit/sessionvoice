@@ -10,10 +10,276 @@ All notable changes to sessionvoice are documented here. The format is
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-08
+
+### Changed: the mail root is sessionmail's, never spelled here (SM 0.3.3)
+
+- sessionvoice no longer knows where mail lives. Every box it reads or
+  writes is asked of sessionmail (`src/ears/boxes.py`): `message path NAME`,
+  `message setup --box NAME`, `message box list`, and the 0.3.3 flags
+  `message path --root | --boxes | --generator`. The mouth's queue is
+  `message path mouth`, made by `message setup --box mouth` the first time;
+  the heard box is sessionmail's answer for `heard`, else a store box's
+  `heard`, else the flat one under `message path --boxes`; a notice's box
+  check is `message path NAME`; the install hint names this host's
+  `vmailbox-gen` as `message path --generator` does. `$MOUTH_MAILBOX` and
+  `$MOUTH_MAILDIR` still name any path.
+- **`mouth say` with no `message` on the host refuses** ("install
+  sessionmail") and makes no box. Before, it made `~/.mail/agents/mouth` by
+  itself, parents included, which on a fresh host could make the old mail
+  root look real. `ears.maildir.private` never makes a box's parents now.
+- `$MAIL_ROOT` is no longer read by sessionvoice (it was the heard box's
+  root). The keeper `mouth-sounds` asks `message path mouth` at start and
+  exits 2 with the reason when there is no box to watch.
+- Tests run against a fake `message` (`tests/fixtures/fake_sessionmail.py`,
+  first on the PATH of every test that asks a box of sessionmail) that
+  answers from the fenced HOME's mail root by sessionmail's own rule
+  (`agents/` while it is there, else `stores/`).
+
+### Added
+
+- `ears home migrate` moves a host's voice state from its old root
+  (`~/.sessionvoice`, or voice's own entries in `~/.voicemode`) and the old
+  paths of its strays into `~/.sessionkit/voice/state`, once per host, in a
+  stop window. It acts by default and `--dry-run` shows the plan; `--json`
+  prints either. It refuses, writing nothing, while a voice job is loaded or
+  a voice writer runs, while an installed plugin does not ask the package for
+  the root, when the new root holds something it did not put there, and (on
+  `~/.voicemode`) while VoiceMode's own capture loop or mouth player runs, its
+  `mouth-mail` job is loaded or its plist is in `~/Library/LaunchAgents`, its
+  heard hook is registered, or sessionphone runs. It copies (lock files are
+  hard-linked), verifies sizes, digests and modes, publishes by one rename,
+  swaps each original for a link in one exchange so the old path never goes
+  missing, keeps the original as `<path>.pre-sessionkit`, and never deletes.
+  Afterwards it lists, in order, the readers to re-arm and the `ears services
+  install` to run before any writer starts.
+- The per-host install step after `ears home migrate`: run `ears services
+  install` before any writer starts and before the next login, so every launch
+  agent names the new paths. A plist rendered by hand from `launchd/` is
+  rendered again with `bin/render-plist` and installed by hand. A merge or an
+  upgrade runs neither the migrate nor the install: each host moves on its
+  own go. `docs/configuration.md` lists the steps in order, and the migrate's
+  help and report name the hand-rendered case.
+- `ears services status` prints a second `state` row while an old root or a
+  state item's old path still holds voice's state. It names those paths and
+  `ears home migrate`, and goes once nothing is left there. A root variable
+  set in the shell shows no such row, since the migrate refuses it.
+- A heard writer looks at its folder again once it holds `heard.lock`, and
+  starts over when the answer changed: a write that waited out a migrate
+  lands in the new root.
+- `heard-first` and ears-mail find a saved place in the heard log under the
+  old path through the link a migrate leaves, so a re-armed reader resumes
+  where it was.
+- `ears services install --only talk --allow-host NAME` (repeatable) writes
+  `TALK_ALLOW_HOSTS` into the talk job, checked as `talk serve --allow-host`
+  checks it, so a phone behind `tailscale serve` is answered instead of
+  getting a 403. Before, the name could only be added to the plist by hand.
+  Install says which Host names the job answers, and how to add one when it
+  answers loopback only. A re-run, an upgrade's too, keeps every `TALK_*`
+  setting the plist it replaces carries; `--allow-host` replaces the names
+  alone (`docs/talk.md`, "As a service").
+- A talk install closes by saying each browser pairs once with `talk pair`
+  (`talk pair --url` for another device), and to reload a Talk tab that was
+  already open: a page served before the install keeps its old code.
+- The turn mail carries `Ears-Said: <session>@<host>=<end>, ...`: for each
+  session, its newest line that finished at or before the turn began
+  (within 600 s), so sessionmail's pager can keep that session's window
+  open after its own line. The session is the full id on the line's
+  `said` row, and the end is that row's `ts`. It carries spoken lines
+  only: a bed (`lane: file`, music or a sound file) is left out, so a bed
+  that ends after a line does not stretch the session's window. A line
+  with `interest: zero`, or one dropped before it played, is left out; a
+  line cut by a barge-in counts at its cut. It is on the room mail (and so its device copy) and on
+  the `--to seats` mail, never on a cut notice or a call turn, and absent
+  when no line qualifies.
+- The room's turn mail carries `Ears-Film: playing` when the keeper heard
+  the turn while a film was playing (`--kodi`), so sessionmail's pager can
+  tell the film's dialogue from the user. It has one value, is on the room
+  mail only, and is absent when no film plays. Under `--kodi`, Kodi is now
+  asked exactly once per room turn: a turn that names a seat, which asked
+  nothing before, now asks once, and a turn that asked twice asks once.
+- A seat whose key is two words or more is called by its spoken form with no
+  names added: its words joined by spaces, hyphens or nothing, in any case, so
+  `mini-me` answers "hey mini me" and "hey minime", and "Mini me, ..." when
+  `name_first` is on. The form also lists the seat in `Ears-Addressed`. It is
+  derived from the key whenever ears-mail loads the wake file, whether or not
+  `names` is set, so no wake file is rewritten. A one-word key gains nothing.
+  `"spoken": false`, on a seat or in `defaults`, turns it off for a key built
+  of everyday words (`data-set` would be named by "the data set is big")
+  (`docs/ears.md`, "Wake seats").
+- `docs/ears.md` gains a "Wake seats" section, and the `ears wake` help an
+  example, for a mishearing of more than one word: `ears wake add mini-me
+  --names 'minnie me'` makes "Hey Minnie Me, what time is it" a call to
+  mini-me and lists it in `Ears-Addressed`.
+- `ears wake add --self` registers the seat it runs in, so a seat's agent
+  file can make it a wake seat at every launch: list `ears wake add --self`
+  under `start: context: system-prompt:`, and each `session start NAME`
+  runs it, with no hand edit of the wake file. The key is the address the
+  pager calls the seat by: a plus address on this host in `EMAIL`, then
+  `TM_AGENT_ADDRESS`, then `CLAUDE_CODE_AGENT`. It refuses, writing
+  nothing, when that address names another seat than the agent launched (a
+  `session start` typed in another seat's shell hands it that seat's
+  `EMAIL`). It prints one line, for the seat's system prompt, naming the
+  phrase that calls it (`docs/ears.md`, "Wake seats").
+- Talk: no input bar; inside Settings, no title row; who's here is on the chips; Debug only when Show Debug in Talk is on.
+- Talk: chips show only who can hear the room or has spoken; the state is on the face (busy, speaking, listening, can't hear), never a word.
+
+- `ears home state-dir [ITEM] [--json]` prints voice's state root, or one state item's path,
+  and `python -m ears.home state-dir` prints the same with the standard library only.
+  `--json` is the contract other programs parse: `{"version", "root": {"path", "source"},
+  "items": {name: {"path", "source"}}}`, each `source` one of `override`, `old`, `new` and
+  `fresh-new`. A peer asks it instead of building a path under the root
+  (`docs/logs.md`, "The state root").
+
+### Changed
+
+- The mouth's settings schema marks `voice` with `x-widget: voice-picker`, so
+  a settings desk drawn from the schema offers the mouth's voices, live from
+  `mouth voices`, instead of a text box. The installed dot copy follows on the
+  next `ears install`.
+- ears-mail follows the wake file live: it checks the file once a poll and
+  reloads it when it changes, so a seat `ears wake add` adds while ears-mail
+  runs is called on the next turn, with no restart. A bad or missing file
+  mid-run keeps the last good rules, and ears-mail says so once on stderr
+  (`docs/ears.md`, "Wake seats").
+- Ear sounds are on from the first turn. A bare `ears services install` loads
+  the two sounds jobs (`sounds` is in the default set; `--only sounds` still
+  names them alone), and `ears-sounds.py` writes its defaults to
+  `ears-sounds.json` when the file is absent, as `mouth-sounds.py` already
+  did: the turn tick and the partial tick on, the three event sounds off, the
+  values of `keeper/defaults/ears-sounds.json`. A file that exists is read as
+  before. Before, a bare install loaded no sounds, and the watcher with no
+  file played nothing, so a fresh Mac was silent while it listened. The
+  mouth's watcher comes on with it, and its five cues (drop, front, canned,
+  bud, scoop) are on in its defaults, so a fresh Mac plays seven sounds,
+  not one tick. `ears-sounds.json` and `mouth-sounds.json` in the settings
+  folder turn each one off, reread live.
+- A fresh install hears nothing until the ears are turned on. Whoever
+  CREATES `ears.json` (the install's seed, `ears recording on|off` on a new
+  host) writes `"listen": false` beside what it came to write; a file that
+  already exists is never given one, so an upgraded host keeps hearing as
+  before, and a missing `listen` still reads as on. Install's closing line
+  says so. Before, a bare `ears services install` started the room's ear at
+  once: the keeper read the seed's `final`-only file as on.
+
+- A fresh install keeps voice's state in `~/.sessionkit/voice/state`, and makes nothing
+  outside `~/.sessionkit`: no `~/.sessionvoice`, `~/.voicemode` or `~/.ears`, nothing in
+  `~/.local/state/ears` or `~/.local/state/audio`, no speaker enrolment in
+  `~/.local/share/ears/speakers`, and no `~/.cache/ears/ears-mail.state.json`. The root is
+  the first of `$SESSIONVOICE_HOME`, `$VOICEMODE_BASE_DIR`, `~/.sessionvoice` while it holds
+  a heard log, `~/.sessionkit/voice/state` while it holds one, `~/.voicemode` while it holds
+  one, and otherwise `~/.sessionkit/voice/state` (it was `~/.sessionvoice`). Both
+  variables still win, and they move the root's own tree only (the heard log, `mouth/`,
+  `talk/`, `state/`), never a state item or a seat's home: the launch agents carry neither.
+  The `ears services status` row that names the root is now labelled `state` (it was `home`)
+  (`docs/configuration.md`, "The state root").
+- An existing host is unchanged by the upgrade. A host whose heard log is in `~/.sessionvoice`
+  or `~/.voicemode` keeps using that root, and each state item stays at its old path while it
+  is real. Nothing is moved: a live host moves its state only by `ears home migrate`, run by
+  hand on that host in its own wave-4 step, which comes in a later release.
+- The state that sat outside the root is now under it, each with its own variable still
+  winning: call-tap's run folder in `<root>/call-tap/` (`EARS_CALL_TAP_RUN`, which
+  `bin/call-tap` now reads too), the call ears' folder in `<root>/call-ears/`
+  (`CALL_EARS_DIR`), the audio devices file in `<root>/audio-devices.json`
+  (`AUDIO_DEVICES_FILE`), the speaker enrolment in `<root>/speakers/`, still 0700
+  (`EARS_SPEAKERS_HOME`), and ears-mail's `--state` in `<root>/ears-mail.state.json`.
+  `XDG_STATE_HOME` now only finds an old path. The speakers side-car's venv stays in
+  `~/.local/share/ears/speakers/venv`. `docs/audio-devices.md` no longer keeps the devices
+  file "under the subject": a reader asks `ears home state-dir audio-devices`.
+- The ears-mail template's `--state` is the placeholder `@EARS_MAIL_STATE@`, which
+  `bin/render-plist` fills from the state item, as `ears services install` does. The
+  speakers job's `SPEAKER_LOGDIR` is the keeper's heard log folder, never a root variable
+  set in the installer's shell. While an installed speakers or mail job still names a path
+  voice no longer uses, `ears services status` says so in one line naming
+  `ears services install --only speakers` (or `--only mail`), and `ears speakers` says it for
+  the speakers job.
+- A seat with no home of its own arms in `<root>/seats/<seat>/`, which `ears-arm` makes,
+  instead of one shared `~/.ears`; a host that has `~/.ears` keeps reading it while it is
+  real. talk, `heard-first` and `ears-arm` find seat homes, session folders and faces by
+  asking sessiontools (`sessiontools.settings`, else `session path`), and read tools' old
+  folders only when tools cannot be asked. talk no longer reads `~/.sessionmail`: it reads
+  the old mail layout only under `$SESSIONMAIL_HOME`. `ears-count` names no home.
+- The plugin's scripts no longer keep their own copy of the root rule. Each loads the
+  package's `ears/home.py` (only `heard.py` keeps a copy, held to it by the tests) and asks
+  the installed package. When the two disagree, or no package can be asked, it says why on
+  stderr, naming both, and exits 2 before it reads or writes anything: upgrade the plugin and
+  the package together.
+
+### Fixed
+
+- `ears services status` no longer warns that the heard log is split when
+  two roots' `logs/conversations` are one folder (a folder link between
+  them, made by hand): that is one log.
+- `keeper/defaults/mouth-sounds.json` lists the scoop cue, as
+  `mouth-sounds.py`'s defaults have since the cue was added; the shipped copy
+  named four cues of the five a fresh Mac plays. A test now holds the two
+  equal, as one already does for `ears-sounds.json`.
+- talk writes nothing to `talk.log` when a browser drops a kept-alive
+  connection. Each reset used to print "Exception occurred during processing
+  of request" and a whole `ConnectionResetError` traceback; any other
+  exception is still logged.
+- `mouth say --in-reply-to` threads on a fresh install with
+  `$MOUTH_HEARD_BOX` unset. The mouth now reads the heard box
+  `ears services install` made or found: the one nested under the store
+  dir carrying `.tm-store`, else the flat `<mail root>/agents/heard` that
+  `message setup --box heard` makes. Install and the mouth share one rule
+  for it (`ears.heardbox`). A set `$MOUTH_HEARD_BOX` still wins. With no
+  box found, the stderr line now says where it looked.
+- On built-in speakers, a mouth line's TAIL heard ahead of the user's reply is
+  now cut as echo. When the room mic's turn opened partway into a line, the
+  turn held only the line's last words, too few of the whole line to count as
+  its echo, so they reached the seat as the user's own reply. On the real
+  span, a turn that opened while the line played is now matched against the
+  words left in the line at that moment, and cut when they open the turn. A
+  user quoting the line's tail back is not cut: a quote repeats words already
+  heard, or comes after the line ended, or is led by more than one word of
+  the user's own.
+- `talk` finds each session's ride/done through sessiontools (its module, else
+  `session path sessions`), and falls back to the old sessionmail
+  compatibility link only when neither answers, so a fresh host with no
+  `~/.sessionmail` shows the ride again.
+- `mouth status`, or any reader of `bed.json`, no longer sees a bed's dip
+  without its cause: `bed.json` is written before the `duck`, `unduck` or
+  `duck-skipped` row that announces it, so a reader that waited for the row
+  could find `ducked` false or `duck_by` null just after a dip. A bed's
+  `bed.json` entry (its `started_t`) is also written before its `saying` row.
+- "Mini-Me, say again" now replays mini-me's line. The say-again strip read
+  the seat's `names` (`mini\-me`), which never matched the words "mini me";
+  it now strips the spoken form too.
+- The example wake file said its `helper` seat "lights up for 300 ms". `light`
+  is in seconds: it lights up for 300 s, five minutes.
+- A bad wake file no longer stops ears-mail. At start it counts as missing:
+  ears-mail starts with the `--seats` seats only, says so in one line, and
+  picks up the fixed file live, where it used to exit with a traceback and
+  be restarted by launchd every 10 s. A file that loaded but would stop the
+  keeper at a turn now fails the load instead: a `reply_window`,
+  `again_window` or `light` that is not a number, or a `names`, `openers`
+  or `everyone` that is not a string (`everyone` may still be false or
+  null). A `names` list used to name its seat in every turn of two words.
+- `ears wake add` no longer loses a seat added at the same moment: adds take
+  turns on a lock file beside the wake file (`.wake.json.lock`). An add that
+  changes nothing no longer rewrites the file, so ears-mail reloads nothing.
+- A wake file nested too deep to parse no longer crashes ears-mail's live
+  reload or `ears wake`: it counts as a bad file, and ears-mail keeps the
+  last good rules.
+- Settings schemas: Talk's no longer creates the settings folder while 0.1.0 files wait to move.
+- Settings: the Mouth screen lists the Mac's outputs to pick from.
+
 ## [0.3.2] - 2026-10-28
 
 ### Added
 
+- The room mail now carries `Ears-Addressed`, the seats the turn names:
+  `Ears-Addressed: everyone, ivy@<host>`. A seat is named by its wake-file
+  `names`, matched as whole words in any case over all of the user's words
+  (the mouth's echo cut out), so a name late in a long turn is found; the
+  Subject, cut at 69 characters, is no longer the only place a pager can
+  look. `everyone` is written for an all-call ("hey everyone"). A turn that
+  names nobody has no header, and the header holds seat names only, never the
+  turn's words. While a film plays, a passing mention is left out, with a
+  `{"skip": "addressed"}` line. The fire log's row gains `addressed`. A reader
+  applies the say-again and own-voice withholds itself, from `Ears-Rule` and
+  `Ears-Speaker` (`docs/ears.md`).
 - `mouth split FILE...` separates a song into its four stems (vocals,
   drums, bass, other) and its instrumental, the song without its vocals.
   They go into the file's sidecar, `.<file>.d/` beside it, with a
@@ -119,6 +385,18 @@ All notable changes to sessionvoice are documented here. The format is
 
 ### Fixed
 
+- `ears wake add SEAT --hint NAME` adds NAME to the seat's names as well, so
+  a turn that says the hinted spelling calls the seat. Before, the hint only
+  primed speech to text: the transcript then spelled the name as hinted, and
+  no name matched it. The hint goes in as one literal name, after the
+  others; one that differs from a name only in case adds nothing. A seat
+  added with a hint before this fix picks the hint up as a name when it is
+  re-added (`ears wake add SEAT`, with or without `--hint`); until then it
+  is not one. `--hint ''` removes the hint but keeps a name it added.
+- A seat written into the wake file by hand with no `names` is matched by
+  its key as written. The keeper read the key as a pattern, so
+  `sessionmail+engineer` did not match itself (its `+` meant "one or
+  more"). It is now a literal, as `ears wake add` already wrote it.
 - `ears services status` no longer reads as if the ears had no
   speech-to-text. Its `stt` row is the optional Apple STT server
   (`ears services install --apple`), so on a default install it said

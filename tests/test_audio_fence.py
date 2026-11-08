@@ -218,7 +218,7 @@ def _child(code: str, env):
 def test_a_child_cannot_import_the_real_sounddevice(shape, tmp_path):
     env = {"inherited": None,
            "pythonpath-replaced": {**os.environ, "PYTHONPATH": str(tmp_path)},
-           "env-replaced": {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}}[shape]
+           "env-replaced": {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path)}}[shape]
     with expect_refusal() as got:
         r = _child("import sounddevice", env)
     assert r.returncode == 1, r.stdout + r.stderr

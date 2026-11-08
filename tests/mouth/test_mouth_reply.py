@@ -111,25 +111,89 @@ def test_is_msg_id(value, ok):
 
 # -- heard_boxes --------------------------------------------------------------
 
-def test_heard_boxes_has_no_default(monkeypatch):
-    """EARS-202 G20: unset is no box, never our store's ~/.mail/agents/failmode/heard."""
+def _box(path: Path) -> Path:
+    for sub in ("tmp", "new", "cur"):
+        (path / sub).mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _agents() -> Path:
+    """The fenced boxes folder (conftest: the fake `message` answers from the fake
+    HOME's .mail, whose folder is agents/)."""
+    return Path.home() / ".mail" / "agents"
+
+
+def _store(name: str = "store") -> Path:
+    d = _agents() / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / ".tm-store").write_text("")
+    return d
+
+
+def test_the_default_root_is_fenced(heard_box):
+    from ears import heardbox
+    assert heardbox.where() == Path.home() / ".mail" / "agents"    # the fake's answer, in tmp
+    assert Path.home() == heard_box.parent / "home"
+
+
+@pytest.mark.parametrize("unset", [None, "", " : "])     # unset, empty and blank are all unset
+def test_unset_defaults_to_the_flat_box_setup_made(monkeypatch, unset):
+    """EARS-502, a mail-drop host: `message setup --box heard` made <agents>/heard."""
+    env_fence.delenv(monkeypatch, "MOUTH_HEARD_BOX")
+    if unset is not None:
+        monkeypatch.setenv("MOUTH_HEARD_BOX", unset)
+    flat = _box(_agents() / "heard")
+    assert reply.heard_boxes() == [flat]
+
+
+def test_unset_defaults_to_the_nested_box_under_the_store(monkeypatch):
+    """EARS-502, an MTA host (the fleet's layout): <agents>/<store>/heard. It wins over
+    a flat box beside it, as install keeps it."""
+    env_fence.delenv(monkeypatch, "MOUTH_HEARD_BOX")
+    _box(_agents() / "heard")
+    nested = _box(_store() / "heard")
+    assert reply.heard_boxes() == [nested]
+
+
+def test_unset_and_no_box_is_none(monkeypatch):
+    """No heard box made: none, never a guess. A box with no new/, a store dir with no
+    box, and a heard box under a dir that is not a store are not one."""
     env_fence.delenv(monkeypatch, "MOUTH_HEARD_BOX")
     assert reply.heard_boxes() == []
-    monkeypatch.setenv("MOUTH_HEARD_BOX", "")       # empty counts as unset
-    assert reply.heard_boxes() == []
-    monkeypatch.setenv("MOUTH_HEARD_BOX", " : ")    # so does blank
+    (_agents() / "heard" / "cur").mkdir(parents=True)
+    _store()
+    _box(_agents() / "someone" / "heard")
     assert reply.heard_boxes() == []
 
 
-def test_find_parent_unset_names_the_variable_and_never_guesses(monkeypatch, capsys, heard_box):
-    """Unset: None and one stderr line naming the variable. A turn in the old default's
-    place (under the fake HOME) is never read."""
+def test_set_wins_over_the_default(monkeypatch, tmp_path):
+    """EARS-502: set (non-blank), $MOUTH_HEARD_BOX wins unchanged, even with no box there."""
+    _box(_store() / "heard")
+    _box(_agents() / "heard")
+    monkeypatch.setenv("MOUTH_HEARD_BOX", f"{tmp_path}/a:{tmp_path}/b")
+    assert reply.heard_boxes() == [tmp_path / "a", tmp_path / "b"]
+
+
+def test_find_parent_unset_reads_the_default_box(monkeypatch, capsys):
+    """A fresh install: the variable unset, the parent found in the box install made."""
+    env_fence.delenv(monkeypatch, "MOUTH_HEARD_BOX")
+    turn(_box(_store() / "heard"), name(1), MID)
+    assert reply.find_parent(MID)["Message-ID"] == MID
+    assert capsys.readouterr().err == ""
+
+
+def test_find_parent_unset_and_no_box_says_what_it_looked_for(monkeypatch, capsys, heard_box):
+    """Unset and no box: None and ONE stderr line naming the variable and where the
+    default was looked for. A turn in the old default's place (a dir that is not a
+    store) is never read."""
     old = Path.home() / ".mail" / "agents" / "failmode" / "heard"
     turn(old, name(1), MID)
     env_fence.delenv(monkeypatch, "MOUTH_HEARD_BOX")
     assert reply.find_parent(MID) is None
     err = capsys.readouterr().err
     assert "$MOUTH_HEARD_BOX is not set" in err and err.count("\n") == 1
+    assert f"{_agents()}/<store>/heard" in err and str(_agents() / "heard") in err
+    assert "ears services install" in err
 
 
 def test_find_parent_explicit_boxes_never_warn_about_the_variable(monkeypatch, capsys, heard_box):

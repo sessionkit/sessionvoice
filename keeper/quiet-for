@@ -2,26 +2,13 @@
 # quiet-for SECONDS - exit 0 only if the heard log has had no mic partial/turn for SECONDS.
 # Run it right before `mouth say`: a heard_wait "turn" can be a pause, not the end
 # (an agent once spoke over the user twice that way).
-# --- sessionvoice_home: a copy of ears.home.sessionvoice_home (tests/test_home.py holds it) ---
-# $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it holds the
-# heard log (a heard.lock or a heard_*.jsonl in logs/conversations), else ~/.sessionvoice.
-sessionvoice_home() {
-  local v d
-  for v in "${SESSIONVOICE_HOME:-}" "${VOICEMODE_BASE_DIR:-}"; do
-    [ -n "$v" ] || continue
-    case $v in "~" | "~/"*) v="$HOME${v#\~}" ;; esac
-    echo "$v"; return 0
-  done
-  for d in "$HOME/.sessionvoice" "$HOME/.voicemode"; do
-    if [ -e "$d/logs/conversations/heard.lock" ] \
-        || compgen -G "$d/logs/conversations/heard_*.jsonl" >/dev/null; then
-      echo "$d"; return 0
-    fi
-  done
-  echo "$HOME/.sessionvoice"
-}
-# --- end sessionvoice_home ---
-N=${1:-6}; LOG=$(sessionvoice_home)/logs/conversations/heard_$(date +%F).jsonl
+# The state root is the PACKAGE's answer: this checkout's
+# src/ears/home.py asks it (asked-state-dir), checks it against its own, and exits 2 naming
+# both when they differ or the package cannot be asked. There is no copy of the rule here.
+HOMEPY="$(cd "$(dirname "$0")/.." && pwd)/src/ears/home.py"
+[ -f "$HOMEPY" ] || { echo "quiet-for: no ears/home.py at $HOMEPY: it names voice's state root. Run it from a sessionvoice checkout or the plugin" >&2; exit 2; }
+STATE_DIR="$(python3 "$HOMEPY" asked-state-dir --as quiet-for)" || exit 2
+N=${1:-6}; LOG=$STATE_DIR/logs/conversations/heard_$(date +%F).jsonl
 python3 - "$LOG" "$N" <<'PY'
 import json,sys,datetime
 log,n=sys.argv[1],float(sys.argv[2]); last=None

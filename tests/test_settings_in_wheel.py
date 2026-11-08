@@ -66,7 +66,7 @@ def _settings_env(monkeypatch, tmp_path):
     return ears_dir, mouth_dir
 
 
-def test_from_a_wheel_install_copies_the_three_schemas_from_the_package(monkeypatch, tmp_path):
+def test_from_a_wheel_install_copies_the_four_schemas_from_the_package(monkeypatch, tmp_path):
     pkg = _wheel_layout(monkeypatch, tmp_path)
     assert services.schema_files() == [pkg / "_settings" / n for n in services.SCHEMAS]
     ears_dir, mouth_dir = _settings_env(monkeypatch, tmp_path)
@@ -74,7 +74,7 @@ def test_from_a_wheel_install_copies_the_three_schemas_from_the_package(monkeypa
     for name, d in (("ears", ears_dir), ("ears-sounds", ears_dir), ("mouth", mouth_dir)):
         assert json.loads((d / f".{name}.schema.json").read_text()) == \
             json.loads((REPO / "settings" / f"{name}.schema.json").read_text())
-    assert out == f"schema: .ears-sounds.schema.json, .ears.schema.json, .mouth.schema.json in {ears_dir}"
+    assert out == f"schema: .ears-sounds.schema.json, .ears.schema.json, .mouth.schema.json, .talk.schema.json in {ears_dir}"
 
 
 def test_no_schema_anywhere_refuses_and_copies_nothing(monkeypatch, tmp_path):

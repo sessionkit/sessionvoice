@@ -23,6 +23,13 @@ from tests import _scanlist  # noqa: E402  (the private-word guards' list, EARS-
 
 env_fence.apply()
 
+# ...nor the live mail index, nor the live HOME in any child (EARS-506): a test run indexed
+# the runner's notmuch database. tests/mail_fence.py moves HOME to a session temp dir, pins
+# the mail env, puts a bin of refusing notmuch/message/memory/pager/sendmail first on PATH,
+# and refuses a real one in this process before the child starts. Every refusal names its test.
+from tests import mail_fence  # noqa: E402
+from tests.mail_fence import no_live_mail_index  # noqa: E402,F401
+
 import sys as _sys  # noqa: E402
 
 # ...and every conftest under tests/ fences every test beneath it, whatever the command
@@ -52,6 +59,28 @@ def pytest_make_collect_report(collector):
     return rep
 
 
+# ...and every box sessionvoice asks sessionmail for is answered by a fake `message`
+# (SM 0.3.3, the mail root move: tests/fixtures/fake_sessionmail.py), first on the PATH
+# of a test that asks for it (`fake_message_on_path`; tests/mouth's fence and the install
+# fence ask for it for every test of theirs), from that test's HOME's mail root. The
+# mail fence refuses the real one, and no test spells the root: the fake keeps
+# sessionmail's own folder rule. Not autouse: a test of how `message` is FOUND (the
+# keeper's PATH, a `~/.local/bin` copy) wants none on PATH.
+from tests import fake_sessionmail as _fake_message  # noqa: E402
+
+
+@pytest.fixture(scope="session")
+def _fake_message_dir(tmp_path_factory):
+    return tmp_path_factory.mktemp("fake-message")
+
+
+@pytest.fixture
+def fake_message_on_path(_fake_message_dir, monkeypatch):
+    """The fake `message` first on PATH for this test (its calls logged beside it, fresh
+    per test); `ears.boxes` forgets what it kept, so no box leaks between tests."""
+    return _fake_message.install(_fake_message_dir, monkeypatch)
+
+
 _MOUTH = _Path(__file__).parent / "mouth"
 
 
@@ -79,6 +108,7 @@ from tests.home_guard import live_home_untouched, pytest_sessionstart  # noqa: E
 def pytest_sessionfinish(session):
     home_guard.pytest_sessionfinish(session)
     audio_fence.pytest_sessionfinish(session)   # a refusal no test was running for fails the run
+    mail_fence.pytest_sessionfinish(session)    # ...and so does a mail one; it prints the receipt
 
 
 # ...nor runs sessionmail's real `message setup`, the dry run included: install asks it what

@@ -52,7 +52,10 @@ commit.
 
 - **Tests never touch the real machine.** `tests/conftest.py` fences every
   test: no writes under the real home (`tests/home_guard.py`), no real audio
-  device (`tests/audio_fence.py`), no mail (a refusing `message`). Never
+  device (`tests/audio_fence.py`), no mail (a refusing `message`), and no
+  mail index: every child runs with HOME in a temp dir, and a real
+  `notmuch`, `message`, `memory`, `pager` or `sendmail` is refused
+  (`tests/mail_fence.py`). Never
   weaken a fence to make a test pass; give the test a fake
   (`tests/fixtures/`).
 - **So do review rigs and scripts.** Outside pytest none of those fences

@@ -77,7 +77,7 @@ def test_a_stale_copy_is_brought_up_to_date(fake_home, shipped):
     line = services.install_schema()
     assert c[".ears.schema.json"].read_bytes() == new.read_bytes()
     assert line == (f"schema: .ears.schema.json in {home.settings_dir(fake_home)}; current, "
-                    "nothing written: .ears-sounds.schema.json, .mouth.schema.json")
+                    "nothing written: .ears-sounds.schema.json, .mouth.schema.json, .talk.schema.json")
     assert not list(home.settings_dir(fake_home).glob("*.tmp"))
 
 
@@ -134,6 +134,7 @@ def test_a_stranded_file_s_schema_is_neither_compared_nor_written(fake_home, shi
 
 
 def test_a_host_with_every_file_stranded_gets_nothing(fake_home, shipped, capsys):
+    # talk.json is new since 0.1.0, but its schema waits too: it never makes the folder alone
     for name in ("ears.json", "ears-sounds.json", "mouth.json"):
         old = home.legacy_path(name, fake_home)
         old.parent.mkdir(parents=True, exist_ok=True)
@@ -141,6 +142,7 @@ def test_a_host_with_every_file_stranded_gets_nothing(fake_home, shipped, capsys
     assert services.main(["schema"]) == 0
     out, err = capsys.readouterr()
     assert "NOT copied (stranded, nothing written)" in out and "is missing" in err
+    assert "waits for the 0.1.0 files to move, nothing written: talk.schema.json" in out
     assert not home.settings_dir(fake_home).exists()
 
 

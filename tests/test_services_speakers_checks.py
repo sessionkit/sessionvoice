@@ -171,7 +171,7 @@ def test_a_refusal_writes_no_other_service_either(sp, monkeypatch, capsys):
 
 def test_no_venv_is_built_with_uv_from_the_shipped_lock(sp, capsys):
     assert services.install(["speakers"]) == 0
-    venv = sp["speakers"] / "venv"
+    venv = sp["venv"]
     lock = services._speakers_file("requirements.lock")
     assert sp["sh"] == [["/fake/uv", "venv", "--python", "3.12", venv],
                         ["/fake/uv", "pip", "install", "--python", venv / "bin/python",
@@ -184,7 +184,7 @@ def test_no_venv_is_built_with_uv_from_the_shipped_lock(sp, capsys):
 
 
 def test_a_present_venv_is_not_rebuilt_and_gets_the_pins_re_applied(sp, capsys):
-    py = sp["speakers"] / "venv/bin/python"
+    py = sp["venv"] / "bin/python"
     py.parent.mkdir(parents=True); py.write_text("")
     assert services.install(["speakers"]) == 0
     assert [a[1] for a in sp["sh"]] == ["pip"]                     # no `uv venv`: an upgrade keeps it
@@ -194,7 +194,7 @@ def test_a_present_venv_is_not_rebuilt_and_gets_the_pins_re_applied(sp, capsys):
 def test_a_venv_dir_with_no_python_is_rebuilt_over_with_clear(sp, capsys):
     """Its base python removed (a dangling bin/python) or a build cut short: uv 0.11 will not
     build over an existing venv without --clear, so install would be a dead end (review do-004)."""
-    venv = sp["speakers"] / "venv"
+    venv = sp["venv"]
     (venv / "bin").mkdir(parents=True); (venv / "pyvenv.cfg").write_text("")
     (venv / "bin/python").symlink_to(venv / "gone/python3.12")     # dangling: exists() is False
     assert services.install(["speakers"]) == 0
@@ -212,7 +212,7 @@ def test_no_uv_and_no_venv_is_refused_naming_uv(sp, monkeypatch, capsys):
 
 
 def test_no_uv_beside_a_present_venv_uses_it_as_it_is(sp, monkeypatch, capsys):
-    py = sp["speakers"] / "venv/bin/python"
+    py = sp["venv"] / "bin/python"
     py.parent.mkdir(parents=True); py.write_text("")
     monkeypatch.setattr(services, "_uv", lambda: None)
     assert services.install(["speakers"]) == 0
@@ -264,7 +264,7 @@ def test_an_uncached_model_is_downloaded_at_install_and_said_so(sp, monkeypatch,
     assert services.install(["speakers"]) == 0
     out = capsys.readouterr().out
     assert "downloading mlx-community/Nemotron-3-Diarization (about 190 MB, once)" in out
-    py = sp["speakers"] / "venv/bin/python"
+    py = sp["venv"] / "bin/python"
     fetch = [a for a in sp["sh"] if "snapshot_download" in " ".join(map(str, a))]
     assert len(fetch) == 1 and fetch[0][0] == py and "local_files_only" not in fetch[0][2]
     assert f"revision={services.SPEAKER_REVISION!r}" in fetch[0][2]   # the pinned snapshot, not main
@@ -289,7 +289,7 @@ def test_a_failed_download_is_refused(sp, monkeypatch, capsys):
 def test_dry_run_with_no_venv_says_would_build_and_would_download(sp, capsys):
     assert services.install(["speakers"], dry_run=True) == 0
     out = capsys.readouterr().out
-    venv = sp["speakers"] / "venv"
+    venv = sp["venv"]
     assert f"would build {venv} (python 3.12, mlx-audio==0.5.8, 35 packages pinned in" in out
     assert "would download mlx-community/Nemotron-3-Diarization (about 190 MB, once)" in out
     assert not sp["sh"] and not sp["speakers"].exists()
@@ -297,7 +297,7 @@ def test_dry_run_with_no_venv_says_would_build_and_would_download(sp, capsys):
 
 
 def test_dry_run_with_a_venv_checks_it_and_says_would_download(sp, monkeypatch, capsys):
-    py = sp["speakers"] / "venv/bin/python"
+    py = sp["venv"] / "bin/python"
     py.parent.mkdir(parents=True); py.write_text("")
     checked = []
     monkeypatch.setattr(services, "speakers_missing_module", lambda p: checked.append(p))

@@ -7,7 +7,7 @@ in the message format, one mail per record
 (``write``).
 
 Opt-in: ``$MOUTH_MAIL_LOG`` is ``1``
-(the mouth's box, ``~/.mail/agents/mouth``) or a maildir path. ``mouth mail``
+(the mouth's box, ``message path mouth``) or a maildir path. ``mouth mail``
 turns it on for its own box. The heard-log lines are written as well.
 
 Every utterance is a thread:
@@ -50,7 +50,9 @@ def box_from_env() -> Optional[str]:
     if not v or v == "0":
         return None
     if v == "1":
-        return str(Path.home() / ".mail" / "agents" / "mouth")
+        from . import box as _box      # lazy: box imports this module the same way
+
+        return str(_box.live_box())    # the mouth's own box, as sessionmail names it
     return str(Path(v).expanduser())
 
 

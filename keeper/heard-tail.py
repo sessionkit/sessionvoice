@@ -5,22 +5,41 @@ from datetime import date
 from pathlib import Path
 
 
-def sessionvoice_home():
-    """sessionvoice's home: a copy of ears.home.sessionvoice_home (tests/test_home.py holds
-    it). $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it
-    holds the heard log, else ~/.sessionvoice."""
-    import glob, os
-    for name in ("SESSIONVOICE_HOME", "VOICEMODE_BASE_DIR"):
-        if os.environ.get(name):
-            return os.path.expanduser(os.path.expandvars(os.environ[name]))
-    for d in ("~/.sessionvoice", "~/.voicemode"):
-        c = os.path.expanduser(d + "/logs/conversations")
-        if os.path.exists(c + "/heard.lock") or glob.glob(glob.escape(c) + "/heard_*.jsonl"):
-            return os.path.expanduser(d)
-    return os.path.expanduser("~/.sessionvoice")
+HERE = Path(__file__).resolve().parent
 
 
-log = Path(sessionvoice_home()) / "logs/conversations" / f"heard_{date.today():%Y-%m-%d}.jsonl"
+def voice_home():
+    """ears/home.py, the ONE place voice names its state root and its log folder.
+    keeper/ imports nothing from the ears package, so it loads home.py
+    (standard library only) by its path, once: the checkout's src/ears/home.py (keeper/ ships in the
+    checkout and the plugin only).
+    Not there: exit 2, naming where it looked; there is no copy of the rule to fall back
+    on."""
+    mod = getattr(voice_home, "mod", None)
+    if mod is None:
+        import importlib.util, sys
+        tried = [HERE.parent / "src/ears/home.py"]
+        f = next((f for f in tried if f.is_file()), None)
+        if f is None:
+            print(f"heard-tail: no ears/home.py at {' nor '.join(map(str, tried))}: it names "
+                  "voice's state root. Run it from a sessionvoice checkout, the plugin or the "
+                  "package", file=sys.stderr)
+            sys.exit(2)
+        spec = importlib.util.spec_from_file_location("_voice_home", f)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        voice_home.mod = mod
+    return mod
+
+
+def voice_state_dir() -> Path:
+    """voice's state root, as the PACKAGE answers it (ears.home.asked_state_dir, design.md
+    D4.1): asked once per process, and exit 2, naming both answers, when the package cannot
+    be asked or disagrees with this checkout's home.py."""
+    return voice_home().asked_state_dir("heard-tail")
+
+
+log = Path(voice_state_dir()) / "logs/conversations" / f"heard_{date.today():%Y-%m-%d}.jsonl"
 p = subprocess.Popen(["tail", "-n", "15", "-F", str(log)], stdout=subprocess.PIPE, text=True)
 for line in p.stdout:
     try:

@@ -103,7 +103,8 @@ def main(argv=None) -> int:
     s.add_argument("--in-reply-to", metavar="ID",
                    help="the Message-ID of the heard turn this line answers (<id> or bare): the "
                         "mail threads under it; root and Call-ID come from the heard box "
-                        "($MOUTH_HEARD_BOX)")
+                        "($MOUTH_HEARD_BOX, else the heard box sessionmail names: `message path heard`, "
+                        "a store's nested box before the flat one)")
     pri = s.add_mutually_exclusive_group()
     pri.add_argument("--next", dest="priority", action="store_const", const="next",
                      help="the front of the queue (priority 0)")
@@ -235,7 +236,7 @@ def main(argv=None) -> int:
     tl = sub.add_parser("timeline", help=_timeline.TIMELINE_HELP, description=_timeline.TIMELINE_HELP)
     _timeline.add_arguments(tl)
     ml = sub.add_parser("mail", help="the player, resident on the queue maildir (mail to mouth@<host> lands there)")
-    ml.add_argument("--box", type=Path, help="the maildir (default ~/.mail/agents/mouth)")
+    ml.add_argument("--box", type=Path, help="the maildir (default: the mouth's own box, `message path mouth`)")
     ml.add_argument("--once", action="store_true", help="speak what is in new/, then exit")
     dv = sub.add_parser("devices", help="output device names, exactly as --device takes them; "
                         "the current output is marked, with its volume, and the current input named",

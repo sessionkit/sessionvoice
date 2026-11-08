@@ -208,7 +208,7 @@ wait that long, so this probe is cold-aware:
 
 **If it still falls back**, whisper on `:2022` is written to `final`, as
 before. Install also records the fallback outside `ears.json`, in
-`state/stt-fallback.json` under sessionvoice's home. The record names the
+`state/stt-fallback.json` under voice's state root. The record names the
 engine install wanted, why its probe failed, and when. Install then says it
 three times:
 
@@ -447,9 +447,10 @@ The URL, model and voice above are placeholders. Use your provider's.
   reference clip.
 - **Served:** in process, on the GPU, in the side-car's own venv. The ears
   venv does not have it.
-  - Install (`--only speakers`) builds that venv in the speakers home
-    (`~/.local/share/ears/speakers/venv`; `EARS_SPEAKERS_HOME` moves the
-    home). It uses uv, and installs the `speakers/requirements.lock` that
+  - Install (`--only speakers`) builds that venv in
+    `~/.local/share/ears/speakers/venv`, which stays outside voice's state
+    root (`$EARS_SPEAKERS_HOME/venv` when that variable is set; the speaker
+    references are in the speakers home, under the state root). It uses uv, and installs the `speakers/requirements.lock` that
     the package ships, with its hashes. The lock pins the `mlx-audio==0.5.8`
     release. It is not a git build.
   - The diarizer needs mlx-audio 0.5.6 or later; 0.5.5 has no

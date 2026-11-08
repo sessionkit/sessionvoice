@@ -53,9 +53,14 @@ It needs an Apple-silicon Mac (arm64) on macOS 14 or later, and `uv`.
   `~/Library/LaunchAgents`. If ours was installed first, ours is removed. The hand-made one is never
   touched, and `status` prints its own line for it.
 
-The speakers home, `~/.local/share/ears/speakers` (or `$EARS_SPEAKERS_HOME`),
+The speakers home, `<state root>/speakers` (`~/.sessionkit/voice/state/speakers`
+on a new host; `ears home state-dir speakers` prints it), or `$EARS_SPEAKERS_HOME`,
 holds `refs/` (0600 clips in a 0700 dir, never in the package, so an upgrade
-keeps them), `refs-call/`, `STOP` and `venv/`. `touch` its `STOP` to stop the
+keeps them), `refs-call/` and `STOP`. A host whose old speakers home,
+`~/.local/share/ears/speakers`, already holds references keeps using it there.
+The venv is not in the speakers home: it stays in
+`~/.local/share/ears/speakers/venv` (or in `$EARS_SPEAKERS_HOME/venv` when that
+is set). `touch` its `STOP` to stop the
 job and keep it down until the next load or login. Overrides, read at install:
 
 - `EARS_SPEAKER_PY`: a python that already has mlx-audio 0.5.6 or later. No
@@ -66,8 +71,8 @@ The sections below are how it works, and the hand path from a checkout.
 
 ## What an agent reads
 
-`<home>/logs/conversations/speakers_YYYY-MM-DD.jsonl`, beside the heard
-log under sessionvoice's home ([docs/logs.md](../docs/logs.md#sessionvoices-home)),
+`<root>/logs/conversations/speakers_YYYY-MM-DD.jsonl`, beside the heard
+log under voice's state root ([docs/logs.md](../docs/logs.md#the-state-root)),
 0600, one line per heard line, joined to it by `seq`:
 
     {"seq": 74343, "kind": "partial", "speaker": "alice",

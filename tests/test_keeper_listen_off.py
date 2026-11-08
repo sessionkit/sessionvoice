@@ -321,11 +321,12 @@ def test_the_keeper_pauses_a_real_call_tap_ear_and_lets_it_back(rig, sh, tmp_pat
         (stubs / f).chmod(0o755)
     model = tmp_path / "vad.onnx"
     model.write_bytes(b"onnx")
-    state = tmp_path / "state"
+    run_dir = tmp_path / "state" / "call-tap"
     env = {k: v for k, v in os.environ.items() if not k.startswith("CALL_TAP_")}
-    env.update(HOME=str(tmp_path), XDG_STATE_HOME=str(state), EARS_PY=str(stubs / "python"),
+    # the run folder by its own variable: the stub python cannot answer `-m ears.home state-dir
+    # call-tap` (tests/test_state_items.py runs the real one, against the keeper's TAP_RUN)
+    env.update(HOME=str(tmp_path), EARS_CALL_TAP_RUN=str(run_dir), EARS_PY=str(stubs / "python"),
                EARS_SILERO_MODEL=str(model), PATH=f"{stubs}:/usr/bin:/bin")
-    run_dir = state / "ears" / "call-tap"
     up = subprocess.Popen([sh, str(call_tap), "up"], env=env, stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT, text=True, start_new_session=True)
     try:

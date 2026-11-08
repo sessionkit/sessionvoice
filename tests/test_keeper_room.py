@@ -43,7 +43,8 @@ def fake():
 
 def _run(pat: str, call: str) -> str:
     time.sleep(0.3)  # let ps see the argv
-    env = dict(os.environ, EARS_CAPTURE_PAT=pat)
+    # the region assigns CALL_EARS_DIR: its own variable, so the package is never asked here
+    env = dict(os.environ, EARS_CAPTURE_PAT=pat, CALL_EARS_DIR="/nonexistent/call-ears")
     out = subprocess.run(["bash", "-c", _functions() + "\n" + call], env=env,
                          capture_output=True, text=True, check=True)
     return out.stdout.strip()

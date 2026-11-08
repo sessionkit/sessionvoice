@@ -124,7 +124,7 @@ def en(fence, monkeypatch, tmp_path):
     # that records says so with the `rec` fixture
     monkeypatch.setattr(speakers, "_ps", lambda: "")
     monkeypatch.setattr(speakers, "_popen", lambda *a, **k: pytest.fail("a real recorder was started"))
-    home = fence["home"] / ".local/share/ears/speakers"
+    home = fence["home"] / ".sessionkit/voice/state/speakers"   # the state item, fresh HOME
     fence.update(speakers=home, refs=home / "refs", stub=root)
     return fence
 
@@ -400,7 +400,7 @@ def test_record_runs_the_recorder_and_stops_it_by_its_stop_file(rec, capsys):
     assert d.parent == rec["speakers"] / "enrol"
     assert r.argv == [sys.executable, str(services._speakers_file("speaker-sidecar2.py")), "--record-only",
                       str(d), "--stop-file", str(d / "STOP"), "--logdir",
-                      str(rec["home"] / ".sessionvoice/logs/conversations")]   # a fresh home (EARS-294 T7)
+                      str(rec["home"] / ".sessionkit/voice/state/logs/conversations")]   # a fresh home (EARS-492)
     assert r.env["HF_HUB_OFFLINE"] == "1"
     assert not r.stop.exists()                               # touched to stop it, then tidied
     assert d.stat().st_mode & 0o777 == 0o700 and d.parent.stat().st_mode & 0o777 == 0o700

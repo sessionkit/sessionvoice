@@ -3,8 +3,8 @@
 Where sessionvoice writes its logs, and what a line in each one means. Most
 questions are answered by the heard log: one JSON line for each thing the
 ears heard or the mouth said, in
-`<home>/logs/conversations/heard_YYYY-MM-DD.jsonl`, where `<home>` is
-sessionvoice's home ([below](#sessionvoices-home)). The services keep
+`<root>/logs/conversations/heard_YYYY-MM-DD.jsonl`, where `<root>` is
+the state root ([below](#the-state-root)), `~/.sessionkit/voice/state` on a new host. The services keep
 their own logs in `~/.sessionkit/voice/log/`, beside the settings
 (`EARS_LOG_DIR` moves it). In 0.1.0 those were split between
 `~/Library/Logs/ears/` and `~/Library/Logs/failmode/`; master puts them all
@@ -31,12 +31,12 @@ and each `file:line` cited is a line at that commit.
   default: [ears.md](ears.md#recording)). When a mouth line ends and no turn
   comes within the window (30 s in the keeper's room capture), the capture
   keeps that window's mic audio as one 16 kHz mono WAV, mode 0600, in
-  `<home>/state/missed-reply/`. Clips older than `record_days` (7 by
+  `<root>/state/missed-reply/`. Clips older than `record_days` (7 by
   default, `0` = kept forever) are deleted, but only while recording is on
   (`src/ears/listen/missed.py`). A `missed-reply` event names each one. A
   30 s clip is about 1 MB.
 - **The user's audio for each turn:** also only while recording is on. Each
-  final turn's audio is one WAV in `<home>/audio/<YYYY-MM-DD>/`, named by
+  final turn's audio is one WAV in `<root>/audio/<YYYY-MM-DD>/`, named by
   the turn's `audio` field and the heard mail's `Ears-Audio` header, and
   kept for `record_days` (7) days ([ears.md](ears.md#kept-turn-audio)).
 
@@ -45,8 +45,8 @@ and what changed since 0.1.0.
 
 ## The heard log
 
-- **Path:** `<home>/logs/conversations/heard_YYYY-MM-DD.jsonl`, under
-  [sessionvoice's home](#sessionvoices-home). The mouth
+- **Path:** `<root>/logs/conversations/heard_YYYY-MM-DD.jsonl`, under
+  [the state root](#the-state-root). The mouth
   writes to `$MOUTH_LOG_DIR` when that is set, and otherwise to
   the same folder (`src/mouth/box.py:277`).
 - **One line, one record.** A line is never edited or removed, and a
@@ -60,40 +60,56 @@ and what changed since 0.1.0.
   (`keeper/ears-keeper.sh:486-488`, `1184-1212`). VoiceMode's `converse` and an earlier Delta bot's
   bridge write the same shape from outside this repo (`src/ears/heard.py:15`).
 
-Read today's log with `jq`. The `home` row of `ears services status` names
-the home:
+Read today's log with `jq`. `ears home state-dir` prints the root, and the `state` row of
+`ears services status` names it too:
 
 ```bash
-LOG=~/.voicemode/logs/conversations/heard_$(date +%F).jsonl   # or ~/.sessionvoice/...
+LOG="$(ears home state-dir)/logs/conversations/heard_$(date +%F).jsonl"
 jq -c 'select(.kind == "turn") | {seq, ts, device, text}' "$LOG" | tail
 jq -c 'select(.kind == "event") | {seq, event, device}' "$LOG" | tail
 ```
 
-### sessionvoice's home
+### The state root
 
-The heard log, `heard.lock`, the speakers rows, the mouth's folder (`mouth/`), talk's token (`talk/`) and
-the ears' state (`state/`) all live under one root, sessionvoice's home. The logs are not under it: they have their own folder,
-`~/.sessionkit/voice/log/`. `src/ears/home.py` finds the home, in this order:
+The heard log, `heard.lock`, the speakers rows, the mouth's folder (`mouth/`), talk's token
+(`talk/`), the ears' state (`state/`) and the state items (call-tap's and call-ears' folders,
+the audio devices file, the speaker enrolment, ears-mail's `--state` and the seats' own homes:
+[configuration.md][items]) all live under one root, the state root. The logs are not under it:
+they have their own folder, `~/.sessionkit/voice/log/`. `src/ears/home.py` finds the root, in
+this order, and `ears home state-dir` prints it:
 
 1. `$SESSIONVOICE_HOME`, if it is set.
 2. `$VOICEMODE_BASE_DIR`, if it is set. This is the old name, and it is
    still read.
-3. `~/.sessionvoice`, if it holds the heard log.
-4. `~/.voicemode`, if it holds the heard log.
-5. Otherwise `~/.sessionvoice`.
+3. `~/.sessionvoice`, if it holds the heard log. sessionvoice 0.3.2 and older made it: an
+   old root, adopted in place.
+4. `~/.sessionkit/voice/state`, if it holds the heard log.
+5. `~/.voicemode`, if it holds the heard log: VoiceMode's folder, the oldest root, adopted in
+   place.
+6. Otherwise `~/.sessionkit/voice/state`.
 
-A home "holds the heard log" when its `logs/conversations` folder has a
-`heard.lock` or a `heard_*.jsonl` in it. A folder that exists but has neither
-is ignored. An empty variable counts as not set.
+A root "holds the heard log" when its `logs/conversations` folder has a
+`heard.lock` or a `heard_*.jsonl` in it that is a real file, not a link. A folder that exists
+but has neither is ignored, the kit's own included, so a `~/.sessionkit/voice/state` made
+ahead of time never pulls a host off its old root. An empty variable counts as not set. An
+old root that is a link to the new one is the new one, and its old path is never handed out.
 
-So a host that already keeps its heard log in `~/.voicemode` keeps using it
-there, and a new host starts in `~/.sessionvoice`. Nothing is moved. Moving
-the files is a separate step, run by hand.
+So a new host starts in `~/.sessionkit/voice/state`, and makes no `~/.sessionvoice` or
+`~/.voicemode`. A host that already keeps its heard log in `~/.sessionvoice` or `~/.voicemode`
+keeps using it there, and the state items sit under that old root too. Nothing is moved.
+Moving the files is a separate step, run by hand on each host in a stop window: `ears home
+migrate`, then `ears services install` ([configuration.md][migrate]).
 
-If both folders hold a heard log, the log is split in two, and `seq` no
-longer names one line. sessionvoice uses `~/.sessionvoice`, and
-`ears services status` prints a warning naming both folders and the fix
-below.
+If two or three of these folders hold a heard log, the log is split, and `seq`
+no longer names one line. sessionvoice uses the first in the order above, and
+`ears services status` prints a warning naming them all and the fix below.
+Its `state` row names the root and why it was chosen.
+
+**Other programs ask voice.** `ears home state-dir --json` (or `python -m ears.home state-dir
+--json`, standard library only) prints the root and every item, each with its `path` and
+`source` (`override`, `old`, `new` or `fresh-new`), and the package's `version`, for a peer
+to cache on. `ears home state-dir ITEM` prints one item's path. A peer never builds a path
+under the root itself.
 
 **A fresh host that also runs VoiceMode.** VoiceMode's `converse` writes
 the heard log as a guest (see below), in `~/.voicemode`. It reads
@@ -101,11 +117,11 @@ the heard log as a guest (see below), in `~/.voicemode`. It reads
 also runs `converse` as a heard guest, set `SESSIONVOICE_HOME=~/.voicemode`
 (or `VOICEMODE_BASE_DIR`), so that both write one log. Otherwise whichever
 writes first decides. If `converse` writes first, sessionvoice adopts
-`~/.voicemode`. If sessionvoice writes first, it writes `~/.sessionvoice`
+`~/.voicemode`. If sessionvoice writes first, it stays in `~/.sessionkit/voice/state`
 and `converse`'s lines split off into `~/.voicemode`. sessionvoice does not
 look for VoiceMode; the variable is the only switch.
 
-VoiceMode's own files stay in `~/.voicemode` whatever the home is:
+VoiceMode's own files stay in `~/.voicemode` whatever the root is:
 `voicemode.env`, `voices/`, `services/` and its `exchanges_*.jsonl` logs.
 
 ### Who owns this format
@@ -115,7 +131,7 @@ carries `"v": 1`, which is `SCHEMA` in `src/ears/heard.py`. The format began
 as VoiceMode's, and sessionvoice now keeps it.
 
 - **The path is part of the contract.** The log is
-  `logs/conversations/heard_YYYY-MM-DD.jsonl` under sessionvoice's home, one file
+  `logs/conversations/heard_YYYY-MM-DD.jsonl` under the state root, one file
   per local day, with `heard.lock` in the same folder. Every writer and
   every reader finds the log there. The one exception is the mouth: when
   `$MOUTH_LOG_DIR` is set, the mouth writes its own lines to that
@@ -123,7 +139,7 @@ as VoiceMode's, and sessionvoice now keeps it.
 - **Outside writers are guests.** VoiceMode's `converse` and an earlier Delta bot's
   bridge write to the same log from outside this repo. `converse` writes
   in `~/.voicemode`, so on a fresh host set `SESSIONVOICE_HOME` to it
-  ([sessionvoice's home](#sessionvoices-home)). A guest writes v1
+  ([the state root](#the-state-root)). A guest writes v1
   lines only, and it takes `heard.lock` around each write, as `append()`
   does, so its `seq` is the last one plus one.
 - **A change to the format bumps `v`.** A field or kind added within v1
@@ -518,10 +534,10 @@ moves or deletes the old files in `~/Library/Logs/`; `ears services status`
 prints the folder, and one line pointing at it while the old folders still hold
 a file.
 
-- **`heard_YYYY-MM-DD.jsonl`** in `<home>/logs/conversations/`
-  ([sessionvoice's home](#sessionvoices-home); `~/.voicemode` in 0.1.0). Writer: `src/ears/heard.py:87-89`, `214-217`. It shows the heard log
+- **`heard_YYYY-MM-DD.jsonl`** in `<root>/logs/conversations/`
+  ([the state root](#the-state-root); `~/.voicemode` in 0.1.0). Writer: `src/ears/heard.py:87-89`, `214-217`. It shows the heard log
   above. The same in 0.1.0.
-- **`install.log`** in `~/.sessionkit/voice/log/` (it was `<home>/logs/install.log`
+- **`install.log`** in `~/.sessionkit/voice/log/` (it was `<root>/logs/install.log`
   before). Writer: `ears services
   install` (`src/ears/services.py`, `install_log_path`). Every real run
   appends to it: a `=== <time> ears services install <services>` header, one
@@ -630,8 +646,10 @@ a file.
   as stdout (`ears-keeper.sh:404`). It shows one `HH:MM:SS` line each
   time a call's ear goes up or down (`keeper/call-ears:50-51`, `114-142`).
 - **`capture-N.log`**, one per call, in
-  `${XDG_STATE_HOME:-~/.local/state}/ears/call-ears/`, or `CALL_EARS_DIR`.
-  Writer: `keeper/call-ears:108`, with the folder set at `call-ears:28`. It
+  the call ears' folder: `<root>/call-ears/` (the state item `call-ears`), or
+  `CALL_EARS_DIR`, or on a host that already has it, the old
+  `${XDG_STATE_HOME:-~/.local/state}/ears/call-ears/`. Writer: `keeper/call-ears`,
+  which the keeper gives the folder. It
   shows the call ear's capture output for call `N`.
 - **`ears-mail.log`** in `~/.sessionkit/voice/log/`. Writer: the turn-mail
   launch agent, as stdout and stderr (`src/ears/services.py:717`, or
@@ -652,12 +670,18 @@ a file.
   "call", "cause", ...}` when the mouth failed, timed out (`cause`
   `timeout`, with `timeout_s`), would not start (`not run`) or had nothing
   to replay (`exit 3`, with its `err`). That turn's
-  mail then carries `call` instead of `again`.
+  mail then carries `call` instead of `again`. While a film plays
+  (`--kodi`), a room turn that names a seat whose verdict is not `call`
+  adds `{"skip": "addressed", "seq", "seats", "cause": "film", "media",
+  "mailed": "without those entries"}`: the mail goes without those seats'
+  `Ears-Addressed` entries.
 - **`ears-mail.fire.jsonl`** in `~/.sessionkit/voice/log/`. Writer:
   `deliver()` in `keeper/ears-mail.py`, given as `--fire-log`
   (`spec("mail")` in `src/ears/services.py`). It shows one line per mail
   sent: `at`, `seq`, `to`, `rule`, `subject`, `exit`, `id`, and `err` if it
-  failed. A call-box mail is a row To `calls+<bot>-<N>` with a null `rule`. A
+  failed. A room mail that carries `Ears-Addressed` adds `addressed`, the
+  header's value (`ivy@<host>`, `everyone`): who the turn named. A mail
+  without the header has no `addressed`. A call-box mail is a row To `calls+<bot>-<N>` with a null `rule`. A
   `rule` entry `<seat>@<host>=again` is a say-again the mouth replayed:
   it woke nobody. One the mouth could not replay is written `=call` instead.
 - **`ears-mouth.log`** in `~/.sessionkit/voice/log/`. Writer: the `mouth mail`
@@ -666,7 +690,7 @@ a file.
   decisions and duck records (`src/mouth/player.py:259-266`), and one line
   per drop notice (`src/mouth/notice.py:542`).
 - **`player.log`** and **`split.log`** in `~/.sessionkit/voice/log/` (they were
-  in the mouth's folder, `$MOUTH_DIR`, by default `<home>/mouth/`, and its
+  in the mouth's folder, `$MOUTH_DIR`, by default `<root>/mouth/`, and its
   `splits/`; `~/.voicemode/mouth/` in 0.1.0). The mouth's other records, locks
   and speed stay in the mouth's folder. `player.log`'s writer: a player that
   `mouth say` started because none was running (`src/mouth/__init__.py:72`).
@@ -712,8 +736,9 @@ a file.
   an older log folder are left in place, never deleted; read them there
   for anything written before the move.
 - **The call ears' folder** was `~/.<agent>/call-ears`, under the agent's
-  own dot-folder. It is now
-  `${XDG_STATE_HOME:-~/.local/state}/ears/call-ears`.
+  own dot-folder. It moved to `${XDG_STATE_HOME:-~/.local/state}/ears/call-ears`
+  after 0.1.0, and from 0.3.3 a new host keeps it in `<root>/call-ears` (a host that
+  already has the XDG folder keeps it there).
 - **The heard log** has the same path and the same five kinds. These
   fields and events are new since 0.1.0, so a 0.1.0 log never has them:
   - the `vad`, `missed-reply`, `missed-reply-off`, `missed-reply-error` and
@@ -739,6 +764,8 @@ a file.
   stream from the heard log.
 
 [troubleshooting]: troubleshooting.md
+[items]: configuration.md#the-state-root
+[migrate]: configuration.md#moving-an-old-root-ears-home-migrate
 [ears]: ears.md
 [mouth]: mouth.md
 [events]: events.md

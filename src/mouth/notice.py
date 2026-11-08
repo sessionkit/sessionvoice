@@ -21,8 +21,8 @@ The carrier is chosen by route, never by reason:
    row says ``waiter``;
 3. a mail from outside gets a reply To its From (``notice_to``);
 4. a CLI line (or one of case 2 whose waiter has gone) gets mail To its session's
-   own sessionmail box, else To its agent's box, if that box exists under
-   ``~/.mail/agents``;
+   own sessionmail box, else To its agent's box, if sessionmail resolves that box
+   (``message path NAME``, ``ears.boxes``);
 5. else the row records ``none:``.
 
 Some drops are quiet by rule. A line retracted by its own sender is not told:
@@ -128,7 +128,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from ears import envnames, message_bin
+from ears import boxes, envnames, message_bin
 
 NOTICE_VAR = "MOUTH_NOTICE"
 #: The command notices go through (its name and meaning kept):
@@ -541,7 +541,11 @@ def _refuse(addr: str) -> Optional[str]:
 def _box_exists(name) -> bool:
     if not isinstance(name, str) or not _NAME.fullmatch(name) or name.lower() == "mouth":
         return False
-    return (Path.home() / ".mail" / "agents" / name / "new").is_dir()
+    try:
+        found = boxes.path(name)
+    except boxes.NoMessage:
+        return False
+    return found is not None and (found / "new").is_dir()
 
 
 def recipient(item: dict) -> tuple[Optional[str], bool, str]:

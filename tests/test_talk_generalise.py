@@ -1,7 +1,10 @@
 """Talk, made general for a kit install (EARS-242 do-003).
 
-- seats: heard.state found in ears-arm's order ($EARS_HOME, the session-fleet
-  seat home, ~/.<seat>, ~/.ears), read-only;
+- seats: heard.state found in ears-arm's order (ears.home.seat_home: $EARS_HOME, the
+  seat's home in tools, ~/.<seat>, the old shared ~/.ears while real, voice's own
+  seats/<seat>), read-only; tools here cannot be asked (a fake `session` with no `path`
+  verb, no sessiontools), so tools' old folders are read (rung c; tests/test_seat_home.py
+  drives tools answering);
 - with no heard.state and no `session` command, turns and mouth lines still
   stream (the rows are written through the kit's own ears.heard writer);
 - VOICEMODE_BASE_DIR moves the log dir (ears.heard.log_dir(), imported);
@@ -21,7 +24,7 @@ import pytest
 
 from ears import heard
 from talk import server, token_store
-from tests import _scanlist
+from tests import _scanlist, fake_tools
 
 TALK_SRC = Path(server.__file__).parent
 
@@ -34,6 +37,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("VOICEMODE_BASE_DIR", str(vm))
     monkeypatch.delenv("EARS_HOME", raising=False)
+    fake_tools.no_tools(tmp_path, monkeypatch)
     server.configure()
     yield home, vm
     server.configure()
@@ -49,12 +53,17 @@ def state_file(d, offsets=None):
 
 def test_seat_home_order(env, monkeypatch, tmp_path):
     home, _ = env
-    assert server.seat_home("zed") == str(home / ".ears")          # nothing: the shared home
-    assert not (home / ".ears").exists()                          # ...and it made nothing
+    fresh = home / ".sessionkit/voice/state/seats/zed"
+    assert server.seat_home("zed") == str(fresh)                 # nothing: voice's own seats/
+    assert not (home / ".ears").exists() and not fresh.exists()  # ...and it made nothing
+    (home / ".ears").mkdir()
+    assert server.seat_home("zed") == str(home / ".ears")         # the old shared home, while real
     (home / ".zed").mkdir()
     assert server.seat_home("zed") == str(home / ".zed")          # ~/.<seat>
     (home / ".session/agents/home/zed").mkdir(parents=True)
-    assert server.seat_home("zed") == str(home / ".session/agents/home/zed")   # the fleet home first
+    assert server.seat_home("zed") == str(home / ".session/agents/home/zed")   # tools' (old) home
+    (home / ".session/agent/home/zed").mkdir(parents=True)
+    assert server.seat_home("zed") == str(home / ".session/agent/home/zed")    # tools' own order
     monkeypatch.setenv("EARS_HOME", str(tmp_path / "eh"))
     assert server.seat_home("zed") == str(tmp_path / "eh")        # EARS_HOME over everything
 
@@ -170,7 +179,8 @@ def test_turns_and_mouth_lines_stream_with_no_seats(env, live):
     assert not (home / ".ears").exists() and not (home / ".session").exists()
     sse = SSE(live)
     try:
-        assert sse.next() == ("config", {"person": None, "settings_url": None, "call_url": None})
+        assert sse.next() == ("config", {"person": None, "settings_url": None, "call_url": None,
+                                          "show_debug": False})   # no talk.json: Debug hidden
         name, rows = sse.next()
         assert name == "backfill"
         assert [r["kind"] for r in rows] == ["turn", "saying", "said"]
@@ -236,7 +246,7 @@ def test_settings_reach_the_page(env, live):
     sse = SSE(live)
     try:
         assert sse.next() == ("config", {"person": "Zed", "settings_url": "/settings/",
-                                         "call_url": "https://host1.t.ts.net:8775/"})
+                                         "call_url": "https://host1.t.ts.net:8775/", "show_debug": False})
     finally:
         sse.close()
 
@@ -326,14 +336,14 @@ TALK_SHIPPED = [p for p in sorted(TALK_SRC.iterdir()) if p.suffix in (".py", ".h
 # own. An agent's own dot-folder (~/.<seat>, as a placeholder, is fine) is a fixed roster.
 HOME_DOTS = {".ears", ".session", ".sessionmail"}
 # The text a src/talk file's help carries legitimately that the private scan list matches,
-# for that file alone (measured): the tailnet proxy it documents, and the session fleet's seat
-# home. A file's guard leaves out exactly the rows its samples match (by WHAT THEY MATCH,
+# for that file alone (measured): the tailnet proxy it documents. (The session fleet's seat
+# home was one; talk asks tools for it now, EARS-492, and names no tools folder.) A file's guard leaves out exactly the rows its samples match (by WHAT THEY MATCH,
 # never by row name, so a list that renames its rows leaves the same rows out). Every other
 # row guards it, and a file not named here keeps every row.
 TALK_LEGIT = {
     "cli.py": ("tailscale serve", "machine.example.ts.net"),
     "index.html": ("tailscale serve",),
-    "server.py": ("tailscale serve", "~/.session/agents/home/<seat>"),
+    "server.py": ("tailscale serve",),
 }
 
 

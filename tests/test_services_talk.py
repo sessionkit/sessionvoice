@@ -292,3 +292,157 @@ def test_status_reports_it(tk, capsys):
     services.status()
     out = capsys.readouterr().out
     assert re.search(r"^talk\s+running, pid 808$", out, re.M), out
+
+
+# ---- --allow-host: the Host a phone behind tailscale serve sends ----------------------------------
+# Behind `tailscale serve` the browser's Host is the tailnet name, and talk answers only
+# 127.0.0.1:8780 and localhost:8780 unless TALK_ALLOW_HOSTS names it. Install wrote no way to set
+# it, so it was added to the plist by hand, and the next install would have dropped it.
+
+TAILNET = "machine.example.ts.net"
+HOSTS_NONE = ("talk   answers Host 127.0.0.1:8780, localhost:8780 only. Behind `tailscale serve` a "
+              "phone gets a 403 until install is run with --allow-host NAME (the tailnet name)")
+
+
+def _env():
+    return plistlib.loads((services.AGENTS / f"{LABEL}.plist").read_bytes())["EnvironmentVariables"]
+
+
+def test_allow_host_is_written_to_the_job(tk, capsys):
+    assert services.main(["install", "--only", "talk", "--allow-host", TAILNET]) == 0
+    out = capsys.readouterr().out
+    assert _env()["TALK_ALLOW_HOSTS"] == TAILNET
+    assert (f"talk   answers Host 127.0.0.1:8780, localhost:8780, {TAILNET} (TALK_ALLOW_HOSTS)\n"
+            in out)
+    assert out.index("talk   answers Host") < out.index("talk   loaded")   # said before it loads
+
+
+def test_allow_host_repeats_and_is_checked_as_talk_serve_checks_it(tk):
+    assert services.main(["install", "--only", "talk", "--allow-host", "B.example.ts.net.",
+                          "--allow-host", "a.example:8443"]) == 0
+    assert _env()["TALK_ALLOW_HOSTS"] == "a.example:8443,b.example.ts.net"   # lower, sorted
+    from talk.server import check_allow_hosts
+    assert check_allow_hosts(_env()["TALK_ALLOW_HOSTS"]) == {"a.example:8443", "b.example.ts.net"}
+
+
+@pytest.mark.parametrize("bad, why", [("https://" + TAILNET, "a scheme"), (TAILNET + "/talk", "a path"),
+                                      ("*.ts.net", "no wildcards"), (TAILNET + ":0", "a bad port")])
+def test_a_bad_allow_host_is_refused_and_nothing_written(tk, capsys, tmp_path, bad, why):
+    before = _tree(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        services.main(["install", "--only", "talk", "--allow-host", bad])
+    assert e.value.code == 2
+    err = capsys.readouterr().err
+    assert f"--allow-host: allowed host {bad!r} refused: {why}" in err
+    assert _tree(tmp_path) == before and _changing(tk) == []
+
+
+@pytest.mark.parametrize("argv", [["install", "--allow-host", TAILNET],
+                                  ["install", "--only", "mouth", "--allow-host", TAILNET],
+                                  ["uninstall", "--only", "talk", "--allow-host", TAILNET]])
+def test_allow_host_without_a_talk_install_is_refused(tk, capsys, tmp_path, argv):
+    before = _tree(tmp_path)
+    with pytest.raises(SystemExit) as e:
+        services.main(argv)
+    assert e.value.code == 2
+    assert "--allow-host is talk's: install it with --only talk" in capsys.readouterr().err
+    assert _tree(tmp_path) == before and _changing(tk) == []
+
+
+def test_without_allow_host_install_says_how_a_phone_gets_in(tk, capsys):
+    assert services.main(["install", "--only", "talk"]) == 0
+    assert HOSTS_NONE + "\n" in capsys.readouterr().out
+    assert not any(k.startswith("TALK_") for k in _env())
+
+
+def test_a_rerun_keeps_the_talk_settings_of_our_plist(tk, capsys):
+    """An upgrade runs install again with no flags: the names, and a setting added to our plist
+    by hand (the template's TALK_SETTINGS_URL), stay."""
+    services.main(["install", "--only", "talk", "--allow-host", TAILNET])
+    path = services.AGENTS / f"{LABEL}.plist"
+    d = plistlib.loads(path.read_bytes())
+    d["EnvironmentVariables"]["TALK_SETTINGS_URL"] = f"https://{TAILNET}/settings/"
+    d["EnvironmentVariables"]["NOT_TALKS"] = "x"
+    path.write_bytes(plistlib.dumps(d))
+    capsys.readouterr()
+    assert services.main(["install", "--only", "talk"]) == 0
+    out = capsys.readouterr().out
+    env = _env()
+    assert env["TALK_ALLOW_HOSTS"] == TAILNET
+    assert env["TALK_SETTINGS_URL"] == f"https://{TAILNET}/settings/"
+    assert "NOT_TALKS" not in env                     # only talk's own settings are kept
+    assert ("; kept from the plist it replaces: TALK_ALLOW_HOSTS, TALK_SETTINGS_URL\n") in out
+
+
+def test_allow_host_replaces_the_names_and_keeps_the_rest(tk, capsys):
+    services.main(["install", "--only", "talk", "--allow-host", TAILNET])
+    path = services.AGENTS / f"{LABEL}.plist"
+    d = plistlib.loads(path.read_bytes())
+    d["EnvironmentVariables"]["TALK_PERSON"] = "Ivy"
+    path.write_bytes(plistlib.dumps(d))
+    capsys.readouterr()
+    assert services.main(["install", "--only", "talk", "--allow-host", "other.example.ts.net"]) == 0
+    out = capsys.readouterr().out
+    assert _env()["TALK_ALLOW_HOSTS"] == "other.example.ts.net"
+    assert _env()["TALK_PERSON"] == "Ivy"
+    assert out.count("kept from the plist it replaces: TALK_PERSON\n") == 1   # not the names
+
+
+def test_uninstall_then_install_starts_clean(tk, capsys):
+    services.main(["install", "--only", "talk", "--allow-host", TAILNET])
+    services.main(["uninstall", "--only", "talk"])
+    capsys.readouterr()
+    services.main(["install", "--only", "talk"])
+    assert not any(k.startswith("TALK_") for k in _env())
+    assert "kept from" not in capsys.readouterr().out
+
+
+def test_a_hand_plist_is_never_read_for_settings(tk):
+    """No MARKER: not ours, so nothing in it is carried into ours."""
+    services.AGENTS.mkdir(parents=True)
+    hand = _template()
+    hand["EnvironmentVariables"]["TALK_ALLOW_HOSTS"] = TAILNET
+    (services.AGENTS / f"{LABEL}.plist").write_bytes(plistlib.dumps(hand))
+    assert services.talk_settings(None) == ({}, [])
+
+
+def test_the_dry_run_shows_the_names_and_writes_nothing(tk, capsys, tmp_path):
+    before = _tree(tmp_path)
+    assert services.main(["install", "--only", "talk", "--allow-host", TAILNET, "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert f"<key>TALK_ALLOW_HOSTS</key>\n\t\t<string>{TAILNET}</string>" in out
+    assert f"localhost:8780, {TAILNET} (TALK_ALLOW_HOSTS)" in out
+    assert _tree(tmp_path) == before and _changing(tk) == []
+
+
+# ---- the closing lines say how a browser pairs ---------------------------------------------------
+
+def test_a_talk_install_ends_by_saying_how_to_pair(tk, capsys):
+    assert services.main(["install", "--only", "talk"]) == 0
+    out = capsys.readouterr().out
+    assert services.TALK_PAIR + "\n" in out
+    assert out.index("talk   loaded") < out.index(services.TALK_PAIR)
+    assert "`talk pair`" in services.TALK_PAIR and "`talk pair --url`" in services.TALK_PAIR
+    assert "reload a Talk tab that was already open" in services.TALK_PAIR
+
+
+def test_no_pair_line_for_a_dry_run_or_a_talk_that_did_not_load(tk, capsys, monkeypatch):
+    services.main(["install", "--only", "talk", "--dry-run"])
+    assert "pair   " not in capsys.readouterr().out
+    inner = services._launchctl
+
+    def launchctl(*a):
+        if a[0] == "bootstrap" and a[2].endswith(f"{LABEL}.plist"):
+            return services.subprocess.CompletedProcess(a, 5, "", "Bootstrap failed: 5: Input/output error\n")
+        return inner(*a)
+    monkeypatch.setattr(services, "_launchctl", launchctl)
+    assert services.main(["install", "--only", "talk"]) == 2
+    assert "pair   " not in capsys.readouterr().out
+
+
+def test_no_pair_line_when_a_hand_talk_is_left(tk, capsys):
+    services.AGENTS.mkdir(parents=True)
+    (services.AGENTS / f"{LABEL}.plist").write_bytes(plistlib.dumps(_template()))
+    services.main(["install", "--only", "talk"])
+    out = capsys.readouterr().out
+    assert "pair   " not in out and "talk   answers Host" not in out

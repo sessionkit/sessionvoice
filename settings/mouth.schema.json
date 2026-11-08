@@ -13,12 +13,14 @@
       "title": "Output",
       "description": "The device a line plays on when it names none (no --device, no mailed device, no $MOUTH_DEVICE). 'default' plays on macOS's default output, 'null' plays nothing; otherwise one output's exact name. Unset, such a line plays on the system default output.",
       "type": "string",
-      "default": "default"
+      "default": "default",
+      "x-widget": "audio-output"
     },
     "voice": {
       "title": "Voice",
       "description": "The voice for a line that names none.",
-      "type": "string"
+      "type": "string",
+      "x-widget": "voice-picker"
     },
     "tts": {
       "title": "Speech server",

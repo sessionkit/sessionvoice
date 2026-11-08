@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from ears import heard, services
+from ears import home as ears_home
 from test_services_install_checks import fence  # noqa: F401  (a fixture)
 from test_services_label_move import ours_plist, print_out
 
@@ -61,7 +62,11 @@ def sp(fence, monkeypatch):
     monkeypatch.setattr(services, "_speakers_sh", lambda argv: sh.append(argv) or subprocess.CompletedProcess(argv, 0, "", ""))
     monkeypatch.setattr(services, "speakers_missing_module", lambda py: None)
     monkeypatch.setattr(services, "speakers_model_cached", lambda py: True)
-    fence.update(listed=listed, procs=procs, sh=sh, speakers=fence["home"] / ".local/share/ears/speakers")
+    # the speakers home on a fresh HOME is the state item, in the kit; its venv stays outside
+    # (EARS-492 design.md D3, the speakers split)
+    fence.update(listed=listed, procs=procs, sh=sh,
+                 speakers=fence["home"] / ears_home.NEW / "speakers",
+                 venv=fence["home"] / ears_home.SPEAKERS_VENV)
     return fence
 
 
@@ -93,7 +98,7 @@ def _hand_plist(label, text="HAND"):
 def test_speakers_is_a_service_and_opt_in():
     assert "speakers" in services.ALL
     assert "speakers" not in services.DEFAULT                          # a bare install: never speakers
-    assert services.DEFAULT == ("speech", "mouth", "keeper", "mail")   # speech since EARS-291
+    assert services.DEFAULT == ("speech", "mouth", "keeper", "mail", "sounds")   # speech since EARS-291; sounds since the consent page
 
 
 def test_the_speakers_agent_is_the_template_job_under_our_label(sp):
@@ -106,7 +111,7 @@ def test_the_speakers_agent_is_the_template_job_under_our_label(sp):
     assert d["ThrottleInterval"] == 30 and d["RunAtLoad"] is True
     assert d["StandardOutPath"] == d["StandardErrorPath"] == str(services.LOGS / "ears-speakers.log")
     env = d["EnvironmentVariables"]
-    assert env["SPEAKER_PY"] == str(home / "venv/bin/python")
+    assert env["SPEAKER_PY"] == str(sp["venv"] / "bin/python")        # the venv stays put
     assert env["SPEAKER_HOME"] == str(home)
     assert env["SPEAKER_DEVICE"] == "follow" and env["HF_HUB_OFFLINE"] == "1"
     assert env["SPEAKER_AGENT_REFS"] == ""
@@ -174,8 +179,8 @@ def test_template_parity(sp, tmp_path):
 def test_home_and_the_heard_log_are_pinned_from_install(sp):
     env = services.spec("speakers")["EnvironmentVariables"]
     assert env["HOME"] == str(sp["home"])
-    # a fresh home: sessionvoice's own (EARS-294 T7)
-    assert env["SPEAKER_LOGDIR"] == str(sp["home"] / ".sessionvoice/logs/conversations") == str(heard.log_dir())
+    # a fresh home: the kit's state root (EARS-492; was ~/.sessionvoice, EARS-294 T7)
+    assert env["SPEAKER_LOGDIR"] == str(sp["home"] / ".sessionkit/voice/state/logs/conversations") == str(heard.log_dir())
     # a host whose heard log is in ~/.voicemode keeps it there: adopt in place, nothing moved
     old = sp["home"] / ".voicemode/logs/conversations"
     old.mkdir(parents=True)
@@ -184,11 +189,27 @@ def test_home_and_the_heard_log_are_pinned_from_install(sp):
     assert env["SPEAKER_LOGDIR"] == str(old) == str(heard.log_dir())
 
 
-def test_the_heard_log_follows_voicemode_base_dir(sp, monkeypatch, tmp_path):
-    monkeypatch.setenv("VOICEMODE_BASE_DIR", str(tmp_path / "vm"))
+@pytest.mark.parametrize("var", ["SESSIONVOICE_HOME", "VOICEMODE_BASE_DIR"])
+def test_the_heard_log_is_the_keepers_never_the_installers_root(sp, monkeypatch, tmp_path, var):
+    """EARS-492 do-003 REVERSES test_the_heard_log_follows_voicemode_base_dir (EARS-258
+    do-002), on purpose (design.md D8). The keeper's job carries no root override, so its heard
+    log is state_dir(environ={}): the speakers job's SPEAKER_LOGDIR is that folder too, whatever
+    the installer's shell sets. Following the variable put the side-car beside a heard log the
+    keeper never writes, so it labelled none of its lines."""
+    monkeypatch.setenv(var, str(tmp_path / "vm"))
     env = services.spec("speakers")["EnvironmentVariables"]
-    assert env["SPEAKER_LOGDIR"] == str(tmp_path / "vm/logs/conversations")
+    keepers = ears_home.state_dir(environ={}) / "logs" / "conversations"
+    assert env["SPEAKER_LOGDIR"] == str(keepers) == str(sp["home"] / ears_home.NEW / "logs/conversations")
+    assert str(tmp_path / "vm") not in env["SPEAKER_LOGDIR"]
+    assert env["SPEAKER_HOME"] == str(sp["speakers"])             # and the home: D3's rule
     assert env["HOME"] == str(sp["home"])
+    # an adopted old root is still adopted: only the override is left out
+    old = sp["home"] / ".voicemode/logs/conversations"
+    old.mkdir(parents=True)
+    (old / "heard.lock").write_text("")
+    env = services.spec("speakers")["EnvironmentVariables"]
+    assert env["SPEAKER_LOGDIR"] == str(old)
+    assert env["SPEAKER_HOME"] == str(sp["home"] / ".voicemode/speakers")
 
 
 # ---- SC2: a bare install has no speakers agent -------------------------------------------

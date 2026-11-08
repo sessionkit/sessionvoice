@@ -47,16 +47,24 @@ mode="${2:-talk}"
 names="${3:-}"
 [ -n "$names" ] || names="\\b(${seat})\\b"
 
-# The seat's home: EARS_HOME if set, else a session-fleet seat home if one
-# exists, else ~/.<seat>, else ~/.ears. A dry run changes nothing (it once made an
-# empty ~/.ears).
-if [ -n "${EARS_HOME:-}" ]; then
-  home="$EARS_HOME"; [ "$dry" = 1 ] || mkdir -p "$home"
-else
-  home="$HOME/.session/agents/home/$seat"
-  [ -d "$home" ] || home="$HOME/.$seat"
-  [ -d "$home" ] || { home="$HOME/.ears"; [ "$dry" = 1 ] || mkdir -p "$home"; }
+# The plugin root (symlinks resolved, as bin/ears-arm finds this script): its bin/
+# holds heard-first, and its src/ears/home.py names the seat's home.
+self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+root="$(cd "$(dirname "$self")/../../.." && pwd)"
+
+# The seat's home is ears.home.seat_home, the ONE place the
+# rule is written: EARS_HOME if set; else the seat's home in tools, ASKED of tools; else
+# ~/.<seat>; else the old shared home while it is real; else voice's own
+# seats/<seat>/ under its state root. Only the first and the last can be missing, so
+# the mkdir can make only $EARS_HOME or seats/<seat>/. A dry run makes nothing (it once
+# made an empty shared home). python3 -B: no bytecode cache, which the system python3
+# would write under $HOME. The seat-home skew (a plugin and a package of two versions)
+# is open question 7's, not settled here.
+if [ ! -f "$root/src/ears/home.py" ]; then
+  echo "ears-arm: no $root/src/ears/home.py: it names the seat's home" >&2; exit 2
 fi
+home="$(python3 -B "$root/src/ears/home.py" seat-home "$seat")" || exit 2
+[ "$dry" = 1 ] || mkdir -p "$home"
 state="$home/heard.state"
 
 case "$mode" in
@@ -114,8 +122,6 @@ esac
 # root's bin/ beside this script (symlinks resolved, as bin/ears-arm finds this
 # script), then $CLAUDE_PLUGIN_ROOT/bin, then PATH. The path stays .../bin/heard-first,
 # which is what ears-count looks for in ps.
-self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
-root="$(cd "$(dirname "$self")/../../.." && pwd)"
 hf=""
 for c in "$root/bin/heard-first" ${CLAUDE_PLUGIN_ROOT:+"$CLAUDE_PLUGIN_ROOT/bin/heard-first"}; do
   if [ -f "$c" ] && [ -x "$c" ]; then hf="$c"; break; fi

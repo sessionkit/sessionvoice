@@ -121,7 +121,8 @@ def test_the_roots_are_the_players_env(tmp_path, monkeypatch):
     monkeypatch.setenv("VOICEMODE_BASE_DIR", str(tmp_path / "b"))
     monkeypatch.setenv("HOME", str(tmp_path / "h"))
     assert box.heard_root() == tmp_path / "b" / "logs" / "conversations"
-    assert box.mail_log_root() == tmp_path / "h" / ".mail" / "agents" / "mouth"
+    # the mouth's own box, as sessionmail names it: a fresh root's boxes folder is stores/
+    assert box.mail_log_root() == tmp_path / "h" / ".mail" / "stores" / "mouth"
 
 
 # -- SC1: the warning ---------------------------------------------------------------

@@ -25,13 +25,15 @@ from typing import Optional
 from ears import envnames, operator_config
 
 from .box import _admits
-from .box import allowed, box_dir, speakable  # noqa: F401 - their old home
+from .box import allowed, box_dir, live_box, speakable  # noqa: F401 - their old home
 from .paths import mouth_dir
 
 
 def mail_box() -> Path:
+    """The box the player watches: ``$MOUTH_MAILBOX``, else the mouth's own box as
+    sessionmail names it (``box.live_box``)."""
     env = envnames.get("MOUTH_MAILBOX")
-    return Path(env).expanduser() if env else Path.home() / ".mail" / "agents" / "mouth"
+    return Path(env).expanduser() if env else live_box()
 
 
 def watch(box: Optional[Path] = None, retry_s: float = 1.0, once: bool = False) -> int:

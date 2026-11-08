@@ -44,11 +44,19 @@ def loose(bx: Path) -> None:
 
 # --- the helper ----------------------------------------------------------------------------
 
-def test_a_fresh_box_is_0700_and_its_parents_are_made(tmp_path):
-    bx = tmp_path / "a" / "b" / "box"
+def test_a_fresh_box_is_0700(tmp_path):
+    bx = tmp_path / "box"
     assert maildir.private(bx) == []                          # 0700 & ~022 is 0700: no chmod
     assert modes(bx) == private(bx)
-    assert (tmp_path / "a" / "b").is_dir()
+
+
+def test_the_parents_are_never_made(tmp_path):
+    """The box's parents are sessionmail's (SM 0.3.3): a missing one is an error, never
+    a folder of ours under the mail root."""
+    bx = tmp_path / "a" / "b" / "box"
+    with pytest.raises(FileNotFoundError):
+        maildir.private(bx)
+    assert not (tmp_path / "a").exists()
 
 
 @pytest.mark.parametrize("mask", [0o000, 0o002, 0o022, 0o077, 0o277])

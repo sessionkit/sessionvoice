@@ -515,6 +515,133 @@ def test_t6_a_gate_that_cannot_answer_leaves_the_stamped_duck_in_charge(env):
     assert dk.by == "builtin"
 
 
+# -- EARS-376: the state before the row that announces it ------------------------
+
+def a_bed(env, **kw) -> "bed.Bed":
+    """A real Bed on its Beds, listed in ``bed.json`` as ``Beds.start`` lists it, with
+    no thread: the first ``bed.json`` a bed has, before its Ducker exists."""
+    play(env, seconds=0.5, **kw)
+    item = mouth.box.public(mouth.box.Queue(env.d).lines()[0])
+    beds = bed.Beds(env.d)
+    b = bed.Bed(beds, item, None, bed.device_key(item["device"]))
+    with beds._lock:
+        beds._live[b.key] = b
+        beds._write()
+    assert bed.read(env.d)[0]["duck_by"] is None       # no Ducker yet: duck_by None
+    return b
+
+
+def at_each_row(monkeypatch, env) -> list:
+    """``(event, ducked, duck_by)`` as ``bed.json`` holds them the moment each row is
+    written: a reader that saw the row and then read ``bed.json``, at its earliest."""
+    seen: list = []
+    real = heard.event
+
+    def row(name, **kw):
+        e = bed.read(env.d)[0]
+        seen.append((name, e["ducked"], e["duck_by"]))
+        return real(name, **kw)
+    monkeypatch.setattr(heard, "event", row)
+    return seen
+
+
+def test_bed_json_holds_the_dip_before_its_row_lands(env, monkeypatch):
+    """A reader that waits for a ``duck`` or ``unduck`` row and then reads ``bed.json``
+    sees the state that row announces. Bed.run's steps, by hand: ``bed.json`` is
+    written before the Ducker exists (``duck_by`` None), then the first weigh dips at
+    once, because the line's first frame came first. With the row written ahead of
+    ``bed.json``, test_t5's first read got ``duck_by`` None on a host with ffmpeg
+    (EARS-376). No ffmpeg, no thread."""
+    from mouth import duckswitch
+    b = a_bed(env)
+    b.ducker = bed.Ducker(b, FakeMix(), 20, 0.3, None, "null", gate=b._gate)
+    seen = at_each_row(monkeypatch, env)
+    b.beds.saying = True                               # the line is already on
+    b.ducker.tick(barge=False)                         # the bed's first weigh dips
+    duckswitch.set(env.d, on=False, for_s=600)         # mouth duck off, mid-dip
+    b.ducker.tick(barge=False)
+    assert seen == [("duck", True, "builtin"), ("unduck", False, "override")]
+    assert [e["by"] for e in events(env, "duck") + events(env, "unduck")] == ["builtin", "override"]
+
+
+def test_bed_json_names_the_gate_before_a_skipped_row_lands(env, monkeypatch):
+    """The ``duck-skipped`` row too: its ``by`` is in ``bed.json`` before the row is."""
+    from mouth import duckswitch
+    duckswitch.set(env.d, on=False, for_s=600)         # mouth duck off before the bed's first weigh
+    b = a_bed(env)
+    b.ducker = bed.Ducker(b, FakeMix(), 20, 0.3, None, "null", gate=b._gate)
+    seen = at_each_row(monkeypatch, env)
+    b.beds.saying = True
+    b.ducker.tick(barge=False)
+    assert seen == [("duck-skipped", False, "override")]
+    assert bed.read(env.d)[0]["duck_by"] == "override"
+
+
+class ToneSound:
+    """Stands in for ``backends.FileSound`` (ffmpeg): ``seconds`` of a quiet tone in
+    50 ms blocks, so a bed plays through the real player on a host with no ffmpeg."""
+
+    name, sample_rate, seconds = "file", RATE, 3.0
+
+    def __init__(self, path, start=None, end=None) -> None:
+        pass
+
+    def stream(self, text, voice, speed):
+        step = int(RATE * 0.05)
+        for _ in range(int(self.seconds / 0.05)):
+            yield np.full(step, 0.1, dtype=np.float32)
+
+
+def test_a_slow_duck_row_still_finds_its_dip_in_bed_json(env, monkeypatch):
+    """The window, widened: every ``duck`` row is held 0.3 s after it is written, the
+    gap the old order left between the row and ``bed.json``'s rewrite. A reader that
+    waits for the row, as test_t5 does, reads the dip, never ``duck_by`` None. The
+    real player, bed thread and mixer; ``ToneSound`` for ffmpeg (EARS-376)."""
+    from mouth import backends
+    monkeypatch.setattr(backends, "FileSound", ToneSound)
+    real = heard.event
+
+    def slow(name, **kw):
+        rec = real(name, **kw)
+        if name == "duck":
+            time.sleep(0.3)                            # the row is out; what bed.json says is not yet
+        return rec
+    monkeypatch.setattr(heard, "event", slow)
+    settings(env, music_duck_restore_s=0.3)
+    f = play(env, seconds=3.0)
+    line = say(env, "word " * 6)
+    th = run(env, idle=0.5)
+    assert wait_for(lambda: events(env, "duck"), 3.0)
+    first = bed.read(env.d)[0]
+    assert (first["utt"], first["ducked"], first["duck_by"]) == (f["utt"], True, "builtin")
+    th.join(15)
+    assert not th.is_alive()
+    said = kind(env, "said")
+    assert said[f["utt"]]["reason"] == said[line["utt"]]["reason"] == "done"
+    assert said[f["utt"]]["ducks"] >= 1
+
+
+def test_bed_json_lists_the_bed_before_its_saying_row_lands(env, monkeypatch):
+    """Bed.run writes ``bed.json`` (its ``started_t``) before the bed's ``saying``
+    row, so ``mouth status`` read on that row shows the music playing, with a
+    ``played_s``. The real player and bed thread; ``ToneSound`` for ffmpeg."""
+    from mouth import backends
+    monkeypatch.setattr(backends, "FileSound", ToneSound)
+    monkeypatch.setattr(ToneSound, "seconds", 0.5)
+    seen: list = []
+    real = heard.saying
+
+    def saying(text, **kw):
+        if kw.get("lane") == "file":
+            seen.append([(e["utt"], bool(e["started_t"])) for e in bed.read(env.d)])
+        return real(text, **kw)
+    monkeypatch.setattr(heard, "saying", saying)
+    f = play(env, seconds=0.5)
+    run(env).join(8)
+    assert seen == [[(f["utt"], True)]]
+    assert kind(env, "said")[f["utt"]]["reason"] == "done"
+
+
 @pytest.mark.parametrize("flag", [True, False])
 def test_t6_a_gate_that_cannot_answer_names_a_per_call_flag_argument(env, flag):
     """The fallback speaks decide()'s words: a ``--duck``/``--no-duck`` item is

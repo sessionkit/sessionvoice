@@ -27,7 +27,10 @@ def fence(tmp_path):
     py.chmod(0o755)
     env = {k: v for k, v in os.environ.items()
            if k not in (*envnames.group("EARS_SILERO_MODEL"), "EARS_SILERO_ONNX")}
+    # the run folder by its own variable: the stub EARS_PY cannot answer `-m ears.home state-dir
+    # call-tap` (EARS-492 do-003; tests/test_state_items.py runs the real one)
     env.update(HOME=str(home), XDG_STATE_HOME=str(tmp_path / "state"), EARS_PY=str(py),
+               EARS_CALL_TAP_RUN=str(tmp_path / "state" / "ears" / "call-tap"),
                PATH=f"{stubs}:{env.get('PATH', '/usr/bin:/bin')}")
 
     def run(*args, **extra):

@@ -15,10 +15,21 @@ writer actually writes.
 
 ## Where it is
 
-    ${XDG_STATE_HOME:-$HOME/.local/state}/audio/devices.json
+    <state root>/audio-devices.json
 
-`AUDIO_DEVICES_FILE` (a full path) overrides it. It is state other packages read,
-so it lives under the subject (`audio/`), not under its writer.
+On a new host that is `~/.sessionkit/voice/state/audio-devices.json`, under the state root
+of its writer, sessionvoice ([configuration.md](configuration.md#the-state-root)).
+`AUDIO_DEVICES_FILE` (a full path) overrides it. A host that already has the file at its old
+path, `${XDG_STATE_HOME:-$HOME/.local/state}/audio/devices.json`, keeps it there while it is
+a real file.
+
+This reverses the rule this page gave before 0.3.3: that the file is state other packages
+read, so it lives under the subject (`audio/`), not under its writer. A fresh install now
+makes nothing outside `~/.sessionkit`, so the file is one of voice's state items, and a
+reader ASKS voice where it is instead of building the path:
+
+    ears home state-dir audio-devices          # the path, one line
+    ears home state-dir audio-devices --json   # {"path": ..., "source": ...}
 
 ## Who writes it
 
@@ -115,7 +126,8 @@ fresh. Closing that needs a spawn (`ps`) or a heartbeat.
   the writer with `--json` and honours `AUDIO_DEVICES_FILE`.
 - Its input path (`inputs()`, `default_input()`) still reads the legacy file below.
 - Other readers (`settings` `apply.py`/`web.py`, `audio-state`, `keeper/speak`) have not
-  been cut over: each is a separate change.
+  been cut over: each is a separate change, and each asks
+  `ears home state-dir audio-devices` for the path when it is.
 
 ## Writing it: what any writer does
 

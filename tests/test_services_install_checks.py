@@ -21,19 +21,18 @@ import pytest
 from ears import operator_config, services, wake
 from ears.home import SETTINGS, log_dir
 from test_services_label_move import OURS_ENV, ours_plist, print_out
-from tests import setup_fence
+from tests import mail_fence, setup_fence
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
-def fence(monkeypatch, tmp_path):
+def fence(monkeypatch, tmp_path, fake_message_on_path):
     home = tmp_path / "home"
     (home / ".cache/ears").mkdir(parents=True)
     (home / ".cache/ears/silero_vad.onnx").write_bytes(b"onnx")      # present unless a test removes it
     message = tmp_path / "message"; message.write_text("#!/bin/sh\n"); message.chmod(0o755)
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("MAIL_ROOT", str(home / ".mail"))
     monkeypatch.setenv("EARS_WAKE", str(home / SETTINGS / "wake.json"))
     monkeypatch.setenv("EARS_CONF", str(home / SETTINGS / "ears.json"))
     # sessionvoice's home (seed_stt's fallback record) by HOME, never a root this shell names
@@ -135,7 +134,8 @@ def test_the_mail_agent_runs_the_device_mailer_as_the_hand_template_does(fence):
     flags = dict(zip(a[2::2], a[3::2]))
     assert flags["--to"] == "device" and flags["--sender"] == "heard"
     assert flags["--rules"] == str(wake.target())                  # the file `ears wake add` writes
-    assert flags["--state"] == str(fence["home"] / ".cache/ears/ears-mail.state.json")
+    # the state item ears-mail-state (EARS-492 do-003): in the kit on a fresh HOME
+    assert flags["--state"] == str(fence["home"] / ".sessionkit/voice/state/ears-mail.state.json")
     assert flags["--fire-log"] == str(services.LOGS / "ears-mail.fire.jsonl")
     # an again verdict runs `mouth again` on the agents' python (EARS-22 S5), the python
     # that runs `-m mouth mail`, given whole so a path with a space survives the split
@@ -276,7 +276,9 @@ def test_install_writes_and_loads_all_three(fence, capsys):
         assert _plist(fence, n).is_file()
         assert ("bootstrap", f"gui/{os.getuid()}", str(_plist(fence, n))) in fence["calls"]["launchctl"]
     assert plistlib.loads(_plist(fence, "mail").read_bytes())["Label"] == "dev.sessionkit.voice.ears-mail"
-    assert (fence["home"] / ".cache/ears").is_dir()               # the mailer's --state dir
+    # the mailer's --state dir: the state item's folder, the root on a fresh HOME (EARS-492)
+    assert (fence["home"] / ".sessionkit/voice/state").is_dir()
+    assert services.mail_state().parent == fence["home"] / ".sessionkit/voice/state"
     assert "WAKES and answers" in out
 
 
@@ -498,7 +500,7 @@ def test_mta_host_keeps_the_postfix_checks_and_the_store_dir_box(fence, monkeypa
     assert calls == [["--box", "heard", "--dry-run"]]                  # no box made by setup here
     assert any(l.startswith("sendmail the MTA at /usr/sbin/sendmail") for l in out)
     assert any(l.startswith("postfix present") for l in out)
-    assert any(".tm-store" in l for l in out)                          # the fleet's nested box
+    assert any("store box" in l for l in out)                          # the fleet's nested box
     assert not any(f in l for l in out for f in FALSE)
 
 
@@ -645,7 +647,9 @@ def test_the_real_message_setup_call_runs_a_stub_in_the_services_env(fence, monk
     assert (d / "argv.log").read_text().splitlines() == ["setup --box heard --dry-run", "setup --box heard"]
     env = dict(l.split("=", 1) for l in (d / "env.log").read_text().splitlines() if "=" in l)
     assert "SESSIONMAIL_SENDMAIL" not in env and env["HOME"] == str(fence["home"])
-    assert env["PATH"] == services._service_path()
+    # launchd's PATH, as the code built it; the mail fence (EARS-506) puts its refusing bin
+    # first where a real notmuch or sendmail sits on it, and that is all it adds
+    assert mail_fence.unfenced(env["PATH"]) == services._service_path()
     assert any(l.startswith("sendmail the mail drop") for l in out)
     assert "heard  box made /H/.mail/agents/heard (by `message setup --box heard`)" in out
     assert _live_mail() == before
@@ -673,6 +677,63 @@ def test_drop_host_with_a_nested_heard_box_makes_no_second_one(fence, monkeypatc
     assert calls == [["--box", "heard", "--dry-run"]]
     assert f"heard  box present: {store / 'heard'}" in out
     assert not any(".tm-store" in l for l in out)
+
+
+# --- EARS-502: install and the mouth's default agree, by one rule (ears.heardbox) ---------
+
+def _mouth_default(monkeypatch):
+    """The box the mouth reads with $MOUTH_HEARD_BOX unset (under either name)."""
+    from mouth import reply
+    from tests import env_fence
+    env_fence.delenv(monkeypatch, "MOUTH_HEARD_BOX")
+    return reply.heard_boxes()
+
+
+def test_drop_host_the_mouth_reads_the_flat_box_setup_made(fence, monkeypatch):
+    """A fresh mail-drop host: install runs `message setup --box heard`, which makes
+    <agents>/heard (sessionmail's box step: the agents root / the name). The mouth's
+    default is that box."""
+    flat = fence["home"] / ".mail/agents/heard"
+    plan = PLAN.format(root="DONE     /H", heard=f"TODO     make {flat}/{{cur,new,tmp}} (0700)",
+                       carrier=DROP)
+
+    def fake(argv, runs=None):
+        if "--dry-run" in argv:
+            return 4, plan + "dry run: nothing applied (4 step(s) TODO)\n", ""
+        for sub in ("cur", "new", "tmp"):
+            (flat / sub).mkdir(parents=True, exist_ok=True)
+        return 0, plan + f"applying:\n  box:heard        made {flat}\n", ""
+    monkeypatch.setattr(services, "_message_setup", fake)
+    assert _mouth_default(monkeypatch) == []                   # before install: none
+    out = services.mail_checks()
+    assert f"heard  box made {flat} (by `message setup --box heard`)" in out
+    assert _mouth_default(monkeypatch) == [flat]
+
+
+def test_drop_host_with_a_nested_box_the_mouth_reads_it_too(fence, monkeypatch):
+    _setup(monkeypatch)
+    store = fence["home"] / ".mail/agents/store"
+    (store / "heard/new").mkdir(parents=True); (store / ".tm-store").write_text("")
+    out = services.mail_checks()
+    assert f"heard  box present: {store / 'heard'}" in out
+    assert _mouth_default(monkeypatch) == [store / "heard"]
+
+
+def test_mta_host_the_mouth_reads_the_nested_box_install_made(fence, monkeypatch):
+    store = _store(fence["home"])
+    assert _mouth_default(monkeypatch) == []
+    out = services.mail_checks()
+    assert f"heard  box made: {store / 'heard'}" in out
+    assert _mouth_default(monkeypatch) == [store / "heard"]
+
+
+def test_mta_host_two_stores_the_mouth_reads_the_box_install_says_present(fence, monkeypatch):
+    a, b = _store(fence["home"], "a"), _store(fence["home"], "b")
+    for d in (b, a):
+        (d / "heard/new").mkdir(parents=True)
+    out = services.mail_checks(dry_run=True)
+    assert f"heard  box present: {a / 'heard'}" in out
+    assert _mouth_default(monkeypatch) == [a / "heard"]
 
 
 def test_the_mail_check_configures_nothing(fence, monkeypatch):
@@ -743,23 +804,50 @@ def test_vmailbox_gen_absent_or_failing_is_said(fence, monkeypatch, ran, said):
     assert any(said in l for l in services.mail_checks())
 
 
+def _host_generator(home) -> str:
+    """The host's copy of vmailbox-gen, where sessionmail keeps it (the fake `message`
+    answers `path --generator` with it once it exists)."""
+    gen = home / ".mail/.postfix/vmailbox-gen"
+    gen.parent.mkdir(parents=True, exist_ok=True)
+    gen.write_text("#!/bin/sh\n")
+    return str(gen)
+
+
+def _no_generator_on_path(monkeypatch):
+    """vmailbox-gen off the PATH, and nothing else: `message` is still found there."""
+    import shutil
+    real = shutil.which
+    monkeypatch.setattr("shutil.which", lambda name, *a, **k: None if name == "vmailbox-gen"
+                        else real(name, *a, **k))
+
+
 def test_off_path_vmailbox_gen_is_named_by_its_host_path(fence, monkeypatch):
     # sessionmail keeps vmailbox-gen OFF the PATH (SM-74); a host's copy is
-    # $MAIL_ROOT/.postfix/vmailbox-gen, so "run vmailbox-gen" names nothing runnable
+    # <mail root>/.postfix/vmailbox-gen, so "run vmailbox-gen" names nothing runnable.
+    # Its path is sessionmail's answer (`message path --generator`), never ours.
     _store(fence["home"])
-    monkeypatch.setattr("shutil.which", lambda name, *a, **k: None)
+    _no_generator_on_path(monkeypatch)
     monkeypatch.setattr(services, "_vmailbox_gen", lambda: None)
-    host_copy = str(fence["home"] / ".mail/.postfix/vmailbox-gen")
+    host_copy = _host_generator(fence["home"])
     assert any("not on PATH" in l and host_copy in l for l in services.mail_checks())
 
 
 def test_the_missing_box_line_names_the_runnable_generator(fence, monkeypatch):
-    monkeypatch.setattr("shutil.which", lambda name, *a, **k: None)
+    _no_generator_on_path(monkeypatch)
+    host_copy = _host_generator(fence["home"])
     miss = next(l for l in services.mail_checks() if "heard box MISSING" in l)
-    assert miss.endswith("&& " + str(fence["home"] / ".mail/.postfix/vmailbox-gen"))
+    assert miss.endswith("&& " + host_copy)
     _store(fence["home"])
-    assert any(str(fence["home"] / ".mail/.postfix/vmailbox-gen") in l
-               for l in services.mail_checks(dry_run=True) if "would make" in l)
+    assert any(host_copy in l for l in services.mail_checks(dry_run=True) if "would make" in l)
+
+
+def test_no_generator_anywhere_says_how_to_ask(fence, monkeypatch):
+    """With no vmailbox-gen on this host (sessionmail says so, exit 2), the hint names the
+    verb that will find it once it is there, and no path of ours."""
+    _no_generator_on_path(monkeypatch)
+    miss = next(l for l in services.mail_checks() if "heard box MISSING" in l)
+    assert miss.endswith("&& vmailbox-gen (this host's: `message path --generator`)")
+    assert ".mail" not in miss.split("&&")[-1]
 
 
 @pytest.mark.parametrize("label", HANDS)
@@ -1073,7 +1161,7 @@ def test_main_passes_agent_and_notify(monkeypatch):
     monkeypatch.setattr(services, "install", lambda names, dry=False, **kw: got.update(kw, names=names) or 0)
     services.main(["install", "--agent", "dave", "--notify", "someone"])
     assert got == {"agent": "dave", "notify": "someone", "no_prefetch": False,
-                   "names": ["speech", "mouth", "keeper", "mail"]}
+                   "names": ["speech", "mouth", "keeper", "mail", "ears-sounds", "mouth-sounds"]}
 
 
 # ---- EARS-421: a bare install that would wake nobody is REFUSED -----------------------------------
@@ -1221,3 +1309,52 @@ def test_a_dry_run_with_no_agent_or_agent_exits_0(fence, monkeypatch, capsys):
     assert services.main(["install", "--only", "keeper,mail", "--dry-run", "--agent", "dave"]) == 0
     assert "REFUSED" not in capsys.readouterr().err
     _nothing_written(fence)
+
+
+# --- a fresh install hears nothing until the ears are turned on (the consent page's first
+# promise, "off until you turn it on": a standing design rule). The keeper reads a missing
+# listen as ON, so only the file install CREATES says off; an existing one is never touched.
+
+def test_a_fresh_install_writes_listen_off(fence, monkeypatch):
+    _real_probe(monkeypatch, {})
+    out = services.seed_stt()
+    conf = json.loads((fence["home"] / SETTINGS / "ears.json").read_text())
+    assert conf["listen"] is False
+    assert "listen off: a fresh install hears nothing" in out
+
+
+def test_an_existing_file_with_no_listen_is_left_hearing(fence, monkeypatch):
+    conf = fence["home"] / SETTINGS / "ears.json"
+    conf.parent.mkdir(parents=True); conf.write_text(json.dumps({"input": "default"}))
+    _real_probe(monkeypatch, {})
+    out = services.seed_stt()
+    assert "listen" not in json.loads(conf.read_text())   # the keeper reads it as on, as before
+    assert "listen off" not in out
+
+
+@pytest.mark.parametrize("listen", [True, False])
+def test_an_existing_listen_is_kept(fence, monkeypatch, listen):
+    conf = fence["home"] / SETTINGS / "ears.json"
+    conf.parent.mkdir(parents=True); conf.write_text(json.dumps({"listen": listen}))
+    _real_probe(monkeypatch, {})
+    services.seed_stt()
+    assert json.loads(conf.read_text())["listen"] is listen
+
+
+def test_a_fresh_dry_run_says_off_and_writes_nothing(fence, monkeypatch):
+    _real_probe(monkeypatch, {})
+    out = services.seed_stt(dry_run=True)
+    assert "listen would be off" in out
+    assert not (fence["home"] / SETTINGS / "ears.json").exists()
+
+
+def test_the_keeper_reads_the_fresh_file_as_off(fence, monkeypatch):
+    """The keeper's own reader (ears-keeper.sh conf(), run as its python one-liner) on the file
+    a fresh install wrote: listen 0. The promise is the keeper's behaviour, not the file."""
+    _real_probe(monkeypatch, {})
+    services.seed_stt()
+    conf = fence["home"] / SETTINGS / "ears.json"
+    keeper = (REPO / "keeper" / "ears-keeper.sh").read_text()
+    body = keeper.split("conf() {", 1)[1].split("python3 -c '", 1)[1].split("' \"$CONF\"", 1)[0]
+    r = subprocess.run([sys.executable, "-c", body, str(conf)], capture_output=True, text=True, check=False)
+    assert r.returncode == 0 and r.stdout.split()[0] == "0", r.stdout + r.stderr

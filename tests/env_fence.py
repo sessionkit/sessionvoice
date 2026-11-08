@@ -20,6 +20,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 #: write (``tests/mouth/test_mouth_split.py`` holds it absent).
 NO_SEPARATOR_HOME = "/nonexistent/sessionvoice-test/separator-home"
 
+#: Where every mail variable points (EARS-506): a path that never exists, beside it.
+MAIL_FENCE_ROOT = "/nonexistent/sessionvoice-test/mail"
+
 FENCE: dict = {
     # ...nor reaches a real audio device (EARS-320): the host's choice of output device
     # never reaches a test.
@@ -118,7 +121,35 @@ FENCE: dict = {
     # (ears.home.log_dir), so a runner that exports one would decide every test of the
     # default. The tests that move it set it themselves, in tmp.
     "EARS_LOG_DIR": None,
+    # ...nor the live mail index (EARS-506): a test run indexed the runner's notmuch database.
+    # notmuch's own variables and sessionmail's roots, home, notmuch and carrier point under
+    # MAIL_FENCE_ROOT, a path that never exists; the profile and the XDG homes notmuch reads
+    # a profile's config and database from are popped (they follow the session's HOME,
+    # in tmp). tests/mail_fence.py pops every other SESSIONMAIL_* the runner exports, and
+    # holds the rest of the fence: HOME, the refusing bin on PATH, the audit hook.
+    "NOTMUCH_CONFIG": f"{MAIL_FENCE_ROOT}/notmuch-config",
+    "NOTMUCH_DATABASE": f"{MAIL_FENCE_ROOT}/notmuch",
+    "NOTMUCH_PROFILE": None,
+    "XDG_CONFIG_HOME": None,
+    "XDG_DATA_HOME": None,
+    "MAIL_ROOT": f"{MAIL_FENCE_ROOT}/agents",
+    "SESSION_MAIL_ROOT": f"{MAIL_FENCE_ROOT}/agents",
+    "SESSIONMAIL_ROOT": f"{MAIL_FENCE_ROOT}/agents",
+    "SESSIONMAIL_HOME": f"{MAIL_FENCE_ROOT}/sessionmail",
+    "SESSIONMAIL_NOTMUCH": f"{MAIL_FENCE_ROOT}/bin/notmuch",
+    "SESSIONMAIL_NOTMUCH_PROFILE": None,
+    "SESSIONMAIL_INDEX": None,
+    "SESSIONMAIL_SENDMAIL": f"{MAIL_FENCE_ROOT}/bin/sendmail",
+    "SESSIONMAIL_VMAILBOX_GEN": f"{MAIL_FENCE_ROOT}/bin/vmailbox-gen",
+    "MAILDIR": None,
 }
+
+#: The mail fence's entries in :data:`FENCE` (EARS-506): tests/mail_fence.py holds every
+#: child's env to these, under every alias.
+MAIL_FENCED = ("NOTMUCH_CONFIG", "NOTMUCH_DATABASE", "NOTMUCH_PROFILE", "XDG_CONFIG_HOME",
+               "XDG_DATA_HOME", "MAIL_ROOT", "SESSION_MAIL_ROOT", "SESSIONMAIL_ROOT",
+               "SESSIONMAIL_HOME", "SESSIONMAIL_NOTMUCH", "SESSIONMAIL_NOTMUCH_PROFILE",
+               "SESSIONMAIL_INDEX", "SESSIONMAIL_SENDMAIL", "SESSIONMAIL_VMAILBOX_GEN", "MAILDIR")
 
 
 #: What ``tests/mouth/conftest.py`` fences for EVERY mouth test (its ``heard_box``

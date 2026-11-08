@@ -317,13 +317,22 @@ class Ducker:
 
     def _row(self, name: str, **kw) -> None:
         """An ``event`` row where the music's saying/said go (``source: mouth``,
-        so it never moves the floor). A row that cannot be written never stops it."""
+        so it never moves the floor). A row that cannot be written never stops it.
+
+        ``bed.json`` is written first: a reader that saw the row reads the state it
+        announces (``ducked``, ``duck_by``), never the one before it. With the row
+        first, a reader that waited for a dip could find ``duck_by`` None. Every
+        caller has set that state already, under :attr:`_lock`."""
         from ears import heard
 
         from . import maillog
         from . import player as _player
 
         item = self.bed.item
+        try:
+            self.bed.beds._write()
+        except OSError:
+            pass   # bed.json is what mouth status shows; the row still goes out
         try:
             rec = heard.event(name, utt=self.bed.utt, device=self.device, source="mouth",
                               directory=_player._log_dir(item), session=item.get("session"),
@@ -551,13 +560,14 @@ class Bed:
                     self._poll()
                     if not started:
                         self.started_t = time.time()
+                        # bed.json first: a reader of the saying row finds the bed playing
+                        self.beds._write()
                         _player._duck_on(item, self.d)   # its own --duck/--no-duck beats the override
                         _player._saying(item, text, **_player._common(item), device=name,
                                         speed=item.get("speed"), gen_s=dec.gen_s,
                                         pan_ignored=getattr(out, "pan_ignored", None),
                                         lane="file", duck=item.get("duck"),
                                         leapfrog=self.leapfrog or None)
-                        self.beds._write()
                         started = True
                         # a line already playing ducks it at once (unless its duck is off)
                         self.ducker = Ducker(self, out.mixer, _duck_level(duck),

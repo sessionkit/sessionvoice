@@ -8,16 +8,17 @@ description: >-
   name in the room, keep a listener armed across turns, or know which wake
   rules to drop in a shop, on a call, or while the user thinks aloud; and to
   speak one line at a time on the user's device.
-tokens: 134/3415/7574  # seed/body/extras - run `skill tokens` after edits
+tokens: 134/3509/8057  # seed/body/extras - run `skill tokens` after edits
 ---
 
 # ears
 
 > **The ears are the room.** One capture on this machine hears everything
 > the user says and writes it to the heard log,
-> `<home>/logs/conversations/heard_<date>.jsonl`, where `<home>` is
-> `$SESSIONVOICE_HOME`, else `~/.sessionvoice`, or `~/.voicemode` on a host
-> that already keeps the log there. On a fresh host that also runs VoiceMode's
+> `<root>/logs/conversations/heard_<date>.jsonl`, where `<root>` is voice's
+> state root (`ears home state-dir` prints it): `$SESSIONVOICE_HOME`, else
+> `~/.sessionkit/voice/state`, or the old `~/.sessionvoice` or `~/.voicemode` on
+> a host that already keeps the log there. On a fresh host that also runs VoiceMode's
 > `converse`, set `SESSIONVOICE_HOME=~/.voicemode` (or `VOICEMODE_BASE_DIR`), so
 > that both write one log. Every agent in the room reads the same log;
 > nobody owns it. Converse is someone dialling in; the ears are being there.
@@ -205,8 +206,10 @@ wakes.
 
 `ears-arm` keeps the waiter's place in `<your home>/heard.state`, so a
 re-arm catches up on what landed while it was down (no gaps). Your home is
-`$EARS_HOME` if set; else a session-fleet seat home
-(`~/.session/agents/home/<seat>`) if one exists; else `~/.<seat>`; else
+`$EARS_HOME` if set; else your seat's home in sessiontools, asked of tools
+(`session path agent`), if one exists; else `~/.<seat>`; else the old shared
+`~/.ears` while a host still has one; else voice's own
+`<state root>/seats/<seat>/`, which `ears-arm` makes. A new host makes no
 `~/.ears`.
 
 ## Not in this skill

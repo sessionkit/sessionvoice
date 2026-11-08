@@ -156,7 +156,7 @@ def test_ears_arm_through_the_shim_reaches_the_arm(fence):
     assert r.returncode == 99, r.stderr
     exe, argv = fence.ran.read_text().splitlines()
     assert exe == f"{fence.pbin}/heard-first"
-    assert f"--state {fence.home}/.ears/heard.state" in argv
+    assert f"--state {fence.home}/.sessionkit/voice/state/seats/{fence.seat}/heard.state" in argv
 
 
 # -- through a symlink elsewhere (readlink -f) -------------------------------------

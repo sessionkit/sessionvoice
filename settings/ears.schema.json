@@ -11,7 +11,7 @@
     },
     "listen": {
       "title": "Listening",
-      "description": "The room's ear on or off. Off stops the capture; nothing is heard until it is on again.",
+      "description": "The room's ear on or off. Off stops the capture; nothing is heard until it is on again. A fresh install writes it off, so nothing is heard until you turn it on; a file with no listen at all is read as on.",
       "type": "boolean",
       "default": true
     },

@@ -3,14 +3,8 @@
 #   ears-count <seat>     prints the count; lists pids and rules on stderr
 set -euo pipefail
 seat="${1:?usage: ears-count <seat>}"
-# The same home ears-arm uses: EARS_HOME, a session-fleet seat home, ~/.<seat>, ~/.ears.
-if [ -n "${EARS_HOME:-}" ]; then home="$EARS_HOME"; else
-  home="$HOME/.session/agents/home/$seat"
-  [ -d "$home" ] || home="$HOME/.$seat"
-  [ -d "$home" ] || home="$HOME/.ears"
-fi
-state="$home/heard.state"
-# Count by SEAT, not by state path: a waiter armed by hand (a boot letter's own
+# It names no home and reads no state file (its old home block set a path it
+# never read). Count by SEAT, not by state path: a waiter armed by hand (a boot letter's own
 # heard-first line, its own --state file) is still this seat's waiter. Every
 # arm carries the rule cut:<seat>, so that is the key (measured: a waiter
 # armed by hand on its own state file once counted 0 here).

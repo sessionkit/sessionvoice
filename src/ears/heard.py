@@ -8,8 +8,9 @@ playback ends (like a turn), so a partial of the user's between the two IS a
 barge-in, visible on one timeline.
 
 The log is ``<home>/logs/conversations/heard_YYYY-MM-DD.jsonl``, where ``<home>``
-is sessionvoice's home (``ears.home``: ``$SESSIONVOICE_HOME``, else ``~/.sessionvoice``
-or, on a host that already keeps it there, ``~/.voicemode``). It rolls at the
+is sessionvoice's state root (``ears.home.state_dir``: ``$SESSIONVOICE_HOME``, else
+``~/.sessionkit/voice/state``, or an old root on a host that already keeps it there,
+``~/.sessionvoice`` or ``~/.voicemode``). It rolls at the
 same local midnight as VoiceMode's ``exchanges_YYYY-MM-DD.jsonl``. Append-only: a line is never edited or
 removed; a correction is a new line.
 
@@ -68,6 +69,7 @@ EV_VAD = "vad"   # a voice onset or offset edge from capture: the mouth ducks on
 EV_MISSED_REPLY = "missed-reply"  # capture kept a window's audio: a line ended, no turn came
 
 LOCK_NAME = "heard.lock"
+_LOOKS = 5   # how many times append() resolves its folder again under the lock, at most
 RESERVED = frozenset({"ts", "seq", "kind", "v"})
 _TAIL_BYTES = 64 * 1024
 
@@ -77,17 +79,33 @@ _TAIL_BYTES = 64 * 1024
 # --------------------------------------------------------------------------
 
 def sessionvoice_home():
-    """sessionvoice's state root. A copy of ``ears.home.sessionvoice_home``, the rule:
-    $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it holds
-    the heard log, else ~/.sessionvoice. tests/test_home.py holds this copy to it."""
+    """sessionvoice's state root. A copy of ``ears.home.state_dir``, the rule:
+    $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice if it holds the heard log and
+    is not the new root, ~/.sessionkit/voice/state if it holds the heard log, ~/.voicemode
+    if it holds the heard log and is not the new root, else ~/.sessionkit/voice/state. Only
+    a real file (not a symlink) counts as the heard log. This file runs alone under any
+    python3 (the ride-along hook; sessionphone loads a copy of it), so it cannot load
+    home.py: tests/test_home.py holds this copy to it."""
     for name in ("SESSIONVOICE_HOME", "VOICEMODE_BASE_DIR"):
         if os.environ.get(name):
             return os.path.expanduser(os.path.expandvars(os.environ[name]))
-    for d in ("~/.sessionvoice", "~/.voicemode"):
-        c = os.path.expanduser(d + "/logs/conversations")
-        if os.path.exists(c + "/heard.lock") or glob.glob(glob.escape(c) + "/heard_*.jsonl"):
-            return os.path.expanduser(d)
-    return os.path.expanduser("~/.sessionvoice")
+    new = os.path.expanduser("~/.sessionkit/voice/state")
+
+    def held(d):    # POPULATED: a real heard.lock or heard_*.jsonl, never a symlink
+        c = os.path.join(d, "logs", "conversations")
+        return any(os.path.isfile(f) and not os.path.islink(f) for f in
+                   [os.path.join(c, "heard.lock")] + glob.glob(glob.escape(c) + "/heard_*.jsonl"))
+
+    def same(d):    # the old root IS the new one (a symlink to it): never handed out
+        try:
+            return os.path.samefile(d, new)
+        except OSError:
+            return False
+
+    for d in (os.path.expanduser("~/.sessionvoice"), new, os.path.expanduser("~/.voicemode")):
+        if held(d) and (d == new or not same(d)):
+            return d
+    return new
 
 
 def base_dir() -> Path:
@@ -97,6 +115,16 @@ def base_dir() -> Path:
 
 def log_dir() -> Path:
     return base_dir() / "logs" / "conversations"
+
+
+def _one_folder(a: Path, b: Path) -> bool:
+    """A and B are one folder: the same path, or the same folder through a link."""
+    if a == b:
+        return True
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
 
 
 def log_path(day: Optional[date] = None, directory: Optional[Path] = None) -> Path:
@@ -206,11 +234,24 @@ def append(kind: str,
     if final is None and kind != EVENT:
         final = kind in (TURN, SAID)
 
-    d = directory or log_dir()
-    d.mkdir(parents=True, exist_ok=True)
-    lock_fd = os.open(str(d / LOCK_NAME), os.O_RDWR | os.O_CREAT, 0o600)
+    # Given no folder, look again once the lock is held, and start over if the answer
+    # changed: `ears home migrate` holds this lock while it publishes the new root, so a
+    # writer that resolved the old folder before the switch must not append there after it
+    # (on a host whose old root is VoiceMode's, that folder stays real: only its files are links).
+    for _look in range(_LOOKS):
+        d = directory or log_dir()
+        d.mkdir(parents=True, exist_ok=True)
+        lock_fd = os.open(str(d / LOCK_NAME), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        except BaseException:
+            os.close(lock_fd)
+            raise
+        if directory is not None or _one_folder(log_dir(), d) or _look == _LOOKS - 1:
+            break
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
     try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX)
         record = _clean({
             "ts": _now_iso(),
             "seq": last_seq(d) + 1,

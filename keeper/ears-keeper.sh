@@ -57,7 +57,7 @@
 # 5 min; back to 2 s after a run of a minute). It stands aside while another job runs a
 # call-ears (the old com.voicemode.ears-call), so a cutover never puts two ears on a call.
 # EARS_CALLS=0: the room only. The call ears' own stop file still works: touch
-# $CALL_EARS_DIR/STOP (default ${XDG_STATE_HOME:-~/.local/state}/ears/call-ears/STOP); rm it and
+# $CALL_EARS_DIR/STOP (default: the state item call-ears, `ears home state-dir call-ears`); rm it and
 # the keeper starts them again.
 set -uo pipefail
 DEVICE="${1:-airpods}"
@@ -103,6 +103,14 @@ NOTIFY="${EARS_NOTIFY:-}"
 VOICE_SETTINGS="$HOME/.sessionkit/voice/settings"
 CONF="${EARS_CONF:-$VOICE_SETTINGS/ears.json}"
 LOGDIR="$("$PY" -m ears.home log-dir)" && [ -n "$LOGDIR" ] || { echo "ears-keeper: $PY -m ears.home log-dir named no log folder - run \`uv sync\` in $ROOT, or set EARS_PY" >&2; exit 2; }
+# The state root, for the heard log's folder (HEARD_DIR, with the heard region below): the
+# PACKAGE's answer, "$PY" -m ears.home state-dir, as for the log folder.
+# $PY is the package's python and every writer this keeper starts runs under it, so its answer is
+# the one they write to; there is no copy of the rule here. No answer (a 0.3.2 package has no
+# state-dir): exit 2 before anything is read or written, never a guess. $EARS_HEARD_DIR asks nothing.
+if [ -z "${EARS_HEARD_DIR:-}" ]; then
+  STATE_DIR="$("$PY" -m ears.home state-dir)" && [ -n "$STATE_DIR" ] || { echo "ears-keeper: $PY -m ears.home state-dir named no state root (a package older than 0.3.3 has none) - upgrade the package and the plugin together, run \`uv sync\` in $ROOT, or set EARS_PY" >&2; exit 2; }
+fi
 RUN="${EARS_RUN:-$HOME/.cache/ears/run}"
 mkdir -p "$LOGDIR" "$RUN"
 # The settings-schema copies (.ears.schema.json and the rest), brought up to date with the
@@ -238,7 +246,9 @@ OUT_EVERY="${EARS_OUT_EVERY:-30}"          # 0: no backstop, only after an input
 OUT_FALLBACK="${EARS_OUTPUT_FALLBACK:-1}"   # 0: never touch the Mac's default output
 # Here, between OUT_EVERY= and listen_on(): tests/test_keeper_fallback.py runs this region
 # alone under set -u, so an assignment outside it would make every test fall back unseen.
-AUDIO_DEVICES="${AUDIO_DEVICES_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/audio/devices.json}"
+# The state item audio-devices: AUDIO_DEVICES_FILE, else the package's
+# answer (its old file while that is real, else in the state root). No answer: exit 2.
+AUDIO_DEVICES="${AUDIO_DEVICES_FILE:-$("$PY" -m ears.home state-dir audio-devices)}" && [ -n "$AUDIO_DEVICES" ] || { echo "ears-keeper: $PY -m ears.home state-dir audio-devices named no devices file - upgrade the package and the plugin together, or set AUDIO_DEVICES_FILE" >&2; exit 2; }
 out_tried=""; out_src="file"
 audio_outputs() {  # line 1 = the default output ("" if none), then one output name per
   # line, from $AUDIO_DEVICES while it is fresh. Exit 1 = stale or missing: do your own read.
@@ -394,7 +404,9 @@ call_live() {  # the live calls the ears hear, "call:N[,call:M]"; "" when none, 
 }
 calls_published() {  # call-ears' probe, "call:N[,call:M]" from $CALL_EARS_DIR/live; "" when the
   # file is absent or older than EARS_CALLS_LIVE_AGE seconds (call-ears is down: captures decide)
-  local f="${CALL_EARS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ears/call-ears}/live" m
+  local f m
+  f="${CALL_EARS_DIR:-$("$PY" -m ears.home state-dir call-ears)}" && [ -n "$f" ] || return 0
+  f="$f/live"
   # macOS stat by path: Homebrew's GNU stat can come first on PATH, and reads -f as --file-system
   m="$(/usr/bin/stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null)" || return 0
   [ $(( $(date +%s) - m )) -le "${EARS_CALLS_LIVE_AGE:-5}" ] || return 0
@@ -403,9 +415,11 @@ calls_published() {  # call-ears' probe, "call:N[,call:M]" from $CALL_EARS_DIR/l
 # --- calls: the call ears, this keeper's child (tests/test_keeper_calls.py runs these alone) ---
 CALLS="${EARS_CALLS:-1}"
 CALL_EARS="${EARS_CALL_EARS:-$(cd "$(dirname "$0")" && pwd)/call-ears}"
-# call-ears' own dir (STOP, live, its log): user state, as bin/call-tap's RUN is
-# (a host keeping its old dir sets CALL_EARS_DIR to it). keeper/call-ears has the same default.
-CALL_EARS_DIR="${CALL_EARS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/ears/call-ears}"; export CALL_EARS_DIR
+# call-ears' own dir (STOP, live, its log): the state item call-ears, as
+# bin/call-tap's RUN is call-tap: CALL_EARS_DIR, else the package's answer (its old folder while
+# that is real, else in the state root). keeper/call-ears asks the same item. No answer: exit 2.
+CALL_EARS_DIR="${CALL_EARS_DIR:-$("$PY" -m ears.home state-dir call-ears)}" && [ -n "$CALL_EARS_DIR" ] || { echo "ears-keeper: $PY -m ears.home state-dir call-ears named no call ears folder - upgrade the package and the plugin together, or set CALL_EARS_DIR" >&2; exit 2; }
+export CALL_EARS_DIR
 # A call-ears is a python running a file named call-ears: the old launch agent's, ~/.<agent>/tools'
 # or ours. Not a capture's `--session call-ears-N`, not `less keeper/call-ears`.
 CALL_EARS_PAT="${EARS_CALL_EARS_PAT:-[Pp]ython[0-9.]* [^ ]*/call-ears( |$)}"
@@ -624,26 +638,7 @@ model_started() {  # $1 = the device: a capture is running, so a model DEAF epis
 # listen-stopped and its partials and turns go to the stt region. The speaker side-car's
 # rows, speakers_DAY.jsonl beside the heard log, are read in the SAME python, with their own offset
 # and the same day-roll and cut-short rules, and go to the speakers region.
-# --- sessionvoice_home: a copy of ears.home.sessionvoice_home (tests/test_home.py holds it) ---
-# $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it holds the
-# heard log (a heard.lock or a heard_*.jsonl in logs/conversations), else ~/.sessionvoice.
-sessionvoice_home() {
-  local v d
-  for v in "${SESSIONVOICE_HOME:-}" "${VOICEMODE_BASE_DIR:-}"; do
-    [ -n "$v" ] || continue
-    case $v in "~" | "~/"*) v="$HOME${v#\~}" ;; esac
-    echo "$v"; return 0
-  done
-  for d in "$HOME/.sessionvoice" "$HOME/.voicemode"; do
-    if [ -e "$d/logs/conversations/heard.lock" ] \
-        || compgen -G "$d/logs/conversations/heard_*.jsonl" >/dev/null; then
-      echo "$d"; return 0
-    fi
-  done
-  echo "$HOME/.sessionvoice"
-}
-# --- end sessionvoice_home ---
-HEARD_DIR="${EARS_HEARD_DIR:-$(sessionvoice_home)/logs/conversations}"
+HEARD_DIR="${EARS_HEARD_DIR:-${STATE_DIR:-}/logs/conversations}"   # STATE_DIR: asked at the top (or exit 2)
 heard_file=""; heard_off=0; spk_file=""; spk_off=0
 heard_events() {  # $1 = heard log, $2 = byte offset -> line 1 the offset after the last whole line,
   # then one TAB line per event in between:
@@ -1179,7 +1174,8 @@ stop_pid() {  # $1 pid, $2 what it is, $3 its stop file ("" for none): the stop 
 #   nothing on a loop that finds nothing to stop.
 # ears_off runs every loop while off (and at a start that is off), so an ear started behind the
 # keeper's back is stopped within a loop too.
-TAP_RUN="${EARS_CALL_TAP_RUN:-${XDG_STATE_HOME:-$HOME/.local/state}/ears/call-tap}"   # bin/call-tap's RUN
+# bin/call-tap's RUN: the state item call-tap, asked as call-tap asks it (EARS_CALL_TAP_RUN wins)
+TAP_RUN="${EARS_CALL_TAP_RUN:-$("$PY" -m ears.home state-dir call-tap)}" && [ -n "$TAP_RUN" ] || { echo "ears-keeper: $PY -m ears.home state-dir call-tap named no call-tap folder - upgrade the package and the plugin together, or set EARS_CALL_TAP_RUN" >&2; exit 2; }
 off_other=""
 call_legs() {  # the running call-leg captures (`--source call:N`), one pid per line
   local p args

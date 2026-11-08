@@ -30,23 +30,42 @@ Usage: ears-mouth-tail [--heartbeats] [--back N]
 import argparse, datetime, json, os, sys, time
 from pathlib import Path
 
-def sessionvoice_home():
-    """sessionvoice's home: a copy of ears.home.sessionvoice_home (tests/test_home.py holds
-    it). $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it
-    holds the heard log, else ~/.sessionvoice."""
-    import glob, os
-    for name in ("SESSIONVOICE_HOME", "VOICEMODE_BASE_DIR"):
-        if os.environ.get(name):
-            return os.path.expanduser(os.path.expandvars(os.environ[name]))
-    for d in ("~/.sessionvoice", "~/.voicemode"):
-        c = os.path.expanduser(d + "/logs/conversations")
-        if os.path.exists(c + "/heard.lock") or glob.glob(glob.escape(c) + "/heard_*.jsonl"):
-            return os.path.expanduser(d)
-    return os.path.expanduser("~/.sessionvoice")
+HERE = Path(__file__).resolve().parent
+
+
+def voice_home():
+    """ears/home.py, the ONE place voice names its state root and its log folder.
+    skills/ imports nothing from the ears package, so it loads home.py
+    (standard library only) by its path, once: the checkout's src/ears/home.py, three folders up (skills/ears/scripts/
+    ships in the checkout and the plugin only).
+    Not there: exit 2, naming where it looked; there is no copy of the rule to fall back
+    on."""
+    mod = getattr(voice_home, "mod", None)
+    if mod is None:
+        import importlib.util, sys
+        tried = [HERE.parents[2] / "src/ears/home.py"]
+        f = next((f for f in tried if f.is_file()), None)
+        if f is None:
+            print(f"ears-mouth-tail: no ears/home.py at {' nor '.join(map(str, tried))}: it names "
+                  "voice's state root. Run it from a sessionvoice checkout, the plugin or the "
+                  "package", file=sys.stderr)
+            sys.exit(2)
+        spec = importlib.util.spec_from_file_location("_voice_home", f)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        voice_home.mod = mod
+    return mod
+
+
+def voice_state_dir() -> Path:
+    """voice's state root, as the PACKAGE answers it (ears.home.asked_state_dir, design.md
+    D4.1): asked once per process, and exit 2, naming both answers, when the package cannot
+    be asked or disagrees with this checkout's home.py."""
+    return voice_home().asked_state_dir("ears-mouth-tail")
 
 
 HOME = os.path.expanduser("~")
-CONV = f"{sessionvoice_home()}/logs/conversations"      # heard_*, speakers_*
+CONV = f"{voice_state_dir()}/logs/conversations"      # heard_*, speakers_*
 # VoiceMode's own logs stay in VoiceMode's home, whatever sessionvoice's is
 VM_CONV = f"{HOME}/.voicemode/logs/conversations"
 # The Smart Turn shadow's log: shadow/shadow.py and shadow/score honor the same variable.
@@ -59,7 +78,7 @@ C = {"BACK": "\033[34m", "SMART": "\033[32m", "EARS": "\033[36m", "TURN": "\033[
 def paths():
     d = datetime.date.today().strftime("%Y-%m-%d")
     return {"EARS": f"{CONV}/heard_{d}.jsonl", "SAY": f"{VM_CONV}/exchanges_{d}.jsonl",
-            "MOUTH": f"{sessionvoice_home()}/mouth/mail.log",
+            "MOUTH": f"{voice_state_dir()}/mouth/mail.log",
             "SMART": f"{SHADOW_LOG}/smart_{d}.jsonl",
             "WHO": f"{CONV}/speakers_{d}.jsonl",
             "BACK": f"{VM_CONV}/backchannel_{d}.jsonl"}

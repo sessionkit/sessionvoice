@@ -28,7 +28,8 @@
 #   anything else, or no command: this text, exit 1
 #
 # Env: CALL_TAP_MIC (airpods), CALL_TAP_FAR ("BlackHole 2ch"), CALL_TAP_NEAR
-# ("BlackHole 16ch"), EARS_PY (this repo's .venv python), EARS_SILERO_MODEL,
+# ("BlackHole 16ch"), EARS_PY (this repo's .venv python), EARS_CALL_TAP_RUN (the run folder;
+# else `ears home state-dir call-tap`), EARS_SILERO_MODEL,
 # else EARS_SILERO_ONNX, else ~/.cache/ears/silero_vad.onnx (`ears install`).
 set -u
 # The header above, from line 2 to the first line that is not a comment.
@@ -38,13 +39,19 @@ usage() { awk 'NR > 1 { if (/^#/) print; else exit }' "$0"; }
 # No subcommand takes an operand, so a -h/--help anywhere is always a help ask.
 for a in "$@"; do case "$a" in -h|--help) usage; exit 0 ;; esac; done
 REPO=$(cd "$(dirname "$0")/.." && pwd)
-RUN="${XDG_STATE_HOME:-$HOME/.local/state}/ears/call-tap"; mkdir -p "$RUN"
+PY="${EARS_PY:-$REPO/.venv/bin/python}"
+# The run folder is the state item call-tap: EARS_CALL_TAP_RUN, else
+# the PACKAGE's answer, "$PY" -m ears.home state-dir call-tap, the one the keeper's TAP_RUN asks
+# (its old folder while that is real, else in the state root). No copy of the path here; no
+# answer is exit 2 before anything is made.
+RUN="${EARS_CALL_TAP_RUN:-$("$PY" -m ears.home state-dir call-tap)}" && [ -n "$RUN" ] || {
+  echo "call-tap: $PY -m ears.home state-dir call-tap named no run folder (a package older than 0.3.3 has none) - upgrade the package and the plugin together, or set EARS_PY or EARS_CALL_TAP_RUN" >&2; exit 2; }
+mkdir -p "$RUN"
 STOP=$RUN/STOP
 # The far-end capture has a stop file of its own, so the keeper can stop the ear and not the
 # tap: `down` touches both; the keeper, on listen:false, touches LISTEN-OFF and then STOP-ear.
 STOP_EAR=$RUN/STOP-ear; OFF=$RUN/LISTEN-OFF
 MIC="${CALL_TAP_MIC:-airpods}"; FAR="${CALL_TAP_FAR:-BlackHole 2ch}"; NEAR="${CALL_TAP_NEAR:-BlackHole 16ch}"
-PY="${EARS_PY:-$REPO/.venv/bin/python}"
 # The Silero model: the same home src/ears/vad.py silero_model_path() reads and
 # `ears install` (src/ears/cli.py) downloads to; EARS_SILERO_MODEL first. Its old name
 # (src/ears/envnames.py) is read only when EARS_SILERO_MODEL is not set at all: no colon,

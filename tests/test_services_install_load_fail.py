@@ -71,7 +71,7 @@ def test_one_failed_load_exits_2_after_every_service_was_tried(tripwire, monkeyp
     boots = _failing(monkeypatch, {KEEPER})
     rc, cap = _install(capsys)
     assert rc == 2
-    labels = {services._label(n) for n in services.DEFAULT}
+    labels = {services._label(n) for n in services.jobs(services.DEFAULT)}
     assert labels <= set(boots)                                  # every service was tried
     assert services._label("mail") in boots[boots.index(KEEPER):]   # including those after keeper
     keeper_plist = services.AGENTS / f"{KEEPER}.plist"
@@ -86,13 +86,13 @@ def test_one_failed_load_exits_2_after_every_service_was_tried(tripwire, monkeyp
 
 
 def test_every_failed_load_is_named_in_one_block(tripwire, monkeypatch, capsys):
-    labels = {services._label(n) for n in services.DEFAULT}
+    labels = {services._label(n) for n in services.jobs(services.DEFAULT)}
     _failing(monkeypatch, labels)
     rc, cap = _install(capsys)
     assert rc == 2
     named = re.findall(r"^ears services install: FAILED: (\S+) did not load: ", cap.err, re.M)
-    assert sorted(named) == sorted(services.DEFAULT)
-    assert "4 services did not load (above), from one run" in cap.err
+    assert sorted(named) == sorted(services.jobs(services.DEFAULT))   # the sounds group is two jobs
+    assert "6 services did not load (above), from one run" in cap.err
     assert cap.err.count("`ears services status`") == 1          # one summary, not one per service
     assert "loaded  " not in cap.out
 
@@ -131,7 +131,7 @@ def test_a_successful_install_appends_its_output_and_launchctl_to_the_log(tripwi
     assert cap.out.endswith(f"proof  speak to the agent: it WAKES and answers. A heard line alone "
                             f"proves only the keeper; the mail is what pages it\nlog    {log}\n")
     lines = log.read_text().splitlines()
-    assert re.fullmatch(rf"=== {STAMP} ears services install speech mouth keeper mail", lines[0])
+    assert re.fullmatch(rf"=== {STAMP} ears services install speech mouth keeper mail ears-sounds mouth-sounds", lines[0])
     assert re.fullmatch(rf"=== {STAMP} rc 0", lines[-1])
     body = lines[1:-1]
     assert all(re.match(rf"{STAMP} (stdout|stderr|launchctl) ", line) for line in body)
@@ -139,7 +139,7 @@ def test_a_successful_install_appends_its_output_and_launchctl_to_the_log(tripwi
     assert printed == cap.out.splitlines()                      # every line it printed, in order
     calls = [re.sub(rf"^{STAMP} launchctl ", "", line) for line in body if " launchctl " in line]
     uid = os.getuid()
-    for n in services.DEFAULT:
+    for n in services.jobs(services.DEFAULT):
         path = services.AGENTS / f"{services._label(n)}.plist"
         assert f"bootstrap gui/{uid} {path} -> rc 0" in calls
         assert f"bootout gui/{uid}/{services._label(n)} -> rc 0" in calls
@@ -222,7 +222,7 @@ def test_an_unwritable_log_never_stops_the_install(tripwire, capsys):
     assert cap.err.count(WARNING) == 1 and cap.err.count("\n") == 1   # one line, no traceback
     assert cap.err.startswith(f"{WARNING}{tripwire['log']} cannot be written (")
     assert cap.err.endswith("); installing on without it\n")
-    for n in services.DEFAULT:
+    for n in services.jobs(services.DEFAULT):
         assert f"{n:6s} loaded  {services.AGENTS / (services._label(n) + '.plist')}" in cap.out
     assert "proof  speak to the agent" in cap.out
     assert "\nlog    " not in cap.out                         # no path for a log not written
@@ -263,7 +263,7 @@ def test_a_log_write_that_fails_mid_run_stops_nothing(tripwire, monkeypatch, cap
     rc, cap = _install(capsys)
     assert rc == 0
     assert cap.err == f"{WARNING}{tripwire['log']} cannot be written (No space left on device); installing on without it\n"
-    assert all(f"{n:6s} loaded  " in cap.out for n in services.DEFAULT)
+    assert all(f"{n:6s} loaded  " in cap.out for n in services.jobs(services.DEFAULT))
     assert "\nlog    " not in cap.out
     lines = tripwire["log"].read_text().splitlines()
     assert lines[0].startswith("=== ") and " ears services install " in lines[0]   # before it filled

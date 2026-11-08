@@ -67,7 +67,9 @@ def _stop(pat: str, **env) -> tuple[int, str, float]:
     time.sleep(0.5)  # let ps see the argv, and the fake install its signal handler
     t0 = time.monotonic()
     out = subprocess.run(["bash", "-c", _functions() + "\nstop_capture; echo rc=$?"],
-                         env=dict(os.environ, EARS_CAPTURE_PAT=pat, EARS_STOP_WAIT="1", EARS_TERM_WAIT="1", **env),
+                         # the region assigns CALL_EARS_DIR: by its own variable, the package is not asked
+                         env=dict(os.environ, EARS_CAPTURE_PAT=pat, EARS_STOP_WAIT="1", EARS_TERM_WAIT="1",
+                                  CALL_EARS_DIR="/nonexistent/call-ears", **env),
                          capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
     rc = int(out.stdout.strip().splitlines()[-1].split("=")[1])

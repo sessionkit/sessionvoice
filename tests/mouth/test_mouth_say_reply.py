@@ -139,15 +139,36 @@ def test_parent_not_found_threads_on_the_id_alone(d, capsys):
     assert mouth.say("again", in_reply_to=MID, d=d, spawn=False)["_parent_found"] is False
 
 
-def test_no_heard_box_set_still_says_and_names_the_variable(d, capsys, monkeypatch):
-    """EARS-202 G20: with $MOUTH_HEARD_BOX unset there is no default box; the
-    line is said, threads on the ID alone, and stderr says which variable to set."""
+def test_no_heard_box_set_or_found_still_says_and_names_the_variable(d, capsys, monkeypatch):
+    """EARS-502 (was EARS-202 G20): with $MOUTH_HEARD_BOX unset and no heard box made,
+    the line is said, threads on the ID alone, and stderr says what was looked for."""
     env_fence.delenv(monkeypatch, "MOUTH_HEARD_BOX")
     assert main(["say", "--in-reply-to", MID, "--device", "null", "hi"]) == 0
     m = only(d)
     assert (m["In-Reply-To"], refs(m), m["Call-ID"]) == (MID, [MID], None)
     err = capsys.readouterr().err
-    assert "$MOUTH_HEARD_BOX is not set" in err and "not in the heard box" in err
+    assert "$MOUTH_HEARD_BOX is not set and no heard box was found" in err
+    assert "not in the heard box" in err
+
+
+@pytest.mark.parametrize("layout", ["flat", "nested"])
+def test_a_fresh_install_threads_with_the_variable_unset(d, capsys, monkeypatch, layout):
+    """EARS-502: unset, `mouth say --in-reply-to` finds the parent in the heard box
+    `ears services install` made (flat on a mail-drop host, nested under the store dir
+    on an MTA host) and copies its root and Call-ID."""
+    env_fence.delenv(monkeypatch, "MOUTH_HEARD_BOX")
+    agents = Path.home() / ".mail" / "agents"           # the fake `message` answers under it
+    if layout == "nested":
+        (agents / "store").mkdir(parents=True)
+        (agents / "store" / ".tm-store").write_text("")
+    heard = agents / "store" / "heard" if layout == "nested" else agents / "heard"
+    for sub in ("tmp", "new", "cur"):
+        (heard / sub).mkdir(parents=True)
+    turn(heard, 1, MID, extra=f"References: {ROOT}\nCall-ID: {ROOT}\n".encode())
+    assert main(["say", "--in-reply-to", MID, "--device", "null", "hi"]) == 0
+    m = only(d)
+    assert (m["In-Reply-To"], refs(m), m["Call-ID"]) == (MID, [ROOT, MID], ROOT)
+    assert "MOUTH_HEARD_BOX" not in capsys.readouterr().err
 
 
 def test_no_option_sets_no_reply_keys(d):

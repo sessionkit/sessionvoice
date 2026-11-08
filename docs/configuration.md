@@ -6,8 +6,8 @@ in `~/.sessionkit/voice/settings/`, read live, plus a few variables that move
 a file or win over one key. Each key, its type and its default are on the
 [settings page][settings].
 
-- **sessionvoice's home:** one folder for the heard log and the state of
-  every part ([the home](#sessionvoices-home)).
+- **The state root:** one folder for the heard log and the state of
+  every part, `~/.sessionkit/voice/state` on a new host ([the state root](#the-state-root)).
 - **The ears:** `~/.sessionkit/voice/settings/ears.json`, followed live by every
   capture ([the ears](#the-ears)).
 - **The keeper and the launch agents:** `ears services install` writes
@@ -32,20 +32,80 @@ Paths are shown under `~`, your home folder. A launch agent's variables are
 fixed when its plist is written, so a change to one takes a fresh
 `ears services install`; a settings file is reread with no restart.
 
-## sessionvoice's home
+## The state root
 
-The heard log, `heard.lock`, the speakers rows, the mouth's folder (`mouth/`), talk's token (`talk/`)
-and the ears' state (`state/`) all live under one folder, the home. It is the first of:
+The heard log, `heard.lock`, the speakers rows, the mouth's folder (`mouth/`), talk's token
+(`talk/`), the ears' state (`state/`) and the state items below all live under one folder,
+the state root. On a new host it is `~/.sessionkit/voice/state`. It is the first of:
 
 1. `$SESSIONVOICE_HOME`, if it is set;
 2. `$VOICEMODE_BASE_DIR`, if it is set (the old name, still read);
-3. `~/.sessionvoice`, if it holds a heard log;
-4. `~/.voicemode`, if it holds a heard log;
-5. otherwise `~/.sessionvoice`.
+3. `~/.sessionvoice`, if it holds a heard log (an old root, adopted in place);
+4. `~/.sessionkit/voice/state`, if it holds a heard log;
+5. `~/.voicemode`, if it holds a heard log (an old root, adopted in place);
+6. otherwise `~/.sessionkit/voice/state`.
 
-`ears services status` prints the home it found and why, and warns when
-both folders hold a heard log. The full rule, and the case of a host that
-also runs VoiceMode: [logs.md][home].
+`ears home state-dir` prints the root, `ears home state-dir ITEM` one item, and `--json` all
+of them with their sources. `ears services status` prints the root and why in its `state`
+row, and warns when more than one of these folders holds a heard log. The full rule, and the
+case of a host that also runs VoiceMode: [logs.md][home].
+
+**The two root variables move the root's own tree only:** the heard log, `mouth/`, `talk/`
+and `state/`. They never move a state item or a seat's own home. Each item has its own
+variable instead, and a launch agent is given neither root variable, so the items' root
+(`<root>` in the table) is the rule above without steps 1 and 2.
+
+Each state item is its variable when that is set; else its OLD path while that path is real
+(a host that has used it keeps it there); else its place under the root. A new host never
+makes an old path.
+
+| Item | Default | Variable | Old path, used while it is real |
+| --- | --- | --- | --- |
+| `call-tap` | `<root>/call-tap/` | `EARS_CALL_TAP_RUN` | `${XDG_STATE_HOME:-~/.local/state}/ears/call-tap` |
+| `call-ears` | `<root>/call-ears/` | `CALL_EARS_DIR` | `${XDG_STATE_HOME:-~/.local/state}/ears/call-ears` |
+| `audio-devices` | `<root>/audio-devices.json` | `AUDIO_DEVICES_FILE` | `${XDG_STATE_HOME:-~/.local/state}/audio/devices.json` |
+| `speakers` | `<root>/speakers/` | `EARS_SPEAKERS_HOME` | `~/.local/share/ears/speakers`, while it holds more than its `venv/` |
+| `ears-mail-state` | `<root>/ears-mail.state.json` | none: ears-mail's `--state` | `~/.cache/ears/ears-mail.state.json` |
+
+- **`XDG_STATE_HOME` only finds an old path.** It no longer says where a new host writes.
+- **The speakers side-car's venv stays** in `~/.local/share/ears/speakers/venv`
+  (`EARS_SPEAKER_PY` names its python). Only the enrolment moved into the root.
+- **A seat's own home:** a seat with no home of its own (none in sessiontools, no
+  `~/.<seat>`) arms in `<root>/seats/<seat>/`, which `ears-arm` makes. 0.3.2 made one shared
+  `~/.ears` for them all; a host that has one keeps reading it while it is real, and a new
+  host makes none. `EARS_HOME` names a seat's home outright.
+
+### Moving an old root: `ears home migrate`
+
+A host that still keeps its state in `~/.sessionvoice` or `~/.voicemode`, or a state item at
+its old path, keeps using it there until it is moved. `ears services status` says so in a
+second `state` row: *the state is in `<old>`; `ears home migrate` moves it to
+`~/.sessionkit/voice/state`*. The row goes once nothing is left at an old path. A root
+variable set in the shell is a root set by hand: status names no move, and the migrate
+refuses.
+
+The move is one step per host, run by hand in a stop window. No upgrade or merge runs it.
+
+1. **Look first.** `ears home migrate --dry-run` prints the plan and every refusal, and writes
+   nothing.
+2. **Stop the writers.** The migrate refuses, and writes nothing, while a voice launch agent
+   is loaded or a voice writer runs. The plan names each one.
+3. **Move.** `ears home migrate` acts by default. It copies, verifies, and leaves each old
+   path as a link to its new place, with the original beside it as `<path>.pre-sessionkit`.
+   It never deletes. Run it again if it stops part-way: a second run finishes the move, or
+   does nothing.
+4. **Re-arm the readers** that hold the heard log open, as its report lists them.
+5. **Install again: `ears services install`**, before any writer starts and before the next
+   login. Install writes each launch agent's paths from the state root, so the new plists
+   name the new places. A plist left from before still names an old path, and its job makes
+   that path real again: ears-mail saves its `--state` over the link, and the speakers
+   side-car works in its old home. `ears services status` warns while an ears-mail or
+   speakers plist that `ears services install` wrote still names an old path, until it is
+   installed again. A plist rendered by hand from `launchd/` gets no such warning: render it
+   again with `bin/render-plist` and install it by hand, as its header says.
+
+The speakers side-car's venv does not move. Nothing in `~/.sessionkit/voice/settings` or
+`~/.sessionkit/voice/log` changes, and nothing of VoiceMode's own does either.
 
 ## The ears
 
@@ -123,7 +183,7 @@ variables, set in the plist or the shell that starts it:
 | `EARS_RUN` | `~/.cache/ears/run` | Its stop files, the input watcher and its state. |
 | `EARS_NOTIFY` | the operator's address | Who its notices are mailed to. Set but empty: nobody. |
 | `EARS_CALLS` | `1` | `0` runs the room's ear only, no call ears. |
-| `CALL_EARS_DIR` | `${XDG_STATE_HOME:-~/.local/state}/ears/call-ears` | The call ears' folder and their `STOP` file. |
+| `CALL_EARS_DIR` | `<root>/call-ears` (the state item [`call-ears`](#the-state-root)) | The call ears' folder and their `STOP` file. |
 | `EARS_OUTPUT_FALLBACK` | `1` | `0` never moves the Mac's default output. |
 | `EARS_PY` | `.venv/bin/python` in the checkout it runs from | The Python that runs the capture. Install sets it to its own. |
 | `EARS_AGENT` | `ears` | The seat the keeper writes and mails as. Install reads it once. |
@@ -145,7 +205,9 @@ a seat called by name.
   `keeper/defaults/` names no seats and is never written.
 - **Install fixes the path.** The launch agent is given `--rules` with the
   path as it was at install.
-- **Its state:** `~/.cache/ears/ears-mail.state.json`.
+- **Its state:** `<root>/ears-mail.state.json`, the state item `ears-mail-state`
+  ([the state root](#the-state-root)); a host that already has
+  `~/.cache/ears/ears-mail.state.json` keeps it there. Install gives the job `--state`.
 - **Its variables:** `EARS_SPEAKER` (who a turn is from, when the speaker
   side-car names nobody), `EARS_MAIL_FROM` (the box, `heard` by default),
   `EARS_MAIL_ROOM` (the room's tag: turns go To `heard+room` by default),
@@ -174,7 +236,7 @@ a seat called by name.
 - **Its log:** `~/.sessionkit/voice/log/ears-sounds.jsonl`, or
   `EARS_SOUNDS_LOG`.
 - **The heard log it follows:** the home's, or `EARS_SOUNDS_HEARD_DIR`.
-- **As a launch agent:** `ears services install --only sounds` runs it as
+- **As a launch agent:** `ears services install` (bare, or `--only sounds`) runs it as
   `dev.sessionkit.voice.ears-sounds`, beside the mouth sounds, on the
   agents' Python. The plist passes the settings file and the log above, and
   `--stop-file ~/.sessionkit/voice/STOP-ears-sounds`: create that file and
@@ -187,7 +249,7 @@ The mouth reads its settings file for every line, so a change applies to
 the next line queued.
 
 - **The file:** `$MOUTH_SETTINGS`; else `~/.sessionkit/voice/settings/mouth.json`
-  when it exists; else the old `<home>/mouth/settings.json`.
+  when it exists; else the old `<root>/mouth/settings.json`.
 - **The layers above it.** For a line's voice, volume, duck, levelling and
   lead, the mouth also reads the agent, seat and session layers, through
   `session settings`, over the file. Every other key comes from the file
@@ -195,7 +257,7 @@ the next line queued.
 - **The key:** a speech server's key is `$MOUTH_TTS_KEY`, else
   `~/.sessionkit/voice/settings/tts.key` (yours, mode 600). It is never read from
   `mouth.json`.
-- **Its folder:** `$MOUTH_DIR`, else `<home>/mouth/`. The timed overrides
+- **Its folder:** `$MOUTH_DIR`, else `<root>/mouth/`. The timed overrides
   live there: `barge.json` (`mouth barge`) and `duck.json` (`mouth duck`).
 - **Clone voices:** read from VoiceMode's config, never written:
   `VOICEMODE_VOICES_DIR` and the other `VOICEMODE_` clone variables, from
@@ -232,7 +294,7 @@ an agent taking your words.
   script, and `keeper/defaults/mouth-sounds.json` shows the shape.
 - **Its log:** `~/.sessionkit/voice/log/mouth-sounds.jsonl`, or
   `MOUTH_SOUNDS_LOG`.
-- **As a launch agent:** `ears services install --only sounds` runs it as
+- **As a launch agent:** `ears services install` (bare, or `--only sounds`) runs it as
   `dev.sessionkit.voice.mouth-sounds`. The plist sets `MOUTH_SOUNDS_SETTINGS`
   and `MOUTH_SOUNDS_LOG` to the paths above and `MOUTH_SOUNDS_STOP` to
   `~/.sessionkit/voice/STOP-mouth-sounds`. `MOUTH_SOUNDS_FIRED` and
@@ -249,10 +311,12 @@ is in [talk.md][talk-settings].
 
 - **As a service:** `ears services install --only talk` (opt-in) runs it
   as `dev.sessionkit.voice.talk` on `127.0.0.1:8780`, its log
-  `~/.sessionkit/voice/log/talk.log`.
-- **Its token:** `<home>/talk/token`, mode 0600, made by the first
+  `~/.sessionkit/voice/log/talk.log`. `--allow-host NAME` writes
+  `TALK_ALLOW_HOSTS` into the job; a re-run keeps the job's `TALK_*`
+  settings.
+- **Its token:** `<root>/talk/token`, mode 0600, made by the first
   `talk serve`.
-- **Its socket,** in socket mode: `<home>/talk/talk.sock` by default.
+- **Its socket,** in socket mode: `<root>/talk/talk.sock` by default.
 - **Each seat's offsets** it reads: `$EARS_HOME`, else the seat's home.
 
 ## The speech server
@@ -274,15 +338,19 @@ server it finds there, and installs its own only when the port is free.
 Opt-in (`ears services install --only speakers`). It names who spoke each
 heard line.
 
-- **Its home:** `~/.local/share/ears/speakers` (references and venv), or
-  `EARS_SPEAKERS_HOME`. Install makes it 0700.
+- **Its home:** `<root>/speakers` (the references), the state item `speakers`
+  ([the state root](#the-state-root)), or `EARS_SPEAKERS_HOME`. Install makes it 0700. A host
+  whose `~/.local/share/ears/speakers` already holds references keeps it there.
+- **Its venv:** `~/.local/share/ears/speakers/venv`, which stays outside the root.
 - **More:** [speakers/README.md][speakers].
 
 ## The audio devices file
 
 The keeper's input watcher writes this Mac's audio devices to
-`${XDG_STATE_HOME:-~/.local/state}/audio/devices.json`. `AUDIO_DEVICES_FILE`
-(a full path) moves it ([audio-devices.md][devices]).
+`<root>/audio-devices.json`, the state item `audio-devices` ([the state root](#the-state-root)).
+`AUDIO_DEVICES_FILE` (a full path) moves it, and a host that already has
+`${XDG_STATE_HOME:-~/.local/state}/audio/devices.json` keeps it there
+([audio-devices.md][devices]). A reader asks `ears home state-dir audio-devices`.
 
 ## The operator
 
@@ -302,7 +370,7 @@ part follows the family's settings layers today:
 [settings]: settings.md
 [cascade-ears]: settings.md#the-ears-read-one-file
 [cascade-mouth]: settings.md#the-mouth-reads-some-keys-from-the-layers
-[home]: logs.md#sessionvoices-home
+[home]: logs.md#the-state-root
 [log-files]: logs.md#the-log-files
 [models]: models.md
 [ears-old]: ears.md#old-environment-names

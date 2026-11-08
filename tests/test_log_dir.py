@@ -124,15 +124,21 @@ def test_the_keeper_asks_the_resolver_and_stops_when_it_cannot_answer(h, tmp_pat
 LOADERS = ("keeper/ears-sounds.py", "keeper/mouth-sounds.py", "view/push")
 
 
-def _loader(script: str, here: Path):
-    """The script's voice_log_dir(), cut out by its AST and run with HERE set: the scripts
-    themselves import audio libraries and start at import."""
+#: The loader's functions, as every stdlib script carries them (EARS-492 do-002): voice_home()
+#: loads home.py once, and voice_state_dir() and voice_log_dir() ask it.
+LOADER_FNS = ("voice_home", "voice_state_dir", "voice_log_dir")
+
+
+def _loader(script: str, here: Path, name: str = "voice_log_dir"):
+    """The script's loader function NAME, cut out by its AST with the loader's other functions
+    and run with HERE set: the scripts themselves import audio libraries and start at import."""
     src = (ROOT / script).read_text()
-    fn = next(n for n in ast.parse(src).body
-              if isinstance(n, ast.FunctionDef) and n.name == "voice_log_dir")
+    fns = [n for n in ast.parse(src).body
+           if isinstance(n, ast.FunctionDef) and n.name in LOADER_FNS]
+    assert name in {f.name for f in fns}, f"{script}: no {name}()"
     ns = {"HERE": here, "Path": Path}
-    exec(compile(ast.Module([fn], []), script, "exec"), ns)
-    return ns["voice_log_dir"]
+    exec(compile(ast.Module(fns, []), script, "exec"), ns)
+    return ns[name]
 
 
 @pytest.mark.parametrize("script", LOADERS)

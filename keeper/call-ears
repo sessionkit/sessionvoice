@@ -12,8 +12,8 @@ A call already live when this starts keeps the ear it has (one restarted with th
 leaves its captures running), and one with no ear gets one. Once, every already-live
 call was left alone, so a restart mid-call left that call deaf to the end.
 Stop: touch $CALL_EARS_DIR/STOP. Log: stdout (the keeper's $EARS_LOG_DIR/ears-keeper-calls.log);
-each ear's in $CALL_EARS_DIR/capture-N.log. CALL_EARS_DIR defaults to
-${XDG_STATE_HOME:-~/.local/state}/ears/call-ears (it was ~/.<agent>/call-ears).
+each ear's in $CALL_EARS_DIR/capture-N.log. CALL_EARS_DIR defaults to the state item
+call-ears (`ears home state-dir call-ears`; it was ~/.<agent>/call-ears, then an XDG folder).
 
 The room and the calls were once two launch agents; now they are one, so
 this is not a launch
@@ -30,9 +30,42 @@ if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
 import phone_roots  # noqa: E402  (keeper/ is not a package)
 
 HOME = Path.home()
-# The keeper passes its own; the default is the keeper's (keeper/ears-keeper.sh), change both.
-DIR = Path(os.environ.get("CALL_EARS_DIR")
-           or Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state") / "ears/call-ears")
+HERE = Path(__file__).resolve().parent
+
+
+def voice_home():
+    """ears/home.py, the ONE place voice names its state items.
+    keeper/ imports nothing from the ears package, so it loads home.py (standard library
+    only) by its path, once: the checkout's src/ears/home.py, else the wheel's ears/home.py
+    above ears/_keeper/. Not there: exit 2, naming where it looked; there is no copy of the
+    rule to fall back on."""
+    mod = getattr(voice_home, "mod", None)
+    if mod is None:
+        import importlib.util
+        tried = [HERE.parent / "src/ears/home.py", HERE.parent / "home.py"]
+        f = next((f for f in tried if f.is_file()), None)
+        if f is None:
+            print(f"call-ears: no ears/home.py at {' nor '.join(map(str, tried))}: it names "
+                  "voice's state folders. Run it from a sessionvoice checkout, the plugin or the "
+                  "package, or set CALL_EARS_DIR", file=sys.stderr)
+            sys.exit(2)
+        spec = importlib.util.spec_from_file_location("_voice_home", f)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        voice_home.mod = mod
+    return mod
+
+
+def voice_state_path(item: str) -> Path:
+    """The state item ITEM's path, as the PACKAGE answers it (ears.home.asked_state_path):
+    its own variable wins and asks nothing; else exit 2, naming both answers, when the package
+    cannot be asked or disagrees with this checkout's home.py."""
+    return voice_home().asked_state_path(item, "call-ears")
+
+
+# The keeper passes its own (CALL_EARS_DIR, always): this default is for a run by hand, and it
+# is the keeper's, the state item call-ears (ears-keeper.sh asks the same).
+DIR = voice_state_path("call-ears")
 STOP = DIR / "STOP"
 # The calls the probe finds live, "call:N,call:M", rewritten every loop (so its age says this
 # is alive): the keeper's room-off rule reads it. A capture is no proof of a live call - one

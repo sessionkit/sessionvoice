@@ -749,7 +749,8 @@ def test_device_copy_off_sends_no_cc():
     assert "cc" not in m[0] and "cc" not in m[0]["mail"]
     rows, calls = send_run([turn(1, "Hey Ivy.", seq=1)], to=None, args=("--device-copy", "off"))
     assert "--cc" not in calls[0]["argv"] and "cc" not in rows[0]
-    assert set(rows[0]) == {"at", "seq", "to", "rule", "subject", "exit", "id"}
+    # the room row names who the turn names (EARS-497): "Hey Ivy." carries Ears-Addressed
+    assert set(rows[0]) == {"at", "seq", "to", "rule", "addressed", "subject", "exit", "id"}
 
 
 def test_device_named_like_the_room_gets_no_cc():
@@ -1618,3 +1619,526 @@ def test_call_a_second_capture_of_one_call_id_mails_its_own_bot(legs, monkeypatc
     m = dev(first + second)
     assert who(m) == [(1, ["calls+alice-1317"], None), (2, ["calls+bob-1317"], None)]
     assert (a.probes, b.probes) == (2, 2)                # once per capture, no more
+
+
+# -- Ears-Said: each session's own line, for the pager's linger (EARS-499) -----------
+# The grammar agreed with sessionmail SM-989 (SM-554 X-L1): "<session>@<host>=<ISO end>, ...",
+# one entry per FULL session id, its newest line that finished at or before the turn's
+# Ears-Start and within 600 s; the said row's ts verbatim; sorted by key; never empty.
+SID_A = "5e1d2c3b-4a59-4f68-8a7b-9c0d1e2f3a4b"
+SID_B = "0a3f9c2e-5d41-4e7b-9f10-2b6c8d4e1a77"     # sorts before SID_A
+SAID_GRAMMAR = re.compile(r"[0-9a-f-]{36}@host1=[^,= ]+(, [0-9a-f-]{36}@host1=[^,= ]+)*")
+
+
+def at(sec):
+    """ts(), but past a minute: the 600 s horizon needs one."""
+    from datetime import datetime, timedelta, timezone
+    t = datetime(2030, 6, 9, 1, 0, tzinfo=timezone(timedelta(hours=10))) + timedelta(seconds=sec)
+    return t.isoformat(timespec="milliseconds")
+
+
+def line(sec, agent, utt, session, text="The build is green.", interest="normal", played_s=1.0,
+         **kw):
+    """A line said at SEC: its saying row a second before, its said row at SEC."""
+    return [dict(saying(0, agent, text, utt, interest), ts=at(sec - 1)),
+            dict(said(0, agent, utt, session=session, played_s=played_s, **kw), ts=at(sec))]
+
+
+def said_of(m):
+    return m["mail"]["headers"].get("Ears-Said")
+
+
+def test_said_one_entry_per_session_its_newest_sorted_by_key():
+    m = dev(line(10, "ivy", "a1", SID_A) + line(20, "ivy", "a2", SID_A)
+            + line(15, "vera", "b1", SID_B) + [dict(turn(0, "Right."), ts=at(40), seq=1)])
+    assert said_of(m[0]) == f"{SID_B}@host1={at(15)}, {SID_A}@host1={at(20)}"
+    assert SAID_GRAMMAR.fullmatch(said_of(m[0]))
+
+
+def test_said_end_is_the_said_rows_ts_verbatim():
+    rows = line(10, "ivy", "a1", SID_A)
+    rows[1]["ts"] = "2030-06-09T01:00:10.250000+10:00"     # not re-rendered to ms
+    m = dev(rows + [dict(turn(0, "Right."), ts=at(40), seq=1)])
+    assert said_of(m[0]) == f"{SID_A}@host1=2030-06-09T01:00:10.250000+10:00"
+
+
+def test_said_counts_a_line_at_or_before_the_turns_start_only():
+    # the turn ends at 20 with a 2 s span: Ears-Start is 18
+    turn20 = dict(turn(0, "Right.", span=2.0), ts=at(20), seq=1)
+    m = dev(line(18, "ivy", "a1", SID_A) + [turn20])
+    assert said_of(m[0]) == f"{SID_A}@host1={at(18)}"                 # at the start: in
+    m = dev(line(19, "ivy", "a1", SID_A) + [turn20])
+    assert said_of(m[0]) is None                                     # under the turn: out
+    m = dev(line(10, "ivy", "a1", SID_A) + line(19, "ivy", "a2", SID_A) + [turn20])
+    assert said_of(m[0]) == f"{SID_A}@host1={at(10)}"                # the newest BEFORE it
+
+
+def test_said_with_no_start_uses_the_turns_end():
+    t = {k: v for k, v in dict(turn(0, "Right."), ts=at(20), seq=1).items() if k not in ("t0", "t1")}
+    m = dev(line(19, "ivy", "a1", SID_A) + [t])
+    assert said_of(m[0]) == f"{SID_A}@host1={at(19)}"
+
+
+def test_said_has_a_600_s_horizon():
+    turn_ = dict(turn(0, "Right.", span=2.0), ts=at(702), seq=1)    # starts at 700
+    m = dev(line(100, "ivy", "a1", SID_A) + [turn_])
+    assert said_of(m[0]) == f"{SID_A}@host1={at(100)}"               # 600 s: in
+    m = dev(line(99, "ivy", "a1", SID_A) + [turn_])
+    assert said_of(m[0]) is None                                     # 601 s: out
+
+
+@pytest.mark.parametrize("session", [None, "", "5e1d2c3b", "ivy", "room+demo.worker",
+                                     SID_A[:-1], SID_A + "0", 42])
+def test_said_leaves_out_a_row_with_no_full_session_id(session):
+    rows = line(10, "ivy", "a1", session)
+    if session is None:
+        del rows[1]["session"]
+    m = dev(rows + line(12, "vera", "b1", SID_B) + [dict(turn(0, "Right."), ts=at(40), seq=1)])
+    assert said_of(m[0]) == f"{SID_B}@host1={at(12)}"
+
+
+def test_said_takes_the_session_from_the_said_row_not_the_saying_row():
+    rows = line(10, "ivy", "a1", None)
+    del rows[1]["session"]
+    rows[0]["session"] = SID_A                       # only the saying row names it
+    m = dev(rows + [dict(turn(0, "Right."), ts=at(40), seq=1)])
+    assert said_of(m[0]) is None
+
+
+def test_said_leaves_out_interest_zero():
+    m = dev(line(10, "ivy", "a1", SID_A, interest="zero")            # the saying row's interest
+            + [dict(said(0, "vera", "b1", session=SID_B, interest="zero", played_s=1.0), ts=at(12))]
+            + [dict(turn(0, "Right."), ts=at(40), seq=1)])
+    assert said_of(m[0]) is None
+    m = dev(line(5, "ivy", "a0", SID_A) + line(10, "ivy", "a1", SID_A, interest="zero")
+            + [dict(turn(0, "Right."), ts=at(40), seq=1)])
+    assert said_of(m[0]) == f"{SID_A}@host1={at(5)}"                 # its newest heard line
+
+
+def test_said_leaves_out_a_line_cut_before_it_played_a_word():
+    rows = line(5, "vera", "c4", SID_A) + line(13, "vera", "c6", SID_A, cut=True, reason="barge-in",
+                                               notice="sent vera@host2", played_s=0.0)
+    m = dev(rows + [dict(turn(0, "Right."), ts=at(40), seq=1)])     # c6: dropped behind the cut
+    assert [x["to"] for x in m] == [["heard+room"]]
+    assert said_of(m[0]) == f"{SID_A}@host1={at(5)}"
+
+
+def test_said_includes_a_barge_in_at_its_cut():
+    rows = [dict(r, session=SID_A) if r["kind"] == "said" else r for r in BARGE]
+    m = dev(rows + [turn(30, "So the secret word is pajama party.", span=3.7, seq=415092)])
+    assert said_of(m[0]) == f"{SID_A}@host1={ts(18.4)}"              # the cut's own ts
+
+
+def test_said_leaves_out_a_bed():
+    # lane file (a music bed, a sound file) is no spoken line: on its said row, or only
+    # on its saying row, it never reaches Ears-Said
+    m = dev(line(10, "ivy", "a1", SID_A, lane="file") + [dict(turn(0, "Right."), ts=at(40), seq=1)])
+    assert "Ears-Said" not in m[0]["mail"]["headers"]
+    rows = line(10, "ivy", "a1", SID_A)
+    rows[0]["lane"] = "file"                         # only the saying row names the lane
+    m = dev(rows + [dict(turn(0, "Right."), ts=at(40), seq=1)])
+    assert said_of(m[0]) is None
+
+
+def test_said_keeps_the_spoken_line_when_a_bed_ends_after_it():
+    # a bed from the same session, played under the line and ending after it, would
+    # stretch the linger by its length: the spoken line is still the session's newest
+    m = dev(line(10, "ivy", "a1", SID_A) + line(25, "ivy", "bed1", SID_A, lane="file", played_s=20.0)
+            + line(18, "vera", "b1", SID_B) + [dict(turn(0, "Right."), ts=at(40), seq=1)])
+    assert said_of(m[0]) == f"{SID_B}@host1={at(18)}, {SID_A}@host1={at(10)}"
+
+
+def test_said_is_absent_when_no_line_qualifies():
+    m = dev([turn(1, "Hey Ivy, check the build.", seq=1)])
+    assert "Ears-Said" not in m[0]["mail"]["headers"]
+    assert "Ears-Said" not in headers_of(em_module().build(m[0]["mail"], "heard", "host1"))
+
+
+def test_said_rides_the_room_mail_and_its_device_cc_as_one_send():
+    m = dev(line(10, "ivy", "a1", SID_A) + [dict(turn(0, "Right."), ts=at(40), seq=1)])
+    assert [x["to"] for x in m] == [["heard+room"]] and m[0]["cc"] == ["heard+airpods"]
+    args = em_module().build(m[0]["mail"], "heard", "host1")
+    assert headers_of(args)["Ears-Said"] == f"{SID_A}@host1={at(10)}"
+
+
+def test_said_rides_the_seats_mail():
+    m = run(line(10, "ivy", "a1", SID_A) + [dict(turn(0, "Yes, push it."), ts=at(14), seq=1)])
+    assert who(m) == [(1, ["ivy"], "ivy=reply")]
+    assert said_of(m[0]) == f"{SID_A}@host1={at(10)}"
+
+
+def test_said_is_never_on_a_cut_notice():
+    m = run(line(10, "ivy", "a1", SID_A)
+            + line(20, "ivy", "a2", SID_A, cut=True, reason="error", notice="failed: exit 75"))
+    assert [x["subject"] for x in m] == ["your line was cut: error"]
+    assert m[0]["mail"]["headers"]["Ears-Kind"] == "cut" and said_of(m[0]) is None
+
+
+def test_said_is_never_on_a_call_turn(legs, monkeypatch):
+    socks_env(monkeypatch, legs("ivy/call-ears.sock", {"agent": "ivy", "calls": [1317]}))
+    rows = line(1, "ivy", "a1", SID_A)
+    rows[1]["ts"], rows[0]["ts"] = ts(1.5), ts(1.0)
+    m = dev(rows + call_rows()[1:] + [turn(9, "Hey Ivy, in the room", seq=9)])
+    assert who(m) == [(215130, ["calls+ivy-1317"], None), (9, ["heard+room"], "ivy@host1=call")]
+    assert said_of(m[0]) is None and said_of(m[1]) == f"{SID_A}@host1={ts(1.5)}"
+
+
+def test_said_carries_no_transcript_text():
+    text = "The secret word is pajama party."
+    m = dev(line(10, "ivy", "a1", SID_A, text=text)
+            + [dict(turn(0, "So, pajama party."), ts=at(40), seq=1)])
+    h = said_of(m[0])
+    assert SAID_GRAMMAR.fullmatch(h) and not set(_words_of(text)) & set(_words_of(h))
+
+
+def _words_of(s):
+    return re.findall(r"[a-z]{3,}", s.lower())
+
+
+def test_said_header_unit():
+    em = em_module()
+    room = em.Room()
+    rows = line(10, "ivy", "a1", SID_A) + line(20, "vera", "b1", SID_B, played_s="?")  # unreadable: in
+    del rows[1]["played_s"]                                                  # none at all: in
+    for r in rows:
+        room.note(r)
+    start = em._t({"ts": at(30)})
+    assert em.said_header(room, start, "host1") == f"{SID_B}@host1={at(20)}, {SID_A}@host1={at(10)}"
+    assert em.said_header(room, None, "host1") == ""
+    assert em.said_header(room, em._t({"ts": at(5)}), "host1") == ""        # nothing before it
+    room.spoken[-1] = (room.spoken[-1][0], "2030-06-09T01:00:20,000+10:00") + room.spoken[-1][2:]
+    assert em.said_header(room, start, "host1") == f"{SID_A}@host1={at(10)}"   # a comma: out
+
+
+def test_said_header_unit_leaves_out_a_bed():
+    em = em_module()
+    room = em.Room()
+    for r in line(10, "ivy", "a1", SID_A) + line(25, "ivy", "bed1", SID_A, lane="file"):
+        room.note(r)
+    assert [s[1] for s in room.spoken] == [at(10)]                           # the bed: never kept
+    assert em.said_header(room, em._t({"ts": at(30)}), "host1") == f"{SID_A}@host1={at(10)}"
+
+
+def test_said_is_never_on_a_call_turn_under_seats():
+    # --to seats still mails a Delta call turn to its seats (rule call): that is a call
+    # turn all the same, so it carries no Ears-Said; the room mic's turn after it does
+    m = run(line(10, "ivy", "a1", SID_A)
+            + [on_call(dict(turn(0, "Hey Ivy, check the build"), ts=at(40), seq=1)),
+               dict(turn(0, "Hey Vera, check the battery"), ts=at(60), seq=2)])
+    assert who(m) == [(1, ["ivy"], "ivy=call"), (2, ["vera"], "vera=call")]
+    assert said_of(m[0]) is None and said_of(m[1]) == f"{SID_A}@host1={at(10)}"
+
+
+# -- Ears-Film: playing, the room turn the keeper heard while a film played ---------
+# A fact about the turn on the room mail only: absent with no film, never empty, one
+# value. Kodi is asked at most once per room turn (TurnFilm): verdicts() and the header
+# read the same answer.
+FILM_TURN = "We have just received word that the villain is planning a trap."
+
+
+def film_of(m):
+    return m["mail"]["headers"].get("Ears-Film")
+
+
+def test_film_marks_an_unaddressed_room_turn_and_asks_kodi_once():
+    with KodiStub(1) as k:
+        m = dev(LINE + [turn(9, FILM_TURN, seq=60116)], args=("--kodi", k.url))
+    assert who(m) == [(60116, ["heard+room"], "")]          # the reply is held, as before
+    assert film_of(m[0]) == "playing"
+    assert k.asked == 1                                     # verdicts() asked; the header reused it
+
+
+def test_film_marks_a_named_room_turn_too():
+    # a call still wakes through a film; the turn was heard under it all the same
+    with KodiStub(1) as k:
+        m = dev(LINE + [turn(9, "Hey Ivy, pause that.", seq=9)], args=("--kodi", k.url))
+    assert who(m) == [(9, ["heard+room"], "ivy@host1=call")]
+    assert film_of(m[0]) == "playing"
+    assert k.asked == 1                                     # verdicts() never asked; the header did
+
+
+def test_film_is_asked_once_when_verdicts_asks_twice():
+    # "pardon?" asks about the film for the say-again, then again for the reply: one answer
+    with KodiStub(1) as k:
+        m = dev([saying(1, "ivy", "The side-car is logging.", "f1"),
+                 said(3, "ivy", "f1", played_s=2.0), turn(9, "Pardon?", seq=9)],
+                args=("--kodi", k.url))
+    assert who(m) == [(9, ["heard+room"], "")]
+    assert film_of(m[0]) == "playing"
+    assert k.asked == 1
+
+
+@pytest.mark.parametrize("speeds", [(0,), (None,)], ids=["paused", "no-video"])
+def test_film_is_absent_when_no_film_plays(speeds):
+    with KodiStub(*speeds) as k:
+        m = dev(LINE + [turn(9, "Good, leave it running.", seq=9)], args=("--kodi", k.url))
+    assert who(m) == [(9, ["heard+room"], "ivy@host1=reply")]
+    assert "Ears-Film" not in m[0]["mail"]["headers"]
+    assert k.asked <= 1
+
+
+def test_film_is_absent_without_kodi_or_when_kodi_is_unreachable():
+    m = dev(LINE + [turn(9, FILM_TURN, seq=9)])
+    assert "Ears-Film" not in m[0]["mail"]["headers"]
+    m = dev(LINE + [turn(9, FILM_TURN, seq=9)], args=("--kodi", "http://127.0.0.1:9/jsonrpc"))
+    assert "Ears-Film" not in m[0]["mail"]["headers"]
+    assert '"kodi": "unreachable"' in run.stderr
+
+
+def test_film_is_asked_per_turn():
+    with KodiStub(1, 0) as k:       # the film talks, then he pauses it and answers
+        m = dev(LINE + [turn(9, "Seventeen.", seq=9), turn(20, "Yes, score it later.", seq=20)],
+                args=("--kodi", k.url))
+    assert [(x["seq"], film_of(x)) for x in m] == [(9, "playing"), (20, None)]
+    assert k.asked == 2
+
+
+def test_film_is_on_the_room_mail_only():
+    # --to seats: the seat's own mail carries no Ears-Film, and a named turn asks Kodi nothing
+    with KodiStub(1) as k:
+        m = run(LINE + [turn(9, "Hey Ivy, pause that.", seq=9)], args=["--kodi", k.url])
+    assert who(m) == [(9, ["ivy"], "ivy=call")]
+    assert "Ears-Film" not in m[0]["mail"]["headers"] and k.asked == 0
+
+
+def test_film_header_is_one_value_and_rides_the_send():
+    em = em_module()
+    rec = turn(1, FILM_TURN, seq=42)
+    args = em.build(em.mail_for(rec, ["heard+room"], {}, frm="heard+room", film=True), "heard", "host1")
+    assert headers_of(args)["Ears-Film"] == "playing"
+    args = em.build(em.mail_for(rec, ["heard+room"], {}, frm="heard+room"), "heard", "host1")
+    assert "Ears-Film" not in headers_of(args)
+
+
+def test_turn_film_asks_kodi_at_most_once():
+    em = em_module()
+
+    class Kodi:
+        asked = 0
+
+        def playing(self):
+            Kodi.asked += 1
+            return "kodi playing at 0:12:05"
+
+    film = em.TurnFilm(Kodi())
+    assert not film.asked
+    assert [film(), film(), film()] == ["kodi playing at 0:12:05"] * 3
+    assert film.asked and Kodi.asked == 1
+
+
+# -- Ears-Addressed (EARS-497) -------------------------------------------------
+# The room mail names the seats a turn NAMES: <seat>@<host> per seat whose wake-file
+# `names` match anywhere in his echo-trimmed words (never the Subject), `everyone`
+# for an all-call. Absent when nobody is named; names only. Design: the EARS-497
+# task's design.md, sections 0 (Q9 = B: no say-again or own-voice withhold) to 10.
+
+def addressed_of(m):
+    """Ears-Addressed of each room mail, None where it is absent."""
+    return [x["mail"]["headers"].get("Ears-Addressed") for x in m]
+
+
+FILLER = ("The keeper restarted twice this morning, the queue drained by itself, the logs "
+          "rolled over at midnight and the disk has plenty of room left on it, so nothing "
+          "there needs a hand today. The build on the branch went green after the second "
+          "try, the docs page reads well, and the release notes are drafted, so the only "
+          "thing still open is the question about the linger window, and for that one, ")
+
+
+def test_addressed_a_name_late_in_a_long_turn_is_listed():                      # T1
+    text = FILLER + "ask Walter."
+    assert len(text) > 300
+    m = dev([turn(1, text, seq=1)])
+    assert addressed_of(m) == ["walter@host1"]
+    assert "walter" not in m[0]["subject"].lower()        # the Subject could not have matched
+    assert m[0]["subject"].endswith("...")
+
+
+def test_addressed_two_names_list_both_sorted_and_once():                       # T2
+    m = dev([turn(1, "Vera and Ivy, both of you, check the logs. Ivy, the second one too.", seq=1)])
+    assert addressed_of(m) == ["ivy@host1, vera@host1"]
+
+
+def test_addressed_hey_everyone_lists_everyone():                               # T3
+    m = dev([turn(1, "Hey everyone, please commit.", seq=1),
+             turn(5, "Hey everyone, and hey Ivy, stand up.", seq=5)])
+    assert addressed_of(m) == ["everyone", "everyone, ivy@host1"]
+
+
+def test_addressed_everyone_without_an_opener_is_no_all_call():                 # T4
+    m = dev([turn(1, "I think everyone agrees.", seq=1), turn(5, "Everybody's gone home.", seq=5),
+             turn(9, "Everyone, listen up.", seq=9)])
+    assert addressed_of(m) == [None, None, None]
+
+
+def test_addressed_no_name_no_header():                                         # T5
+    em = em_module()
+    m = dev([turn(1, "Right.", seq=1)])
+    assert len(m) == 1 and "Ears-Addressed" not in m[0]["mail"]["headers"]
+    assert "addressed" not in m[0]
+    assert "Ears-Addressed" not in headers_of(em.build(m[0]["mail"], "heard", "host1"))
+    assert not [a for a in em.build(m[0]["mail"], "heard", "host1") if a.startswith("Ears-Addressed")]
+
+
+def test_addressed_carries_names_only():                                        # T6
+    turns = ["Vira, the code word is pajama.", "Ivey said 4417 twice, then 92 more.",
+             "Hey everyone, walter wants the 3 logs by 5.", "I told Ivie and Vera the plan.",
+             "Nobody here, just numbers 1 2 3 and words.", FILLER + "Walter, Vira and Ivy."]
+    m = dev([turn(1 + 4 * i, t, seq=i + 1) for i, t in enumerate(turns)])
+    allowed = {f"{s}@host1" for s in RULES["seats"]} | {"everyone"}
+    values = [v for v in addressed_of(m) if v]
+    assert len(values) == 5
+    for v in values:
+        entries = v.split(", ")
+        assert set(entries) <= allowed and len(entries) == len(set(entries)), v
+        for word in ("Vira", "vira", "pajama", "Ivey", "Ivie", "code", "told", "plan"):
+            assert word not in v, (word, v)
+        assert not re.search(r"\d", v.replace("host1", "")), v
+
+
+def test_addressed_word_boundaries_and_case():                                  # T7
+    m = dev([turn(1, "VERA, look.", seq=1), turn(5, "Vera's build is green.", seq=5),
+             turn(9, "Leave it on the veranda.", seq=9)])
+    assert addressed_of(m) == ["vera@host1", "vera@host1", None]
+
+
+def test_addressed_a_misspelling_counts_only_when_listed():                     # T8
+    m = dev([turn(1, "Vira, check the build.", seq=1), turn(5, "Veera, check the build.", seq=5)])
+    assert addressed_of(m) == ["vera@host1", None]
+
+
+def test_addressed_vocative_and_mention_are_both_listed():                      # T9
+    m = dev([turn(1, "Vera, check the build.", seq=1),
+             turn(5, "I told Vera about the build.", seq=5)])
+    assert addressed_of(m) == ["vera@host1", "vera@host1"]
+
+
+def test_addressed_reads_his_words_not_the_mouths_echo():                       # T10
+    echo = "Hey Vera, your side-car is running and the logs are rolling over cleanly now."
+    m = dev([saying(1, "ivy", echo, "e1"), said(6, "ivy", "e1"),
+             turn(9, echo + " Thanks for that. Now please tell Walter to look at the build logs.",
+                  span=9, seq=9)])
+    assert addressed_of(m) == ["walter@host1"]
+    assert "Ears-Echo" in m[0]["mail"]["headers"]
+    m = dev([saying(1, "ivy", echo, "e1"), said(6, "ivy", "e1"), turn(9, echo, span=6, seq=9)])
+    assert m == []                                        # an all-echo turn is still not mailed
+
+
+def test_addressed_a_say_again_still_names_its_seat():                          # T11 (Q9 = B)
+    m = dev([saying(7, "vera", "The build is green and the second option is safer.", "c1"),
+             said(10, "vera", "c1", played_s=3.0), turn(13, "Vera, say again.", span=1, seq=7)])
+    assert who(m) == [(7, ["heard+room"], "vera@host1=again")]
+    assert addressed_of(m) == ["vera@host1"]              # the reader withholds by =again
+    lines = [json.loads(x) for x in run.stderr.splitlines() if x.startswith("{")]
+    assert [x["again"] for x in lines if "again" in x] == ["dry run"]
+    assert not [x for x in lines if x.get("skip") == "addressed"]
+
+
+def test_addressed_a_film_withholds_a_passing_mention():                        # T13
+    with KodiStub(1) as k:
+        m = dev(LINE + [turn(9, "I think Vera would hate this film.", seq=9)], args=("--kodi", k.url))
+    assert addressed_of(m) == [None]
+    assert k.asked == 1          # verdicts() asked on the reply path; the header reused the memo
+    skip = [json.loads(x) for x in run.stderr.splitlines() if x.startswith('{"skip": "addressed"')]
+    assert skip == [{"skip": "addressed", "seq": 9, "seats": ["vera"], "cause": "film",
+                     "media": "kodi playing at 0:12:05", "mailed": "without those entries"}]
+    with KodiStub(1) as k:
+        m = dev(LINE + [turn(9, "Hey Vera, pause it.", seq=9)], args=("--kodi", k.url))
+    assert addressed_of(m) == ["vera@host1"]                      # a call is never withheld
+    # addressed() asks Kodi nothing for a call; Ears-Film asks once for the room turn
+    assert k.asked == 1 and film_of(m[0]) == "playing"
+    m = dev(LINE + [turn(9, "I think Vera would hate this film.", seq=9)],
+            args=("--kodi", "http://127.0.0.1:9/jsonrpc"))
+    assert addressed_of(m) == ["vera@host1"]              # Kodi unreachable: the plain list
+
+
+def test_addressed_a_film_keeps_everyone():
+    with KodiStub(1) as k:
+        m = dev(LINE + [turn(9, "Hey everyone, Ivy said the film is long.", seq=9)],
+                args=("--kodi", k.url))
+    # everyone stays (a call to every seat); Ivy's passing mention is the film's
+    assert addressed_of(m) == ["everyone"]
+
+
+def test_addressed_a_seats_own_voice_names_it_too():                            # T14 (Q9 = B)
+    m = dev([own_turn(2, "Vera here, the build is green.", 2),
+             own_turn(6, "Hey Vera, are you there?", 6),
+             own_turn(10, "Ivy should look at the logs next.", 10)])
+    assert addressed_of(m) == ["vera@host1", "vera@host1", "ivy@host1"]
+    assert [x["mail"]["headers"]["Ears-Speaker"] for x in m] == ["vera@host1"] * 3
+
+
+def test_addressed_room_mail_only(legs, monkeypatch):                           # T15
+    m = run([turn(1, "Hey Ivy, and hey Vera, look.", seq=1)])
+    assert [x["to"] for x in m] == [["ivy"], ["vera"]]
+    assert all("Ears-Addressed" not in x["mail"]["headers"] and "addressed" not in x for x in m)
+    leg = legs("ivy/call-ears.sock", {"agent": "ivy", "calls": [1317]})
+    socks_env(monkeypatch, leg)
+    rows, calls = send_run(call_rows(text="Hey Ivy, on the call"), to=None)
+    assert headers_of(calls[0]["argv"]) == {"Ears-Kind": "turn", "Ears-Seq": "215130",
+                                            "Call-Id": "1317", "Call-Bot": "ivy"}
+    assert "addressed" not in rows[0]
+
+
+def test_addressed_every_seat_can_be_named_whatever_seats_says():               # T16
+    m = dev([turn(1, "Vera, look at this.", seq=1)], args=("--seats", "ivy"))
+    assert addressed_of(m) == ["vera@host1"]
+
+
+def test_addressed_no_seats_no_header():                                        # T17
+    m = dev([turn(1, "Hey everyone.", seq=1)], rules={"seats": {}})
+    assert len(m) == 1 and addressed_of(m) == [None]
+
+
+def test_addressed_the_dry_run_row_shows_it():                                  # T18
+    m = dev([turn(1, "Hey Ivy, what's the latency?", seq=1)])
+    assert m[0]["addressed"] == "ivy@host1"
+    assert m[0]["mail"]["headers"]["Ears-Addressed"] == "ivy@host1"
+    assert list(m[0]["mail"]["headers"])[:3] == ["Ears-Kind", "Ears-Rule", "Ears-Addressed"]
+
+
+def test_addressed_build_passes_it_as_one_header():                             # T19
+    em = em_module()
+    mail = em.mail_for(turn(1, "Hey everyone, and hey Ivy.", seq=1), ["heard+room"], {},
+                       rule="everyone=everyone, ivy@host1=call", frm="heard+room",
+                       addressed="everyone, ivy@host1")
+    args = em.build(mail, "heard", "host1")
+    assert headers_of(args)["Ears-Addressed"] == "everyone, ivy@host1"
+    assert sum(1 for a in args if a.startswith("Ears-Addressed:")) == 1
+    assert "Ears-Addressed" not in em.mail_for(turn(1, "Right.", seq=1), ["heard+room"], {})["headers"]
+
+
+def test_addressed_pure_function():
+    em = em_module()
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d, "wake.json")
+        p.write_text(json.dumps(RULES))
+        rules = em.load_rules(str(p), [])
+    assert em.addressed("I told Vera and Ivy.", rules, {}) == (["ivy", "vera"], False, [])
+    assert em.addressed("Hey everybody.", rules, {}) == ([], True, [])
+    playing = lambda: "kodi playing at 0:00:01"
+    assert em.addressed("Hey Ivy, Vera said so.", rules, {"ivy": "call"}, playing) == \
+        (["ivy"], False, ["vera"])
+    asked = []
+    def never():
+        asked.append(1)
+        return "kodi playing at 0:00:01"
+    # only called names: the film is not asked about
+    assert em.addressed("Hey Ivy.", rules, {"ivy": "call"}, never) == (["ivy"], False, [])
+    assert asked == []
+    assert em.addressed_header(["vera", "ivy"], True, "host1") == "everyone, ivy@host1, vera@host1"
+    assert em.addressed_header([], False, "host1") == ""
+
+
+def test_turn_film_asks_kodi_once_per_turn():
+    em = em_module()
+
+    class K:
+        n = 0
+
+        def playing(self):
+            K.n += 1
+            return "kodi playing at 0:00:02"
+    film = em.TurnFilm(K())
+    assert not film.asked
+    assert film() == film() == "kodi playing at 0:00:02"
+    assert K.n == 1 and film.asked

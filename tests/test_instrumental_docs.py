@@ -13,7 +13,7 @@ list here cannot outlive the thing it names:
   the writer puts in ``split.json``;
 - the model: ``docs/models.md`` names the pin;
 - the row fields: ``docs/logs.md``;
-- the README's one line, the ears skill and the CHANGELOG's ``[Unreleased]``.
+- the README's one line, the ears skill and the CHANGELOG section that announced it.
 """
 from __future__ import annotations
 
@@ -177,13 +177,13 @@ def test_the_models_page_names_the_pin_and_its_terms():
 
 
 def test_every_page_states_the_codes_ceiling():
-    """The auto-split ceiling is stated as the code's: the mouth page, the CHANGELOG's
-    newest section with entries ([Unreleased], or after a release bump the release it
-    became) and the models page's memory note never name another."""
+    """The auto-split ceiling is stated as the code's: the mouth page, the CHANGELOG
+    section that announced the split and the models page's memory note never name
+    another."""
     from mouth import autosplit
     minutes = f"{autosplit.CEILING_S / 60:g} min"
-    heading, newest = _newest_changelog_entries(_read("CHANGELOG.md"))
-    pages = {"docs/mouth.md": _read("docs/mouth.md"), f"CHANGELOG.md {heading}": newest,
+    heading, announced = _changelog_section_that_announced_the_split(_read("CHANGELOG.md"))
+    pages = {"docs/mouth.md": _read("docs/mouth.md"), f"CHANGELOG.md {heading}": announced,
              "docs/models.md HTDemucs": _section(_read("docs/models.md"), "HTDemucs")}
     pattern = re.compile(r"(?:file of|files? over|over|than) (\d+) min(?:utes)?\b")
     for where, text in pages.items():
@@ -220,10 +220,10 @@ def test_the_ears_skill_says_to_relay_the_split_line():
         assert name in skill, f"the ears skill never names {name}"
 
 
-def test_the_changelog_unreleased_has_added_and_changed():
-    """The newest CHANGELOG section with entries carries the split's Added and Changed:
-    [Unreleased] until the release bump, then the release it was moved into."""
-    heading, body = _newest_changelog_entries(_read("CHANGELOG.md"))
+def test_the_changelog_section_that_announced_the_split_has_added_and_changed():
+    """The CHANGELOG section that announced the split carries its Added and Changed.
+    It is found by what it says, not where it sits, so a later entry cannot move it."""
+    heading, body = _changelog_section_that_announced_the_split(_read("CHANGELOG.md"))
     added = _section_of(body, "Added", heading)
     changed = _section_of(body, "Changed", heading)
     for name in ("mouth split", "--install", "--stem", "music_instrumental",
@@ -232,17 +232,30 @@ def test_the_changelog_unreleased_has_added_and_changed():
     assert "music_instrumental\": false" in changed and "--no-instrumental" in changed
 
 
-def _newest_changelog_entries(text: str) -> tuple[str, str]:
-    """The heading and body of the newest ``## [...]`` section that holds an entry.
+def test_a_later_entry_cannot_move_the_split_anchor():
+    """A newer section (even one whose Added names `mouth split FILE` again) never moves
+    the anchor off the section that announced it; with no announcement it fails loudly."""
+    log = ("## [Unreleased]\n\n### Added\n\n- `mouth split FILE` takes `--quiet`.\n\n"
+           "## [0.4.0] - 2030-12-08\n\n### Fixed\n\n- dummy\n\n"
+           "## [0.3.2] - 2030-06-09\n\n### Added\n\n- `mouth split FILE...` separates.\n\n"
+           "## [0.3.1] - 2030-06-09\n\n### Added\n\n- `mouth play`.\n")
+    heading, body = _changelog_section_that_announced_the_split(log)
+    assert heading == "[0.3.2]" and "separates" in body and "--quiet" not in body
+    with pytest.raises(AssertionError, match="announces"):
+        _changelog_section_that_announced_the_split(log.replace("mouth split FILE", "mouth x"))
 
-    [Unreleased] when it has any; else (a release bump has emptied it into
-    ``## [x.y.z] - <date>``) the latest released section, which is the next one down."""
+
+def _changelog_section_that_announced_the_split(text: str) -> tuple[str, str]:
+    """The heading and body of the ``## [...]`` section whose ``### Added`` opens a
+    bullet with `` `mouth split FILE``: the oldest such section, so a later entry
+    that names the verb again (in any section) cannot move the anchor."""
     sections = re.findall(r"^## (\[[^\]]+\][^\n]*)\n(.*?)(?=^## \[|\Z)", text, re.M | re.S)
     assert sections, "CHANGELOG.md has no ## [...] section"
-    for heading, body in sections:
-        if re.search(r"^- ", body, re.M):  # a bullet, not an empty ### stub
+    for heading, body in reversed(sections):  # oldest first
+        added = re.search(r"^### Added\n(.*?)(?=^### |\Z)", body, re.M | re.S)
+        if added and re.search(r"^- `mouth split FILE", added.group(1), re.M):
             return heading.split(" - ")[0], body
-    raise AssertionError("no CHANGELOG section holds an entry")
+    raise AssertionError("no CHANGELOG section's ### Added announces `mouth split FILE`")
 
 
 def _section_of(body: str, title: str, heading: str = "[Unreleased]") -> str:

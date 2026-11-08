@@ -48,9 +48,11 @@ pair of ears on a Mac (depth in [docs/architecture.md](docs/architecture.md)):
 - **Capture** (`src/ears/listen`): `ears.listen capture` reads one input
   device and writes every partial, turn and heartbeat to the **heard log**
   (`src/ears/heard.py`):
-  `<home>/logs/conversations/heard_YYYY-MM-DD.jsonl`, where `<home>` is
-  `~/.voicemode` on a host that already keeps it there, else
-  `~/.sessionvoice` ([docs/logs.md](docs/logs.md#sessionvoices-home)).
+  `<root>/logs/conversations/heard_YYYY-MM-DD.jsonl`, where `<root>` is the
+  state root: `~/.sessionkit/voice/state` on a new host, or the old
+  `~/.sessionvoice` or `~/.voicemode` on a host that already keeps its heard
+  log there ([docs/logs.md](docs/logs.md#the-state-root)).
+  `ears home state-dir` prints it.
   On a fresh host that also runs VoiceMode's `converse` as a heard guest,
   set `SESSIONVOICE_HOME=~/.voicemode` (or `VOICEMODE_BASE_DIR`), so that
   both write one log.
@@ -84,9 +86,11 @@ pair of ears on a Mac (depth in [docs/architecture.md](docs/architecture.md)):
 - **Sounds** (`keeper/ears-sounds.py`, launchd `dev.sessionkit.voice.ears-sounds`):
   a short sound in the user's ears when the ears log an event, so they know
   they were heard. Its partner, `keeper/mouth-sounds.py`
-  (`dev.sessionkit.voice.mouth-sounds`), plays the mouth's cues. Opt-in:
-  `ears services install --only sounds` loads both, from an installed
-  package or a checkout; a bare install never does.
+  (`dev.sessionkit.voice.mouth-sounds`), plays the mouth's cues. A bare
+  `ears services install` loads both, from an installed package or a
+  checkout. From the first turn the ears' turn and partial ticks are on
+  (Settings turns them off), and so are the mouth's five cues
+  (`mouth-sounds.json` in the settings folder turns each off).
 - **Turn mail** (`keeper/ears-mail.py`, launchd `dev.sessionkit.voice.ears-mail`):
   mails each of the user's finished turns To and From
   `heard+room@<host>`, whatever input device the capture is following, with
@@ -115,6 +119,12 @@ pair of ears on a Mac (depth in [docs/architecture.md](docs/architecture.md)):
   label is dropped: the remaining words get `--speaker` (else
   `unknown@<host>`), never the seat whose echo was cut, and they can be a
   reply to that seat. A label naming anyone else is kept.
+  `Ears-Addressed` lists the seats a turn names, as `<seat>@<host>`, wherever
+  the name falls in the turn, plus `everyone` for "hey everyone":
+  `Ears-Addressed: everyone, ivy@<host>`. A seat is named by its `names` in
+  the wake file. The header carries names only, never the turn's words, and a
+  turn that names nobody has no `Ears-Addressed`. It goes on the room mail
+  only. [docs/ears.md](docs/ears.md) gives the rules.
   `Ears-Echo` says a mouth line heard back through the mic was cut out of
   the turn. On the speakers the mic hears the mouth, so a line's
   words are cut wherever they sit in the user's turn: at its start (up to `3 + 5
@@ -143,6 +153,25 @@ pair of ears on a Mac (depth in [docs/architecture.md](docs/architecture.md)):
   have opened within 2 s of the line beginning, unless the turn is mostly
   the line. On the `ts − (t1 − t0)` estimate, only the first two guards
   apply. Numerals (`9%` for "nine percent") still slip past the word match.
+  `Ears-Said` names each session's own line the turn came after, so the
+  pager can keep that session's window open (its linger):
+  `Ears-Said: <session>@<host>=<end>, ...`. `<session>` is the full session
+  id on the line's `said` row, `<host>` the keeper's, and `<end>` that
+  row's `ts`, as it was written. Each session gets one entry: its newest line
+  that finished at or before the turn's `Ears-Start`, within 600 s. It
+  carries spoken lines only: a line on `lane: file` (a music bed or a sound
+  file) is left out, so a bed that ends after a line leaves that line the
+  session's newest. A line with `interest: zero`, or one cut before it
+  played a word (`played_s` 0), is left out. A line the user barged into after part of it played counts,
+  at its cut. Entries are sorted, and the header holds names and times,
+  never a line's words. It goes on the device mail and the `--to seats`
+  mail, never on a cut notice or a call turn; with no entry there is no
+  header.
+  `Ears-Film: playing` marks a turn the keeper heard while a film was
+  playing (`--kodi`: the state that holds `reply` and `light`), so the
+  pager can tell film dialogue from the user. It is a fact about the turn,
+  with one value, on the device mail only; with no film playing, or no
+  `--kodi`, there is no header. Kodi is asked at most once per turn.
 - **Waiter** (`bin/heard-first`): an agent blocks on the heard log
   until a line is for it, by `--rule`: its name in a partial or a
   turn (`partial:REGEX`, `turn:REGEX`), a reply to its last line
@@ -185,10 +214,11 @@ Three JSON settings files, each reread with no restart:
   read only their own file.
 
 Environment variables win over single keys (`EARS_RECORD` over `record`,
-`MOUTH_DEVICE` over `output`). `SESSIONVOICE_HOME` moves the home that holds
-the heard log and each part's state; by default it is `~/.sessionvoice`, or
-`~/.voicemode` on a host that already keeps its heard log there. The launch
-agents are in `~/Library/LaunchAgents/`.
+`MOUTH_DEVICE` over `output`). `SESSIONVOICE_HOME` moves the state root,
+which holds the heard log and each part's state; by default it is
+`~/.sessionkit/voice/state`, or the old `~/.sessionvoice` or `~/.voicemode` on
+a host that already keeps its heard log there. The launch agents are in
+`~/Library/LaunchAgents/`.
 
 Which files and which variables each part reads, and where each one lives:
 [docs/configuration.md](docs/configuration.md).
@@ -197,9 +227,9 @@ Every key, its type and its default:
 
 ## Logs
 
-- **The heard log:** `<home>/logs/conversations/heard_YYYY-MM-DD.jsonl`,
+- **The heard log:** `<root>/logs/conversations/heard_YYYY-MM-DD.jsonl`,
   one JSON line for each thing the ears heard and the mouth said, where
-  `<home>` is the home above. A new file starts each day.
+  `<root>` is the state root above (`ears home state-dir` prints it). A new file starts each day.
 - **The services' logs:** `~/.sessionkit/voice/log/` (`EARS_LOG_DIR` moves it).
   `ears-keeper.log` is what the keeper did (devices, restarts, calls, a
   deaf mic); `ears-keeper-capture.log` is the room capture's own output;
@@ -209,7 +239,7 @@ Every key, its type and its default:
 
 Follow one with `tail -F`, for example
 `tail -F ~/.sessionkit/voice/log/ears-keeper.log`, or today's heard log with
-`tail -F <home>/logs/conversations/heard_$(date +%F).jsonl`.
+`tail -F "$(ears home state-dir)/logs/conversations/heard_$(date +%F).jsonl"`.
 Every log file and what each line means:
 [docs/logs.md](docs/logs.md).
 
@@ -258,7 +288,8 @@ conversation either. On the host, run `talk pair` in a terminal and open the
 link it prints; `talk token --rotate` makes every browser pair again. Open talk
 at `http://127.0.0.1:<port>/`, never at `localhost`. The code is `src/talk/`.
 `ears services install --only talk` keeps it running as a launch agent
-(opt-in; a bare install never does).
+(opt-in; a bare install never does); add `--allow-host
+machine.example.ts.net` for a phone behind `tailscale serve`.
 
 In the kit's web page, Talk is a room: the kit's front door runs
 `talk serve --kit` on a unix socket and logs you in, so there is nothing to
@@ -277,8 +308,7 @@ import that needs one fails naming it, as `pip install 'sessionvoice[EXTRA]'`.
 
     uv venv && uv pip install -e '.[all]'  # onnxruntime + mlx-audio
     ears install
-    ears services install --agent NAME     # the launch agents: mouth, keeper, mail
-    ears services install --only sounds    # opt-in: the ears and mouth sounds
+    ears services install --agent NAME     # the launch agents: mouth, keeper, mail, sounds
     ears services install --only talk      # opt-in: talk serve, the live view
 
 A phone-only Mac (for example one that runs a Delta bot, with no agent
@@ -351,11 +381,12 @@ as its `log` row ([logs](docs/logs.md#the-log-files)). It then:
   postfix and makes the `heard` box with `message setup --box heard`
   (which also makes sessionmail's mail root, your own box and its notmuch
   profile, if they are missing, and prints each one). On a host that
-  sends by postfix, it makes the `heard` box NESTED under the store dir
-  that carries `.tm-store`, as `~/.mail/agents/<store>/heard/`, when there
-  is exactly one such dir, then runs `vmailbox-gen` if that is on `PATH`,
-  and otherwise prints the commands (`~/.mail/.postfix/vmailbox-gen`:
-  sessionmail keeps it off `PATH`). When sessionmail's answer cannot be
+  sends by postfix, it makes the `heard` box NESTED under the store box
+  (`message box list` names it; `message path <store>` is its folder), as
+  `<store>/heard/`, when there is exactly one, then runs this host's
+  `vmailbox-gen` as sessionmail names it (`message path --generator`), and
+  otherwise prints the commands. sessionvoice never spells the mail root:
+  every box is sessionmail's answer. When sessionmail's answer cannot be
   read (no `message`, or one older than 0.2.0), it warns, makes no box,
   checks neither, and goes on.
   On a postfix host it also prints the box to subscribe to:
@@ -369,7 +400,9 @@ as its `log` row ([logs](docs/logs.md#the-log-files)). It then:
   `ears services install --agent NAME` for a Mac where an agent seat should
   be woken when you speak, and `ears services install --no-agent` for a
   phone-only Mac (for example a Delta bot), where nobody is woken and the
-  notices go to the log; then `ears wake add NAME`, to add a seat later. Inside
+  notices go to the log; then `ears wake add NAME`, to add a seat later, or
+  `ears wake add --self` in the seat's agent file, to register it at every
+  launch ([docs/ears.md](docs/ears.md#wake-seats)). Inside
   an agent seat (`TM_AGENT_ADDRESS` set) it suggests that address's local
   part as NAME; it never installs on the suggestion. `--no-agent` installs
   anyway, and install warns that NOBODY is woken. A wake file that already

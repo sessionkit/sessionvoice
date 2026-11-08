@@ -4,7 +4,9 @@
   (EARS-294): the table is ``tests/env_fence.py``'s ``MOUTH_TEST_FENCE``.
 - ``MOUTH_HEARD_BOX`` is a tmp maildir, so a reply's parent lookup
   never reads the live heard box (``~/.mail/agents/<box>/heard``: the user's
-  words).
+  words). The fake ``message`` (tests/conftest.py) answers from the fake HOME's
+  ``.mail`` (EARS-502, SM 0.3.3), so a test that unsets ``MOUTH_HEARD_BOX`` gets the
+  default box (``ears.heardbox``) under tmp, never a box the runner's sessionmail names.
 - ``MOUTH_MAILBOX`` and ``MOUTH_MAIL_LOG`` are unset, so
   no line or log entry lands in the live mouth box. A test that wants a box
   sets its own, in tmp (its fixtures run after this one).
@@ -52,7 +54,7 @@ FAKE_SENDMAIL = Path(__file__).parent / "fixtures" / "fake_sendmail.py"
 
 
 @pytest.fixture(autouse=True)
-def heard_box(tmp_path_factory, monkeypatch) -> Path:
+def heard_box(tmp_path_factory, monkeypatch, fake_message_on_path) -> Path:
     """The heard box every mouth test sees: an empty maildir in tmp."""
     root = tmp_path_factory.mktemp("fence")
     hb = root / "heard"
@@ -62,7 +64,9 @@ def heard_box(tmp_path_factory, monkeypatch) -> Path:
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     agents = home / ".mail" / "agents"
-    agents.mkdir(parents=True)
+    agents.mkdir(parents=True)        # the fenced mail root's boxes folder: the fake `message`
+    from ears import boxes            # (fake_message_on_path) answers every box under it
+    boxes.forget()
     # Each variable under every name it has (EARS-294): the new MOUTH_ name wins over
     # the old MOUTH_ one, so a fence on one name alone could be got round.
     # The table, popped or set, is tests/env_fence.py's MOUTH_TEST_FENCE: the mailbox

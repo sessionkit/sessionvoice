@@ -100,7 +100,7 @@ def adopt(sx, monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", server)
     sx["server"] = server
     sx["conf"] = sx["home"] / SETTINGS / "ears.json"
-    sx["record"] = sx["home"] / ".sessionvoice" / "state" / "stt-fallback.json"
+    sx["record"] = sx["home"] / ".sessionkit/voice/state" / "state" / "stt-fallback.json"   # a fresh home (EARS-492)
     return sx
 
 
@@ -150,7 +150,7 @@ def test_a_cold_adopted_server_that_never_answers_falls_back_loudly(adopt, capsy
     out = capsys.readouterr().out
     assert "FALLBACK" in out and "(no answer: timed out)" in out
     assert _final(adopt) == {"url": WHISPER}
-    assert json.loads(adopt["conf"].read_text()).keys() == {"final"}       # ears.json: no record in it
+    assert json.loads(adopt["conf"].read_text()).keys() == {"final", "listen"}   # ears.json: no record in it; listen false is the fresh file's
     rec = json.loads(adopt["record"].read_text())
     assert rec["final"] == {"url": SPEECH, "model": PARAKEET} and rec["why"] == "no answer: timed out"
     assert [t for _, _, t in adopt["server"].asked] == [services.COLD_PROBE_S, 30.0]

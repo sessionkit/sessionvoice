@@ -393,9 +393,17 @@ def test_on_writes_the_key_atomically_keeping_the_others_and_warns_of_all_voices
 
 def test_off_on_a_new_host_makes_the_file(conf, capsys):
     rc, out, _err = _run(["off"], capsys)
-    assert rc == 0 and json.loads(conf.read_text()) == {"record": False}
+    # a new ears.json says the room's ear is off: nobody said yes yet (the install's rule)
+    assert rc == 0 and json.loads(conf.read_text()) == {"listen": False, "record": False}
     assert stat.S_IMODE(conf.stat().st_mode) == 0o600
     assert "Recording is OFF" in out
+
+
+def test_on_a_new_host_makes_the_file_with_the_ear_off(conf, capsys):
+    """Recording on is not hearing on: the file `ears recording on` creates says listen false,
+    so the keeper does not start the room's ear on it (a missing listen reads as on)."""
+    rc, _out, _err = _run(["on"], capsys)
+    assert rc == 0 and json.loads(conf.read_text()) == {"listen": False, "record": True}
 
 
 @pytest.mark.parametrize("cmd", ["on", "off"])

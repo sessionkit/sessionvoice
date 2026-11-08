@@ -125,6 +125,13 @@ def test_keys_is_stdlib_only():
     for sibling in ("envnames.py", "home.py"):
         imports |= set(re.findall(r"^\s*(?:from|import) ([\w.]+)",
                                   (SRC / "ears" / sibling).read_text(), re.M))
+    # home.py ASKS tools where seat homes are (EARS-492 design.md D5, rung a): a lazy import
+    # of the peer, inside a try, that falls to the next rung when it is not installed. It is
+    # never needed to run, so it is no dependency; any other outside import still fails.
+    home_text = (SRC / "ears" / "home.py").read_text()
+    assert re.findall(r"^\s*from (sessiontools)\b", home_text, re.M) == ["sessiontools"]
+    assert re.search(r"try:\n\s+from sessiontools import settings as mod\n", home_text)
+    imports -= {"sessiontools"}
     outside = {m for m in imports if m.split(".")[0] not in sys.stdlib_module_names}
     assert not outside, f"keys.py imports beyond the stdlib: {outside}"
 

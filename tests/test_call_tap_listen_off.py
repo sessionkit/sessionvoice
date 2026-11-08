@@ -57,7 +57,10 @@ def tap(tmp_path):
     model.write_bytes(b"onnx")
     state = tmp_path / "state"
     env = {k: v for k, v in os.environ.items() if not k.startswith("CALL_TAP_")}
+    # the run folder by its own variable: the stub EARS_PY cannot answer `-m ears.home state-dir
+    # call-tap` (EARS-492 do-003; tests/test_state_items.py runs the real one)
     env.update(HOME=str(tmp_path), XDG_STATE_HOME=str(state), EARS_PY=str(stubs / "python"),
+               EARS_CALL_TAP_RUN=str(state / "ears" / "call-tap"),
                EARS_SILERO_MODEL=str(model), PATH=f"{stubs}:/usr/bin:/bin")
     run_dir = state / "ears" / "call-tap"
     ups = []

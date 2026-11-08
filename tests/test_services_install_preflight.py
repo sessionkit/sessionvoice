@@ -127,8 +127,9 @@ def test_every_shipped_file_missing_is_listed_with_the_agent_and_silero(fresh, m
     assert services.main(["install"]) == 2
     err = capsys.readouterr().err
     assert _heads(err) == [_a1(),
-                           "no ears-keeper.sh", "no ears-sounds.schema.json", "no ears-mail.py"]
-    assert err.splitlines()[-2:] == [_not_fetched(), _footer(4)]
+                           "no ears-keeper.sh", "no ears-sounds.schema.json", "no ears-mail.py",
+                           "no ears-sounds.py", "no mouth-sounds.py"]      # the sounds are in a bare install
+    assert err.splitlines()[-2:] == [_not_fetched(), _footer(6)]
     _nothing_written(fresh)
 
 
@@ -139,7 +140,8 @@ def test_a_dry_run_gets_past_the_missing_files_and_lists_the_rest(fresh, monkeyp
     _store(fresh["home"])
     assert services.main(["install", "--agent", "dave", "--dry-run"]) == 2
     cap = capsys.readouterr()
-    assert _heads(cap.err) == ["no ears-keeper.sh", "no ears-sounds.schema.json", "no ears-mail.py"]
+    assert _heads(cap.err) == ["no ears-keeper.sh", "no ears-sounds.schema.json", "no ears-mail.py",
+                               "no ears-sounds.py", "no mouth-sounds.py"]
     assert _not_fetched() in cap.err.splitlines()
     assert "dev.sessionkit.voice.ears-mouth.plist" in cap.out and "dev.sessionkit.voice.mlx-audio.plist" in cap.out
     assert "ears-keeper.plist" not in cap.out and "ears-mail.plist" not in cap.out

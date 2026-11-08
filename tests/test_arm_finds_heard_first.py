@@ -71,7 +71,7 @@ def test_own_location_arms_with_no_plugin_bin_on_path(fence):
     assert r.returncode == RC, r.stderr
     exe, argv = fence.ran(fence.tmp / "plugin-ran")
     assert exe == f"{plugin}/bin/heard-first"
-    assert f"cut:{fence.seat}" in argv and f"--state {fence.home}/.ears/heard.state" in argv
+    assert f"cut:{fence.seat}" in argv and f"--state {fence.home}/.sessionkit/voice/state/seats/{fence.seat}/heard.state" in argv
 
 
 def test_own_location_wins_over_plugin_root_and_path(fence):

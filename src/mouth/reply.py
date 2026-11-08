@@ -12,7 +12,9 @@ thread.
     Call-ID:     <the parent's>  copied byte for byte, if it has one
 
 The parent is looked up in the heard box, not notmuch: the index runs up to
-5 minutes behind, and the turn being answered is seconds old. If it isn't
+5 minutes behind, and the turn being answered is seconds old. The heard box
+is ``$MOUTH_HEARD_BOX``, else the one ``ears services install`` made or
+found (``ears.heardbox``). If it isn't
 found, the line still threads on ID alone, and stderr says so. That is never
 an error.
 
@@ -31,15 +33,17 @@ from email.message import EmailMessage
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
-from ears import envnames
+from ears import envnames, heardbox
 
 HEARD_VAR = "MOUTH_HEARD_BOX"
-#: No default box: where ``heard@<host>`` lands is the host's mail setup,
-#: not ours to guess. Unset, there is no box to look in: the line threads on the ID alone
-#: and stderr names $MOUTH_HEARD_BOX (``NO_HEARD_BOX``). A host that used the old
-#: default (``~/.mail/agents/failmode/heard``) sets the variable to it.
-NO_HEARD_BOX = (f"mouth: ${HEARD_VAR} is not set, so there is no heard box to look the "
-                "parent up in; set it to the maildir(s) heard turns land in (':'-separated)")
+#: The default box, with $MOUTH_HEARD_BOX unset, is the heard box ``ears services
+#: install`` made or found, by its own rule (``ears.heardbox.find``): never a guessed
+#: path. No such box either: the line threads on the ID alone and stderr says what was
+#: looked for (``NO_HEARD_BOX``, ``{looked}`` filled by ``heardbox.looked_for()``).
+NO_HEARD_BOX = (f"mouth: ${HEARD_VAR} is not set and no heard box was found at {{looked}}, "
+                "so there is no heard box to look the parent up in; run `ears services "
+                f"install`, or set ${HEARD_VAR} to the maildir(s) heard turns land in "
+                "(':'-separated)")
 #: The newest this many files in a box are read: about 2.5 days of turns.
 SCAN_CAP = 2000
 #: A header block longer than this is not a mail we wrote; stop reading it.
@@ -90,11 +94,15 @@ def is_msg_id(value: Optional[str]) -> bool:
 # -- the heard box ------------------------------------------------------------
 
 def heard_boxes() -> list:
-    """``$MOUTH_HEARD_BOX`` (``:``-separated maildirs; empty = unset), else
-    ``[]``: no default box."""
+    """``$MOUTH_HEARD_BOX`` (``:``-separated maildirs; empty or blank = unset), else
+    the heard box ``ears services install`` made or found (``heardbox.find``: nested
+    under a store dir, else flat; only one with a ``new/``), else ``[]``."""
     env = envnames.get(HEARD_VAR) or ""
     parts = [p for p in env.split(":") if p.strip()]
-    return [Path(p).expanduser() for p in parts]
+    if parts:
+        return [Path(p).expanduser() for p in parts]
+    box = heardbox.find()
+    return [box] if box is not None else []
 
 
 def _newest(box: Path, cap: int) -> list:
@@ -133,15 +141,15 @@ def find_parent(mid: str, boxes: Optional[Iterable[Path]] = None,
     """The header block of the mail whose Message-ID is exactly MID, or None.
 
     Each box in turn (``heard_boxes()`` by default): its newest CAP files in new/
-    and cur/, newest first. The first match wins. No box configured: None, and a
-    line on stderr naming $MOUTH_HEARD_BOX (never an error: the line
-    still threads on MID).
+    and cur/, newest first. The first match wins. No box set or found: None, and a
+    line on stderr naming $MOUTH_HEARD_BOX and where the default was looked for
+    (never an error: the line still threads on MID).
     """
     want = mid.encode("ascii")
     if boxes is None:
         boxes = heard_boxes()
         if not boxes:
-            _warn(NO_HEARD_BOX)
+            _warn(NO_HEARD_BOX.format(looked=heardbox.looked_for()))
     for box in boxes:
         for path in _newest(Path(box), cap):
             head = _head(path)

@@ -44,10 +44,10 @@ def _changing(sp):
     return [a for a in sp["calls"]["launchctl"] if a[0] not in LOOK]
 
 
-# ---- the service: in ALL, never in DEFAULT, two jobs -------------------------------------------
+# ---- the service: in ALL and in DEFAULT, two jobs ----------------------------------------------
 
-def test_sounds_is_a_service_of_two_jobs_and_opt_in():
-    assert "sounds" in services.ALL and "sounds" not in services.DEFAULT
+def test_sounds_is_a_service_of_two_jobs_and_in_the_default_set():
+    assert "sounds" in services.ALL and "sounds" in services.DEFAULT
     assert services.jobs(["sounds"]) == list(JOBS)
     assert services.jobs(["mouth", "sounds", "ears-sounds"]) == ["mouth", *JOBS]      # once each
     for j in JOBS:
@@ -63,12 +63,14 @@ def test_only_help_lists_sounds(capsys):
     assert "speakers,sounds" in out and "sounds: ears-sounds and mouth-sounds" in out
 
 
-def test_a_bare_install_never_loads_the_sounds(monkeypatch):
+def test_a_bare_install_loads_the_sounds(monkeypatch):
+    """The tick that says "you were heard" is on from the first turn (the consent page's
+    promise); `--only sounds` still names the two jobs alone; uninstall takes them with the rest."""
     got = {}
     monkeypatch.setattr(services, "install", lambda names, dry=False, **kw: got.update(install=names) or 0)
     monkeypatch.setattr(services, "uninstall", lambda names, dry=False: got.update(uninstall=names) or 0)
     services.main(["install", "--no-agent"])
-    assert not set(JOBS) & set(got["install"])
+    assert set(JOBS) <= set(got["install"])
     services.main(["install", "--only", "sounds"])
     assert got["install"] == list(JOBS)
     services.main(["uninstall"])                      # uninstall takes every service, sounds too

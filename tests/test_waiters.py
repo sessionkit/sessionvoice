@@ -24,7 +24,7 @@ def at(s):
 
 def run(tool, tmp, *args):
     return subprocess.run([sys.executable, str(BIN / tool), *args], capture_output=True, text=True,
-                          timeout=30, env={"VOICEMODE_BASE_DIR": str(tmp), "PATH": "/usr/bin:/bin"})
+                          timeout=30, env={"VOICEMODE_BASE_DIR": str(tmp), "PATH": "/usr/bin:/bin", "HOME": str(tmp)})
 
 
 # -- heard-first --reply-window: DAVE woke on "I'm back" 21 min after his own line --
@@ -93,7 +93,7 @@ def _talk(tmp, linger_flag, n_partials, then_turn):
     state.write_text(json.dumps({"offsets": {str(logs / DAY): 0}}))
     p = subprocess.Popen([sys.executable, str(BIN / "heard-first"), "--rule", "turn", "--state", str(state),
                           *linger_flag], stdout=subprocess.PIPE, text=True,
-                         env={"VOICEMODE_BASE_DIR": str(tmp), "PATH": "/usr/bin:/bin"})
+                         env={"VOICEMODE_BASE_DIR": str(tmp), "PATH": "/usr/bin:/bin", "HOME": str(tmp)})
     with open(logs / DAY, "a") as f:
         for i in range(n_partials):
             time.sleep(1.0)

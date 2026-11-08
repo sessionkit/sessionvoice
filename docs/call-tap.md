@@ -72,7 +72,10 @@ Then set `"input": "default"` in `ears.json`, and check
 `listen: false` in `~/.sessionkit/voice/settings/ears.json` stops the far-end capture
 and leaves the passthrough running: the far end still hears you, and the
 ears hear nothing. The ears keeper does it with two files in
-call-tap's run dir, `${XDG_STATE_HOME:-~/.local/state}/ears/call-tap`:
+call-tap's run dir, `<state root>/call-tap` (`~/.sessionkit/voice/state/call-tap` on a new
+host; `EARS_CALL_TAP_RUN` moves it, and a host that already has
+`${XDG_STATE_HOME:-~/.local/state}/ears/call-tap` keeps it there;
+`ears home state-dir call-tap` prints it):
 
 - **`LISTEN-OFF`**: the keeper creates it on `listen: false` and removes it
   on `listen: true`. While it is there, `call-tap up` runs no capture. It

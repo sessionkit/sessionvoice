@@ -8,11 +8,17 @@
      It reads the heard log only (no microphone, so no TCC grant) and runs on the system
      python: stdlib only, like the rest of keeper/.
      A TEMPLATE: render it, then install (no machine paths live here):
-       mkdir -p ~/.cache/ears "$(.venv/bin/python -m ears.home log-dir)"   # and the voice log folder
+       mkdir -p "$(dirname "$(.venv/bin/python -m ears.home state-dir ears-mail-state)")" \
+                "$(.venv/bin/python -m ears.home log-dir)"   # the state file's folder, the log folder
        PYTHON=/usr/bin/python3 \
            bin/render-plist launchd/dev.sessionkit.voice.ears-mail.plist.in > ~/Library/LaunchAgents/dev.sessionkit.voice.ears-mail.plist
-     bin/render-plist fills @HOME@, @EARS_REPO@ (the checkout it runs from) and @RULES@
-     (@HOME@/.sessionkit/voice/settings/wake.json) itself; RULES=... in its environment overrides.
+     bin/render-plist fills @HOME@, @EARS_REPO@ (the checkout it runs from), @RULES@
+     (@HOME@/.sessionkit/voice/settings/wake.json) and @EARS_MAIL_STATE@ (the state item
+     ears-mail-state, asked of ears.home: an old state file while it is real, else in the
+     state root) itself; RULES=... in its environment overrides.
+     After `ears home migrate` on this host, render and install it again before the job
+     starts: the old state file is then a link, so the render names the new one. A plist
+     left naming the old file makes it real again at the next save.
        launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.sessionkit.voice.ears-mail.plist
      @RULES@ is the wake rules (seats, names, openers): the USER file,
      $HOME/.sessionkit/voice/settings/wake.json (ears-mail's default), written by
@@ -69,7 +75,7 @@
     <string>--to</string><string>device</string>
     <string>--sender</string><string>heard</string>
     <string>--rules</string><string>@RULES@</string>
-    <string>--state</string><string>@HOME@/.cache/ears/ears-mail.state.json</string>
+    <string>--state</string><string>@EARS_MAIL_STATE@</string>
     <string>--fire-log</string><string>@EARS_LOG_DIR@/ears-mail.fire.jsonl</string>
     <string>--mouth</string><string>@EARS_REPO@/.venv/bin/python -m mouth</string>
   </array>

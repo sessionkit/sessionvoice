@@ -185,7 +185,7 @@ def test_a_red_guard_prints_row_names_only(tmp_path):
     (tmp_path / "test_guard.py").write_text(GUARD_SUITE)
     (tmp_path / "subject.txt").write_text(SUBJECT + "Signed, IVY.\n")
     env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(_scanlist.__file__).rsplit("/tests/", 1)[0],
-           _scanlist.ENV: str(listfile)}
+           "HOME": str(tmp_path), _scanlist.ENV: str(listfile)}
     p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
                         child_pytest.basetemp(tmp_path), str(tmp_path / "test_guard.py")],
                        capture_output=True, text=True, env=env, cwd=tmp_path, timeout=60)
@@ -298,7 +298,8 @@ def test_the_terminal_summary_counts_the_skips(tmp_path, listfile, listed):
     conftest.write_text("from tests import _scanlist\n\n"
                         "def pytest_terminal_summary(terminalreporter):\n"
                         "    _scanlist.summary(terminalreporter)\n")
-    env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(_scanlist.__file__).rsplit("/tests/", 1)[0]}
+    env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(_scanlist.__file__).rsplit("/tests/", 1)[0],
+           "HOME": str(tmp_path)}
     if listed:
         env[_scanlist.ENV] = str(listfile)
     p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",

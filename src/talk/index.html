@@ -10,6 +10,9 @@
      (a login cookie) that fetch would be sent to the login page. Same origin, so harmless alone. -->
 <link rel="manifest" href="manifest.json" crossorigin="use-credentials">
 <title>Talk</title>
+<!-- Framed (inside Settings' shell) before the first paint, so Talk's own title row never flashes.
+     It carries an id, so the page's main script stays the first script tag with none. -->
+<script id="framed">try { if (window.self !== window.top) document.documentElement.classList.add("framed"); } catch (e) { document.documentElement.classList.add("framed"); }</script>
 <style>
   /* Settings' tokens, so Talk sits in the same family as Home and Settings */
   :root { --bg:#f2f2f7; --card:#fff; --fg:#1c1c1e; --muted:#8e8e93; --line:#e5e5ea; --on:#34c759;
@@ -30,16 +33,47 @@
   .live { width:9px; height:9px; border-radius:50%; background:var(--muted) }
   .live.on { background:var(--on); box-shadow:0 0 0 0 rgba(52,199,89,.6); animation:beat 2s infinite }
   @keyframes beat { 0% { box-shadow:0 0 0 0 rgba(52,199,89,.55) } 70% { box-shadow:0 0 0 8px rgba(52,199,89,0) } 100% { box-shadow:0 0 0 0 rgba(52,199,89,0) } }
-  .chips { max-width:760px; margin:6px auto 0; display:flex; gap:6px; overflow-x:auto; scrollbar-width:none }
-  .chip { border:0; background:var(--card); color:var(--fg); border-radius:14px; padding:4px 11px; font:inherit; font-size:.8rem; cursor:pointer; white-space:nowrap }
+  /* One row: Everyone, then a chip per agent who can hear (its own lane, which scrolls sideways
+     when they don't fit), then Debug when Settings shows it. Who's here is ON the chip: face,
+     name, and a dot (green listening, amber thinking, blue speaking); the word only for thinking
+     and speaking, and those two move to the front; away fades (per the design mock-up). */
+  .chips { max-width:760px; margin:6px auto 0; display:flex; gap:6px; align-items:center }
+  .agents { flex:1; min-width:0; display:flex; gap:6px; overflow-x:auto; scrollbar-width:none }
+  .agents::-webkit-scrollbar { display:none }
+  /* more agents than fit: the lane's right edge fades, so a chip cut off says there is more */
+  .agents { -webkit-mask-image:linear-gradient(to right, #000 calc(100% - 16px), transparent); mask-image:linear-gradient(to right, #000 calc(100% - 16px), transparent) }
+  .chip { border:0; background:var(--card); color:var(--fg); border-radius:14px; padding:4px 11px; font:inherit; font-size:.8rem; cursor:pointer;
+          white-space:nowrap; flex:none; display:inline-flex; align-items:center; gap:6px }
   .chip.on { background:var(--tint); color:#fff }
-  .presence { max-width:760px; margin:6px auto 0; display:flex; gap:12px; font-size:.78rem; color:var(--muted) }
-  .pres { display:flex; align-items:center; gap:6px }
-  .pres .pa { width:20px; height:20px; border-radius:10px; display:grid; place-items:center; color:#fff; font-weight:700; font-size:.66rem; position:relative }
-  .pres .pa::after { content:""; position:absolute; right:-2px; bottom:-2px; width:8px; height:8px; border-radius:50%; border:2px solid var(--bg); background:var(--muted) }
-  .pres.listening .pa::after { background:var(--on) } .pres.thinking .pa::after { background:#ff9f0a } .pres.speaking .pa::after { background:#0a84ff }
-  .pres.thinking b::after { content:"\2026"; animation:blink 1s steps(2) infinite }
-  .chip.dbg { margin-left:auto } .chip.dbg.on { background:#ff9f0a }
+  .chip.agent { padding-left:4px }
+  .chip .pa { width:18px; height:18px; border-radius:9px; display:grid; place-items:center; color:#fff; font-weight:700; font-size:.62rem; flex:none; overflow:visible }
+  .chip .pa img { border-radius:50% }
+  .chip .pa::after { content:""; position:absolute; right:-2px; bottom:-2px; width:8px; height:8px; border-radius:50%; border:2px solid var(--card); background:var(--muted) }
+  .chip.on .pa::after { border-color:var(--tint) }
+  .chip.listening .pa::after { background:var(--on) } .chip.thinking .pa::after { background:#ff9f0a } .chip.speaking .pa::after { background:#0a84ff }
+  .chip.thinking, .chip.speaking { order:-1 }
+  /* The state lives ON the face, so a chip never changes width (so it doesn't
+     push others off). Busy: an amber ring turning (lines ride along on its next step). Speaking:
+     a blue ring pulsing. Listening: the green dot alone. Can't hear: greyed. */
+  .chip.thinking .pa::before, .chip.speaking .pa::before { content:""; position:absolute; inset:-3px; border-radius:50%; border:2px solid transparent }
+  .chip.thinking .pa::before { border-top-color:#ff9f0a; border-right-color:#ff9f0a; animation:turn 1.1s linear infinite }
+  .chip.speaking .pa::before { border-color:#0a84ff; animation:ring 1s ease-in-out infinite }
+  .chip.on.speaking .pa::before { border-color:#fff }
+  @keyframes turn { to { transform:rotate(360deg) } }
+  @keyframes ring { 50% { transform:scale(1.18); opacity:.45 } }
+  @media (prefers-reduced-motion: reduce) { .chip .pa::before { animation:none } }
+  .chip.away { opacity:.42 }
+  .chip[hidden] { display:none }   /* the chip's inline-flex would beat the hidden attribute */
+  .chip.dbg.on { background:#ff9f0a }
+  .chips .st { color:var(--muted); font-size:.75rem; display:flex; align-items:center; gap:6px; flex:none }
+  .chips .call { color:var(--tint); font-size:1.05rem; line-height:1; text-decoration:none; flex:none }
+  /* Inside Settings' shell (framed): the tab names the room and links Settings, and the strip says
+     what the ears hear, so Talk's own title row goes. The chips row is the header; the status says
+     words only when Talk is NOT live ("reconnecting"), and no live dot (it read as Debug's light). */
+  .framed header { padding:7px 12px }
+  .framed .hd { display:none }
+  .framed .chips { margin:0 auto }
+  .framed .chips .live { display:none }
   .dbgrow { font:11.5px/1.4 ui-monospace, Menlo, monospace; color:var(--muted); margin:2px 6px 2px 40px; display:flex; gap:8px; flex-wrap:wrap }
   .dbgrow .x { color:var(--fg); opacity:.75 }
   .dbgrow.smart { color:#bf5af2 } .dbgrow.smart.done { color:var(--on) }
@@ -47,7 +81,7 @@
   .rk .ride { color:#0a84ff } .rk .wait { color:var(--on) }
   .rc { font-size:.66rem; color:var(--muted); margin:1px 10px 0; min-height:0 }
   .rc span { margin-left:6px } .rc span::before { content:"\2713 "; color:var(--on); font-weight:700 }
-  main { max-width:760px; margin:0 auto; padding:12px 12px calc(90px + env(safe-area-inset-bottom)) }
+  main { max-width:760px; margin:0 auto; padding:12px 12px calc(16px + env(safe-area-inset-bottom)) }
 
   .sep { text-align:center; color:var(--muted); font-size:.72rem; margin:16px 0 8px; font-weight:600 }
   .ev { text-align:center; color:var(--muted); font-size:.74rem; margin:6px 0 }
@@ -78,18 +112,15 @@
   .wave i:nth-child(2) { animation-delay:.15s } .wave i:nth-child(3) { animation-delay:.3s }
   @keyframes w { 0%,100% { transform:scaleY(.35) } 50% { transform:scaleY(1) } }
 
-  .jump { position:fixed; left:50%; transform:translateX(-50%); bottom:calc(76px + env(safe-area-inset-bottom)); z-index:6; display:none;
+  .jump { position:fixed; left:50%; transform:translateX(-50%); bottom:calc(16px + env(safe-area-inset-bottom)); z-index:6; display:none;
           border:0; background:var(--tint); color:#fff; border-radius:16px; padding:7px 14px; font:inherit; font-size:.85rem; cursor:pointer;
           box-shadow:0 4px 14px rgba(0,0,0,.25) }
   .jump.on { display:block }
-  footer { position:fixed; left:0; right:0; bottom:0; z-index:5; background:var(--glass); -webkit-backdrop-filter:blur(20px); backdrop-filter:blur(20px);
-           border-top:1px solid var(--line); padding:8px 12px calc(8px + env(safe-area-inset-bottom)) }
-  .ft { max-width:760px; margin:0 auto; display:flex; gap:8px; align-items:center }
-  .ft input { flex:1; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:18px; padding:8px 14px; font:inherit; min-width:0 }
-  .ft .note { color:var(--muted); font-size:.72rem; flex:none }
-  @media (min-width:1000px) { main, .hd, .chips, .ft { max-width:860px } .col { max-width:70% } }
+  /* No input bar: the read-only one took no input. When Talk can take
+     words, a button opens a sheet; the keyboard stays hidden until asked for. */
+  @media (min-width:1000px) { main, .hd, .chips { max-width:860px } .col { max-width:70% } }
   /* the pairing panel: shown when this browser is not paired */
-  .pairing { max-width:520px; margin:24px auto; padding:16px 18px; background:var(--card); border-radius:14px; border:1px solid var(--line) }
+  .pairing { width:calc(100% - 32px); max-width:520px; margin:24px auto; padding:16px 18px; background:var(--card); border-radius:14px; border:1px solid var(--line) }
   .pairing h2 { font-size:1rem; margin:0 0 6px }
   .pairing p { margin:0 0 10px; color:var(--muted); font-size:.88rem }
   .pairing code { font:12.5px ui-monospace, Menlo, monospace; color:var(--fg) }
@@ -106,8 +137,7 @@
 <body>
 <header>
   <div class="hd"><h1>Talk</h1><span class="st"><span class="live" id="live"></span><span id="status">connecting</span></span><a class="call" id="call" target="_blank" rel="noopener noreferrer" hidden title="Join the call" aria-label="Join the call">&#x1F4DE;</a><a class="set" id="set" hidden title="Settings">Settings</a></div>
-  <div class="presence" id="presence"></div>
-  <div class="chips" id="chips"><button class="chip on" data-a="all">Everyone</button><button class="chip dbg" id="dbg" title="every partial, who it reached, and the turn detector's score at each pause">Debug</button></div>
+  <div class="chips" id="chips"><button class="chip on" data-a="all">Everyone</button><div class="agents" id="agents"></div><button class="chip dbg" id="dbg" hidden title="every partial, who it reached, and the turn detector's score at each pause">Debug</button></div>
 </header>
 <section class="pairing" id="pairing" hidden>
   <h2>Pair this browser</h2>
@@ -117,7 +147,6 @@
 </section>
 <main id="log"></main>
 <button class="jump" id="jump">Jump to now &darr;</button>
-<footer><div class="ft"><input disabled placeholder="What the ears heard and the mouth said"><span class="note">read-only</span></div></footer>
 
 <script>
 // /talk without its slash: every relative URL ("events?n=150", "avatar/...") resolved against the
@@ -129,10 +158,13 @@ if (redirecting) location.replace(location.pathname + "/" + location.search + lo
 // No fixed roster: every seat comes from the data (a row's agent, the state event's seats),
 // its colour derived from its name, so the same name keeps the same colour.
 const ME = "_me";                // the filter key of the person's side (never a seat name)
-let cfg = {};                    // the server's settings: {person, settings_url, call_url}
+let cfg = {};                    // the server's settings: {person, settings_url, call_url, show_debug}
+// Inside Settings' shell: its tab names the room and its strip says what the ears hear, so the
+// chips row is Talk's whole header (the status and the phone button move into it).
+const framed = (() => { try { return window.self !== window.top; } catch (e) { return true; } })();
 const hue = a => { let h = 0; for (const ch of a) h = (h * 31 + ch.codePointAt(0)) >>> 0; return h % 360; };
 const person = row => cfg.person || (row && row.speaker) || "you";
-// an agent's face from ~/.session/agents/<name>/avatar.jpg; no file = the coloured initial stays.
+// an agent's face from /avatar/<name> (talk asks tools where it is); no file = the coloured initial stays.
 // A face that 404s is not asked for again this page load: it used to be re-fetched for every line.
 const noFace = new Set();
 const face = a => { const k = encodeURIComponent(a); return noFace.has(k) ? "" :
@@ -177,11 +209,17 @@ function bubble(side, who, html, ts, extra = "") {
     : `<span class="av" style="background:${a.c}">${esc(a.n[0] || "")}${who ? face(who) : ""}</span><div class="col"><div class="who">${esc(a.n)}</div><div class="b">${html}</div><div class="t">${hhmm(ts)}</div></div>`;
   if (filter !== "all" && m.dataset.a !== filter && m.dataset.a !== ME) m.style.display = "none";
   log.appendChild(m); lastSide = side + who;
-  if (who && side !== "me" && !document.querySelector(`.chip[data-a="${who}"]`)) {
-    const c = document.createElement("button"); c.className = "chip"; c.dataset.a = who; c.textContent = a.n;
-    document.getElementById("chips").appendChild(c);
-  }
+  if (who && side !== "me" && !document.querySelector(`.chip[data-a="${who}"]`)) { chip(who); drawPresence(); }
   return m;
+}
+function chip(a) {   // one chip per agent, in its own lane: face, name, and the word drawPresence sets
+  let c = document.querySelector(`.chip[data-a="${a}"]`); if (c) return c;
+  const g = agent(a);
+  c = document.createElement("button"); c.className = "chip agent away"; c.dataset.a = a;
+  c.innerHTML = `<span class="pa" style="background:${g.c}">${esc(g.n[0] || "")}${face(a)}</span><span>${esc(g.n)}</span>`;
+  if (filter === a) c.classList.add("on");
+  document.getElementById("agents").appendChild(c);
+  return c;
 }
 function event(row) {
   const e = row.event, dev = row.device || "";
@@ -274,11 +312,21 @@ function tick(m) {
     ? `<span class="shown" title="shown to ${agent(a).n}">${agent(a).n}</span>`
     : `<span class="scan" title="scanned by ${agent(a).n}'s waker, not shown">${agent(a).n}</span>`).join("");
 }
+// What each state means, for the long press (title) and a screen reader: busy vs idle says whether
+// your lines ride along or must wake them.
+const SAYS = {listening: "listening: a line with the name wakes them", thinking: "busy: your lines ride along",
+              speaking: "speaking", away: "can't hear the room"};
 function drawPresence() {
-  const names = [...new Set([...Object.keys(presence), ...speaking])];
-  document.getElementById("presence").innerHTML = names.map(a => {
-    const st = speaking.has(a) ? "speaking" : presence[a] || "away", g = agent(a);
-    return `<span class="pres ${st}"><span class="pa" style="background:${g.c}">${g.n[0]}${face(a)}</span>${g.n} <b style="font-weight:500">${st}</b></span>`; }).join("");
+  // Every agent who can hear gets a chip before they speak; one who spoke but can't hear keeps
+  // its chip, greyed. The name always; the state on the face, never a word on the chip.
+  [...Object.keys(presence), ...speaking].forEach(chip);
+  document.querySelectorAll(".chip.agent").forEach(c => {
+    const a = c.dataset.a, st = speaking.has(a) ? "speaking" : presence[a] || "away", n = agent(a).n;
+    c.classList.remove("listening", "thinking", "speaking", "away", "other");
+    c.classList.add(st in SAYS ? st : "other");
+    const says = `${n} · ${SAYS[st] || st}`;
+    c.title = says; c.setAttribute("aria-label", says);
+  });
 }
 function liveClock() {   // a long turn shows it is still arriving: "speaking 0:42 · 96 words"
   if (!partialEl) return;
@@ -287,8 +335,12 @@ function liveClock() {   // a long turn shows it is still arriving: "speaking 0:
   if (el) el.textContent = `speaking ${Math.floor(d / 60)}:${String(d % 60).padStart(2, "0")} \u00B7 ${partialEl.dataset.words} words` + (quiet > 4 ? ` \u00B7 quiet ${quiet}s` : "");
 }
 setInterval(liveClock, 1000);
-function status(txt) {
-  document.getElementById("status").textContent = txt || (mic ? `live · listening on ${mic}` : "live");
+function status(txt) {   // framed: words only when NOT live; the shell's strip already says the rest
+  document.getElementById("status").textContent = txt || (framed ? "" : mic ? `live · listening on ${mic}` : "live");
+}
+if (framed) {   // the status and the phone button join the chips row, at its end
+  const row = document.getElementById("chips");
+  row.appendChild(document.querySelector(".hd .st")); row.appendChild(document.getElementById("call"));
 }
 
 // chips: show everyone, or one agent's lines (your side always shows)
@@ -309,6 +361,10 @@ function connect() {
   es.addEventListener("config", e => {   // settings from `talk serve`: the person's label, a Settings link, the phone button
     cfg = JSON.parse(e.data) || {}; const set = document.getElementById("set");
     if (cfg.settings_url) { set.href = cfg.settings_url; set.hidden = false; } else { set.removeAttribute("href"); set.hidden = true; }
+    // Debug only when Settings shows it (talk.json show_debug, off by default). Hidden,
+    // it is also off: a debug view left on with no button to turn it off would be stuck.
+    document.getElementById("dbg").hidden = !cfg.show_debug;
+    if (!cfg.show_debug && debug) { debug = false; localStorage.setItem("talk-debug", "0"); connect(); return; }
     // The phone button: a top-level link, never framed. The href is
     // call_url verbatim, checked by `talk serve` at start; Talk appends nothing to it and never fetches it.
     const call = document.getElementById("call");

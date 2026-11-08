@@ -107,6 +107,20 @@ def test_sounds_schema_covers_every_key_and_sound_the_ears_write():
         assert {"on", "freq", "ms", "volume"} <= set(knobs), name
 
 
+def test_voice_draws_as_the_voice_picker():
+    """mouth.voice names the voice browser (a kind of control the desk knows,
+    never a command), so a settings desk offers the mouth's voices, live from
+    `mouth voices`, instead of a text box (a user request: the voices used
+    to be selectable)."""
+    assert MOUTH["properties"]["voice"]["x-widget"] == "voice-picker"
+
+
+def test_output_draws_as_the_output_picker():
+    """A user report: the desk's Mouth screen had no output list, only a text line. Settings
+    draws the Mac's outputs (folded, Follow the Mac first, test and heart) from this hint."""
+    assert MOUTH["properties"]["output"]["x-widget"] == "audio-output"
+
+
 def test_input_draws_as_the_device_picker():
     # settings draws Input as its folded device picker from this hint; without it, a text
     # field (settings 31da5c6)

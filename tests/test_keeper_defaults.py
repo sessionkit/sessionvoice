@@ -6,6 +6,10 @@ Every variable keeps its name; only what it means when unset changed:
                                                 (EARS-304 R3: unset -> the operator, when
                                                 `session operator` names one; "" -> nobody)
     CALL_EARS_DIR  ~/.<agent>/call-ears      -> ${XDG_STATE_HOME:-~/.local/state}/ears/call-ears
+                                             -> the state item call-ears (EARS-492 do-003:
+                                                `$PY -m ears.home state-dir call-ears`; the
+                                                XDG folder is adopted while it is real, else
+                                                ~/.sessionkit/voice/state/call-ears)
     EARS_LOG_DIR   ~/Library/Logs/failmode   -> ~/Library/Logs/ears (as src/ears/services.py)
                                              -> ears.home.log_dir, ~/.sessionkit/voice/log
                                                 (EARS-483: the keeper asks `$PY -m ears.home
@@ -27,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from ears.home import LOG
+from ears.home import LOG, NEW
 from tests import _scanlist
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,7 +95,8 @@ def _tails(out, home):
 def test_unset_defaults_are_neutral(home):
     out = _defaults(home)
     assert out == ["N[]", f"L[{home}/{LOG}]",
-                   f"C[{home}/.local/state/ears/call-ears]"]
+                   f"C[{home}/{NEW}/call-ears]"]
+    assert not (home / ".local").exists(), "no XDG stray on a fresh HOME"
 
 
 def test_unset_defaults_name_no_private_word(home):
@@ -105,10 +110,22 @@ def test_unset_defaults_name_no_private_word(home):
     assert missed == [], f"the scan missed a word planted from row(s) {missed}"
 
 
-def test_call_ears_dir_follows_xdg_state_home(home, tmp_path):
-    script = _line("CALL_EARS_DIR=") + '\necho "$CALL_EARS_DIR"'
-    assert _bash(script, _env(home, XDG_STATE_HOME=str(tmp_path / "st"))) == \
-        f"{tmp_path}/st/ears/call-ears"
+def test_call_ears_dir_adopts_the_xdg_folder_only_while_it_is_real(home, tmp_path):
+    """XDG_STATE_HOME only LOCATES the old folder (design.md D3): a host that has one keeps
+    it; a fresh one writes under the kit whatever XDG_STATE_HOME says."""
+    script = "\n".join([PY_LINE, _line("CALL_EARS_DIR="), 'echo "$CALL_EARS_DIR"'])
+    env = _env(home, XDG_STATE_HOME=str(tmp_path / "st"))
+    assert _bash(script, env) == f"{home}/{NEW}/call-ears"
+    (tmp_path / "st/ears/call-ears").mkdir(parents=True)
+    assert _bash(script, env) == f"{tmp_path}/st/ears/call-ears"
+
+
+def test_call_ears_dir_with_no_package_answer_stops_the_keeper(home, tmp_path):
+    script = "\n".join(["PY=/bin/false", _line("CALL_EARS_DIR="), 'echo "reached"'])
+    out = subprocess.run([BASH, "-c", script], env=_env(home), capture_output=True, text=True,
+                         timeout=30)
+    assert out.returncode == 2 and "reached" not in out.stdout
+    assert "state-dir call-ears named no call ears folder" in out.stderr
 
 
 def test_set_values_still_win(home, tmp_path):
@@ -124,10 +141,10 @@ def test_calls_published_reads_the_same_default_dir(home):
     """calls_published() has its own fallback; it must name the same dir as CALL_EARS_DIR."""
     s = KEEPER.read_text()
     fn = s[s.index("calls_published() {"):s.index("# --- calls:")]
-    live = home / ".local/state/ears/call-ears/live"
+    live = home / NEW / "call-ears/live"
     live.parent.mkdir(parents=True)
     live.write_text("call:7\n")
-    assert _bash(fn + "\ncalls_published", _env(home)) == "call:7"
+    assert _bash(PY_LINE + "\n" + fn + "\ncalls_published", _env(home)) == "call:7"
 
 
 # -- mail_me: nobody to mail -------------------------------------------------------
@@ -354,10 +371,13 @@ def test_call_ears_default_dir_is_the_keepers(monkeypatch, home, tmp_path):
     for k in VARS:
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("HOME", str(home))
-    assert _load("call_ears", ROOT / "keeper" / "call-ears").DIR == \
-        home / ".local/state/ears/call-ears"
+    assert _load("call_ears", ROOT / "keeper" / "call-ears").DIR == home / NEW / "call-ears"
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "st"))
+    assert _load("call_ears", ROOT / "keeper" / "call-ears").DIR == home / NEW / "call-ears"
+    (tmp_path / "st/ears/call-ears").mkdir(parents=True)
     assert _load("call_ears", ROOT / "keeper" / "call-ears").DIR == tmp_path / "st/ears/call-ears"
+    monkeypatch.setenv("CALL_EARS_DIR", str(tmp_path / "own"))
+    assert _load("call_ears", ROOT / "keeper" / "call-ears").DIR == tmp_path / "own"
 
 
 def test_view_push_log_default_is_the_keepers(monkeypatch, home, tmp_path):

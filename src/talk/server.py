@@ -18,11 +18,17 @@ A "state" event carries:
     (the "offsets" in its heard.state, found where ears-arm keeps it). A row
     whose "off" is at or below an agent's offset has reached that agent's
     ears: the page ticks it.
-  - presence: each agent's session status from `session list --json`
-    (busy = thinking; otherwise listening), heard.state or not.
+  - presence: the status (busy = thinking; otherwise listening) of each agent
+    that CAN HEAR the room: a live session (`session list --json`) whose short
+    id or seat is subscribed to the heard box (`message subscription list heard`),
+    the list Settings' consent page shows as "Who can hear". The rest of the
+    fleet (a foreman, workers, a super) is not in this conversation and gets no
+    presence; an agent that speaks still gets its chip from its own lines.
   - ride: per agent, the highest heard seq shown to its live session, from the
     heard-cursor (the ride-along hook's) or the pager's ride/done mail
-    (Ears-Seq), max.
+    (Ears-Seq), max. ride/done is found by ride_done_dir()'s chain: the
+    session's dir from sessiontools (session_dir, else `session path sessions`)
+    then <that>/mail/ride/done, and only then the legacy compatibility root.
 With no seats and no `session` command, turns and mouth lines still stream.
 Settings (flags of `talk serve`, see cli.py): the person's label, the smart-turn
 shadow log dir (debug view; OFF unless named), a Settings link (hidden unless
@@ -84,6 +90,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, urlsplit
 
 from ears import heard
+from ears import home as voice_home   # seat homes and tools' folders, asked of tools
 from talk import token_store   # absolute, like ears: server.py also runs as a script (__main__)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -94,6 +101,9 @@ SEAT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 SHARED_SEAT = "ears"     # the label for a heard.state in the shared home that no named seat found
 SMARTDIR = None          # the smart-turn shadow log dir: a setting, OFF (None) by default
 SETTINGS = {"person": None, "settings_url": None, "call_url": None}   # sent to the page as its "config" event
+#: Talk's own settings file, beside the other voice settings; drawn by Settings from
+#: settings/talk.schema.json (installed as .talk.schema.json). Read on every /events.
+TALK_FILE = "talk.json"
 CALL_LOCAL = ("localhost", "127.0.0.1")   # the only hosts a plain http: call URL may name (development)
 ALLOW_HOSTS = frozenset()   # configured Host names (check_allow_hosts), beside loopback and the bind host
 LOOPBACK = ("127.0.0.1", "localhost")      # allowed on the bound port; no other spelling of loopback
@@ -109,58 +119,56 @@ KEEPALIVE = 15                # seconds between /events keep-alives; each one re
 REDACT = re.compile(r"(talk_token=)[^&;\s\"']*", re.IGNORECASE)
 PAIR_HEADER = "X-Talk-Token"  # POST pair: the one place a browser shows the token itself
 COOKIE_MAX_AGE = 34560000     # 400 days: RFC 6265bis section 5.5's cap
-SESSIONS = os.path.expanduser("~/.sessionmail/sessions")
+# The old mail layout's sessions, ONLY behind sessionmail's own pointer:
+# $SESSIONMAIL_HOME/<LEGACY_SESSIONS>/<sid>/ride/done (no mail/ layer). The rung of last
+# resort in ride_done_dir(), and only when SESSIONMAIL_HOME is set: a fresh host,
+# since sessionmail moved its home, has none, and no literal mail folder is named here.
+LEGACY_SESSIONS = "sessions"
+LEGACY_ENV = "SESSIONMAIL_HOME"
 KIT_USER = "X-Sessionkit-User"   # kit mode: the front door's login name, the one login (never logged)
 KIT_USER_MAX = 64                 # characters, at most
 KIT_REFUSED = "this request did not come through the kit's front door"
 KIT_HOST_HINT = "kit mode answers what the kit's front door forwards"
 DEFAULT_PORT = {"http": 80, "https": 443}
+CLIENT_GONE = (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)   # the peer hung up
 
 
-def home(*parts):
-    """A path under $HOME, read at call time (so a test or a launchd job's HOME counts)."""
-    return os.path.join(os.path.expanduser("~"), *parts)
+def seat_home(seat, tools=None):
+    """A seat's home: ears.home.seat_home, the order ears-arm arms in ($EARS_HOME; the
+    seat's home in tools, asked of tools; ~/.<seat>; the old shared home while it is real;
+    voice's own seats/<seat>/). Read-only: it makes nothing (ears-arm makes the dir when it
+    arms). `tools` is ears.home.tools_agent()'s answer, asked once a pass by poll_state."""
+    return str(voice_home.seat_home(seat, tools=tools))
 
 
-def seat_home(seat):
-    """A seat's home, in the order ears-arm finds it (skills/ears/scripts/ears-arm):
-    $EARS_HOME if set, else the session-fleet seat home ~/.session/agents/home/<seat>
-    if it exists, else ~/.<seat> if it exists, else ~/.ears. Read-only: it makes
-    nothing (ears-arm makes the dir when it arms)."""
-    if os.environ.get("EARS_HOME"):
-        return os.path.expanduser(os.environ["EARS_HOME"])
-    for d in (home(".session", "agents", "home", seat), home("." + seat)):
-        if seat and os.path.isdir(d):
-            return d
-    return home(".ears")
-
-
-def waiters(names=()):
+def waiters(names=(), tools=None):
     """Each seat's heard-first state: <seat_home(seat)>/heard.state, for the seats
-    named by the session-fleet homes dir (if there is one) and by `names` (the
-    live sessions' agents). A heard.state in the shared home ($EARS_HOME or
-    ~/.ears) that no named seat resolved to shows as "ears". Seats with no
-    heard.state are left out here; they still get presence and ride."""
-    cands = {n for n in names if n and SEAT_NAME.match(n)}
-    try:
-        cands |= {n for n in os.listdir(home(".session", "agents", "home")) if SEAT_NAME.match(n)}
-    except OSError:
-        pass
+    ears.home.seat_names() lists (a heard.state in tools' agent homes or voice's seats/)
+    and the seats `names` gives (the live sessions' agents). A heard.state in the shared
+    home ($EARS_HOME, or the old shared home while it is real) that no named seat resolved
+    to shows as "ears". Seats with no heard.state are left out here; they still get
+    presence and ride."""
+    if tools is None:
+        tools = voice_home.tools_agent()
+    cands = {n for n in names if n and isinstance(n, str) and SEAT_NAME.match(n)}
+    cands |= set(voice_home.seat_names(tools=tools))
     out = {}
     for n in sorted(cands):
-        sf = os.path.join(seat_home(n), "heard.state")
+        sf = os.path.join(seat_home(n, tools), "heard.state")
         if os.path.isfile(sf):
             out[n] = sf
-    shared = os.path.join(seat_home(""), "heard.state")
-    if os.path.isfile(shared) and shared not in out.values():
+    shared = voice_home.shared_seat_home()
+    shared = os.path.join(str(shared), "heard.state") if shared is not None else None
+    if shared and os.path.isfile(shared) and shared not in out.values():
         out.setdefault(SHARED_SEAT, shared)
     return out
 
 
-def avatars_dir():
-    """Faces: ~/.session/agents/<name>/avatar.jpg when the session fleet keeps
-    them; optional, the page falls back to a coloured initial."""
-    return home(".session", "agents")
+def avatar_path(name, tools=None):
+    """An agent's face (avatar.jpg) where tools keeps it, asked of tools
+    (ears.home.avatar); None when it has none: the page falls back to a coloured initial."""
+    p = voice_home.avatar(name, tools=tools)
+    return str(p) if p is not None else None
 
 
 STATE = {"receipts": {}, "presence": {}, "ride": {}}
@@ -184,14 +192,88 @@ def ears_seq(path):
     return None
 
 
-def ride_done_seq(session_id):
+def legacy_sessions():
+    """The old mail layout's sessions root, read at call time: $SESSIONMAIL_HOME/sessions
+    when SESSIONMAIL_HOME is set (sessionmail's own pointer), else None: no rung."""
+    if os.environ.get(LEGACY_ENV):
+        return os.path.join(os.path.expanduser(os.environ[LEGACY_ENV]), LEGACY_SESSIONS)
+    return None
+
+
+def cli_sessions_root():
+    """`session path sessions` (sessiontools): the sessions root, one line, or
+    None when there is no such command, no such verb (an older sessiontools
+    says "unknown verb 'path'" and exits non-zero), it times out, or it prints
+    anything but one absolute path. Quiet: None just means the next rung."""
+    try:
+        out = subprocess.run(["session", "path", "sessions"], capture_output=True, text=True, timeout=10)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+    root = (out.stdout or "").strip() if out.returncode == 0 else ""
+    if not root or "\n" in root or not os.path.isabs(root):
+        return None
+    return root
+
+
+def session_dir_resolver():
+    """Rungs 1-2 of the chain, resolved ONCE (poll_state calls this once a pass,
+    never once a session): a function sid -> that session's dir, or None.
+      1. sessiontools importable: sessiontools.settings.session_dir (imported
+         here, lazily: talk does not depend on sessiontools).
+      2. else `session path sessions`: <root>/<sid>.
+    The supported resolver is asked, never re-derived. None: neither answers."""
+    try:
+        from sessiontools.settings import session_dir
+    except ImportError:
+        session_dir = None
+    if session_dir is not None:
+        return session_dir
+    root = cli_sessions_root()
+    if root:
+        return lambda sid: os.path.join(root, sid)
+    return None
+
+
+RESOLVE = object()      # ride_done_seq's default: resolve rungs 1-2 for this one call
+
+
+def ride_done_dir(session_id, resolver=RESOLVE):
+    """The session's ride/done dir: the first candidate that is a dir, of
+      <session dir>/mail/ride/done   (rung 1 or 2, see session_dir_resolver; when
+                                      NEITHER answers, tools' old session folder, read
+                                      only: ears.home.tools_old)
+      <legacy_sessions()>/<sid>/ride/done   (rung 3: the old layout, no mail/; only
+                                             when $SESSIONMAIL_HOME is set)
+    None when none is. `resolver` is session_dir_resolver()'s answer, passed
+    in by poll_state so the CLI runs once a pass; a resolver that raises is
+    skipped like a missing rung."""
+    if resolver is RESOLVE:
+        resolver = session_dir_resolver()
+    cands = []
+    if resolver is not None:
+        try:
+            cands.append(os.path.join(os.fspath(resolver(session_id)), "mail", "ride", "done"))
+        except Exception:       # a resolver's own refusal (e.g. SettingsError): next rung
+            pass
+    else:
+        cands.append(os.path.join(str(voice_home.tools_old("sessions")), session_id,
+                                  "mail", "ride", "done"))
+    legacy = legacy_sessions()
+    if legacy:
+        cands.append(os.path.join(legacy, session_id, "ride", "done"))
+    return next((d for d in cands if os.path.isdir(d)), None)
+
+
+def ride_done_seq(session_id, resolver=RESOLVE):
     """The highest Ears-Seq the pager's ride-along gave this session: the heard
-    mails it filed under ~/.sessionmail/sessions/<sid>/ride/done/ (a seat
-    with no heard-cursor gets its heard turns this way).
+    mails it filed under the session's ride/done/, found by ride_done_dir()'s
+    chain (a seat with no heard-cursor gets its heard turns this way).
     Each file is parsed once and cached by name. 0 when there is none."""
     if not session_id or os.sep in session_id or session_id.startswith("."):
         return 0
-    d = os.path.join(SESSIONS, session_id, "ride", "done")
+    d = ride_done_dir(session_id, resolver)
+    if d is None:
+        return 0
     try:
         names = os.listdir(d)
     except OSError:
@@ -308,13 +390,50 @@ def live_sessions():
     return [s for s in rows if isinstance(s, dict)] if isinstance(rows, list) else []
 
 
+HEARD_BOX = "heard"
+_SUBS = (0.0, (frozenset(), frozenset()))
+
+
+def parse_subscribers(text):
+    """(session shorts, seat names) subscribed to the heard box, from `message subscription
+    list heard`: the same reading as Settings' apply.hears(), tags (+airpods) included."""
+    shorts = frozenset(re.findall(r"\b([0-9a-f]{8})\s+session\b", text or ""))
+    seats = frozenset(re.findall(r"\b([a-z][\w-]*)\s+seat subscription\b", text or ""))
+    return shorts, seats
+
+
+def heard_subscribers():
+    """parse_subscribers() of the live list, kept 30 s (the poll runs every 2 s). No
+    `message` command, or it fails: nobody (no presence; speakers keep their chips)."""
+    global _SUBS
+    if time.time() - _SUBS[0] < 30:
+        return _SUBS[1]
+    try:
+        out = subprocess.run(["message", "subscription", "list", HEARD_BOX], capture_output=True,
+                             text=True, timeout=10).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        out = ""
+    _SUBS = (time.time(), parse_subscribers(out))
+    return _SUBS[1]
+
+
+def hears(session, subs):
+    """Whether this live session can hear the room: its short id or its seat is subscribed."""
+    shorts, seats = subs
+    sid = session.get("short") or (session.get("session_id") or "")[:8]
+    return bool(sid and sid in shorts) or session.get("seat") in seats
+
+
 def poll_state():
     """Every 2 s: each waiter's offset in today's log, and each agent's status."""
     while True:
         receipts, presence, ride = {}, {}, {}
         path = today_log()
         sessions = live_sessions()
-        for agent, sf in waiters(s.get("agent") for s in sessions).items():
+        subs = heard_subscribers()
+        resolver = session_dir_resolver()      # rungs 1-2, once a pass (not once a session)
+        tools = voice_home.tools_agent()       # tools' agent folders, once a pass too
+        for agent, sf in waiters((s.get("agent") for s in sessions), tools).items():
             try:
                 with open(sf) as f:
                     receipts[agent] = json.load(f).get("offsets", {}).get(path, 0)
@@ -330,9 +449,11 @@ def poll_state():
                     ride[a] = max(ride.get(a, 0), c.seq)
             # and the pager's ride record: seq is global-monotonic across
             # days, so no day filter; whichever source is higher wins
-            seq = ride_done_seq(sid)
+            seq = ride_done_seq(sid, resolver)
             if seq:
                 ride[a] = max(ride.get(a, 0), seq)
+            if not hears(s, subs):      # not in this conversation: the fleet's other seats
+                continue
             st = "thinking" if s.get("status") == "busy" else "listening"
             if presence.get(a) != "thinking":
                 presence[a] = st
@@ -492,12 +613,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle(self):
         """Over the unix socket, refuse a peer uid that is neither talk's own nor the
-        proxy's before reading a byte of its request."""
+        proxy's before reading a byte of its request. A client that hangs up (a browser
+        resetting a kept-alive connection while talk waits for its next request line, or
+        one gone mid-answer) has nothing left to answer and nothing for the log: without
+        this, socketserver prints a whole traceback into talk.log for each one."""
         if unix_server(self.server):
             uid = peer_uid(self.connection)
             if uid is None or uid not in self.server.talk_peer_uids:
                 return self.refuse_peer(uid)
-        return super().handle()
+        try:
+            return super().handle()
+        except CLIENT_GONE:
+            self.close_connection = True
 
     def refuse_peer(self, uid):
         """403 to a socket peer that may not connect: plain text, nothing read, closed.
@@ -723,12 +850,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def avatar(self, name):
-        """An agent's face: ~/.session/agents/<name>/avatar.jpg (the session
-        skill, "An agent's folder").
+        """An agent's face: its avatar.jpg where tools keeps it, asked of tools
+        (avatar_path; the session skill, "An agent's folder").
         404 when it has none, and the page falls back to its initial."""
         if not name.replace("-", "").replace("_", "").isalnum():
             return self.send_error(404)
-        path = os.path.join(avatars_dir(), name, "avatar.jpg")
+        path = avatar_path(name)
+        if path is None:
+            return self.send_error(404)
         try:
             with open(path, "rb") as f:
                 body = f.read()
@@ -766,7 +895,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         path = today_log()
         try:
-            self.send_event("config", dict(SETTINGS))
+            self.send_event("config", config())
             self.send_event("backfill", backfill(path, n, debug))
             sm_path, sm, sm_buf = today_smart(), None, b""
             if debug and sm_path and os.path.exists(sm_path):
@@ -986,6 +1115,25 @@ def check_call_url(url):
     if "@" in u.netloc:
         raise ValueError(f"call URL {url!r} refused: credentials in the URL (Talk holds the URL and nothing else)")
     return url
+
+
+def talk_settings() -> dict:
+    """Talk's settings file, ``talk.json`` in the voice settings folder (``ears.home.settings_dir``),
+    read fresh on every /events, so a change in Settings shows on Talk's next load. Missing,
+    unreadable or not an object: {} (every setting at its default)."""
+    from ears.home import settings_dir
+    try:
+        d = json.loads((settings_dir() / TALK_FILE).read_text())
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def config() -> dict:
+    """The page's "config" event: SETTINGS (set at start by configure()), and show_debug from
+    talk.json: the Debug chip is drawn only when it is exactly true (off by default,
+    so that people don't need to get debug up there unless they want it)."""
+    return dict(SETTINGS, show_debug=talk_settings().get("show_debug") is True)
 
 
 def configure(person=None, smart_dir=None, settings_url=None, call_url=None, allow_hosts=None):

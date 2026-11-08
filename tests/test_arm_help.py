@@ -126,8 +126,9 @@ def test_the_fence_holds_a_real_arm_reaches_the_stub(fence):
     assert "STUB heard-first EXECD" in r.stderr
     exe, argv = fence.ran.read_text().splitlines()
     assert exe == f"{fence.plugin}/bin/heard-first"
-    assert f"--state {fence.home}/.ears/heard.state" in argv
-    assert (fence.home / ".ears").is_dir()
+    seats = fence.home / ".sessionkit/voice/state/seats" / fence.seat   # EARS-492: not ~/.ears
+    assert f"--state {seats}/heard.state" in argv
+    assert seats.is_dir() and not (fence.home / ".ears").exists()
 
 
 # -- call-tap ------------------------------------------------------------------

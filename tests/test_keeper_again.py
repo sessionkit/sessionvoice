@@ -513,6 +513,32 @@ def test_a_mouth_that_fails_falls_back_to_call_with_a_skip_line(tmp_path, monkey
     assert not [e for e in err if e.get("again")]
 
 
+def test_a_failed_again_is_a_call_and_names_its_seat_in_ears_addressed(tmp_path, monkeypatch, capsys):
+    """EARS-497 T12: the failed named say-again is vera=call and the turn names Vera;
+    an unnamed "Say again?" that falls back to a call names nobody, so it carries
+    no Ears-Addressed (a call alone lists no seat; Ears-Rule's =call wakes it)."""
+    cmd, _ = mouth(tmp_path, code=3)
+    sent, err = live(tmp_path, monkeypatch, capsys,
+                     VOICED + [turn(13, "Vera, say again.", seq=9)], cmd)
+    assert [m["headers"]["Ears-Rule"] for m in sent] == ["vera@host1=call"]
+    assert sent[0]["headers"]["Ears-Addressed"] == "vera@host1"
+    assert not [e for e in err if e.get("skip") == "addressed"]
+    sent, _ = live(tmp_path, monkeypatch, capsys, VOICED + [turn(13, "Say again?", seq=9)], cmd)
+    assert [m["headers"]["Ears-Rule"] for m in sent] == ["vera@host1=call"]
+    assert "Ears-Addressed" not in sent[0]["headers"]
+
+
+def test_a_named_again_that_is_replayed_still_names_its_seat(tmp_path, monkeypatch, capsys):
+    """EARS-497 section 0 (Q9 = B): Ears writes every named entry; the reader withholds
+    the wake by Ears-Rule's =again. No `skip: addressed` line for a say-again."""
+    cmd, _ = mouth(tmp_path)
+    sent, err = live(tmp_path, monkeypatch, capsys,
+                     VOICED + [turn(13, "Vera, say again.", seq=7)], cmd)
+    assert [(m["headers"]["Ears-Rule"], m["headers"]["Ears-Addressed"]) for m in sent] == [
+        ("vera@host1=again", "vera@host1")]
+    assert not [e for e in err if e.get("skip")]
+
+
 def test_a_mouth_that_will_not_run_falls_back_to_call(tmp_path, monkeypatch, capsys):
     gone = em.shlex.join([str(tmp_path / "no-such-mouth")])
     sent, err = live(tmp_path, monkeypatch, capsys, VOICED + [turn(13, "Say again?", seq=9)], gone)

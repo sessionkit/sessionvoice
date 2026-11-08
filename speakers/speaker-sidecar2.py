@@ -51,25 +51,44 @@ import argparse, collections, datetime as dt, importlib.util, json, os, re, subp
 from pathlib import Path
 import numpy as np
 
-def sessionvoice_home():
-    """sessionvoice's home: a copy of ears.home.sessionvoice_home (tests/test_home.py holds
-    it). $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it
-    holds the heard log, else ~/.sessionvoice."""
-    import glob, os
-    for name in ("SESSIONVOICE_HOME", "VOICEMODE_BASE_DIR"):
-        if os.environ.get(name):
-            return os.path.expanduser(os.path.expandvars(os.environ[name]))
-    for d in ("~/.sessionvoice", "~/.voicemode"):
-        c = os.path.expanduser(d + "/logs/conversations")
-        if os.path.exists(c + "/heard.lock") or glob.glob(glob.escape(c) + "/heard_*.jsonl"):
-            return os.path.expanduser(d)
-    return os.path.expanduser("~/.sessionvoice")
+HERE = Path(__file__).resolve().parent
+
+
+def voice_home():
+    """ears/home.py, the ONE place voice names its state root and its log folder.
+    speakers/ imports nothing from the ears package, so it loads home.py
+    (standard library only) by its path, once: the checkout's src/ears/home.py, else the wheel's
+    ears/home.py above ears/_speakers/.
+    Not there: exit 2, naming where it looked; there is no copy of the rule to fall back
+    on."""
+    mod = getattr(voice_home, "mod", None)
+    if mod is None:
+        import importlib.util, sys
+        tried = [HERE.parent / "src/ears/home.py", HERE.parent / "home.py"]
+        f = next((f for f in tried if f.is_file()), None)
+        if f is None:
+            print(f"speaker-sidecar2: no ears/home.py at {' nor '.join(map(str, tried))}: it names "
+                  "voice's state root. Run it from a sessionvoice checkout, the plugin or the "
+                  "package", file=sys.stderr)
+            sys.exit(2)
+        spec = importlib.util.spec_from_file_location("_voice_home", f)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        voice_home.mod = mod
+    return mod
+
+
+def voice_state_dir() -> Path:
+    """voice's state root, as the PACKAGE answers it (ears.home.asked_state_dir, design.md
+    D4.1): asked once per process, and exit 2, naming both answers, when the package cannot
+    be asked or disagrees with this checkout's home.py."""
+    return voice_home().asked_state_dir("speaker-sidecar2")
 
 
 SR = 16000
 # The diarizer's pinned snapshot: equal to ears.services.SPEAKER_REVISION (a test holds them).
 REVISION = "59ed2dbfc1346dcea9d423c71306a3a2499c568f"
-LOGDIR = Path(sessionvoice_home()) / "logs/conversations"
+LOGDIR = Path(voice_state_dir()) / "logs/conversations"
 def phone_roots():
     """sessionphone's root(s): a stdlib copy of keeper/phone_roots.py's phone_roots()
     (tests/test_speakers_call.py holds them equal), as this venv imports nothing from ears.

@@ -128,7 +128,7 @@ def _verbs(monkeypatch, argv):
 def test_the_apple_stt_agent_installs_only_with_apple(monkeypatch):
     # without the swift helper it answers 500 to every request (measured)
     # --no-agent: a bare install with mail and no wake seat refuses before install() (EARS-421)
-    assert _verbs(monkeypatch, ["install", "--no-agent"])["install"] == ["speech", "mouth", "keeper", "mail"]   # EARS-291
+    assert _verbs(monkeypatch, ["install", "--no-agent"])["install"] == ["speech", "mouth", "keeper", "mail", "ears-sounds", "mouth-sounds"]   # EARS-291
     assert "stt" in _verbs(monkeypatch, ["install", "--no-agent", "--apple"])["install"]
     assert _verbs(monkeypatch, ["install", "--only", "stt"])["install"] == ["stt"]
     assert _verbs(monkeypatch, ["uninstall"])["uninstall"] == services.jobs(services.ALL)   # an old stt agent goes

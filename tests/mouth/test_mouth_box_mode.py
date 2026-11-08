@@ -37,12 +37,14 @@ def umask_022():
 
 @pytest.fixture
 def live_box(monkeypatch) -> Path:
-    """The mouth dir is the default one, so the box is ``$HOME/.mail/agents/mouth``."""
+    """The mouth dir is the default one, so the box is the one sessionmail names for
+    `mouth` (the fake `message`: ``$HOME/.mail/agents/mouth``), made by its
+    `setup --box mouth` the first time it is asked."""
     env_fence.delenv(monkeypatch, "MOUTH_DIR")
     env_fence.delenv(monkeypatch, "MOUTH_MAILBOX")
     bx = box.box_dir()
     assert bx == Path(os.environ["HOME"]) / ".mail" / "agents" / "mouth"
-    assert not bx.exists()
+    assert (bx / "new").is_dir()                     # sessionmail made it, not the mouth
     return bx
 
 
@@ -89,6 +91,7 @@ def test_the_mail_log_repairs_a_0755_box(live_box):
 @pytest.mark.parametrize("mask", [0o000, 0o002, 0o022, 0o027])
 def test_whatever_the_umask(tmp_path, mask):
     os.umask(mask)
+    (tmp_path / "some").mkdir()             # the parent is not ours to make
     bx = tmp_path / "some" / "box"          # not the live one: $MOUTH_MAILBOX or <dir>/box
     box.ensure(bx)
     assert modes(bx) == private(bx)

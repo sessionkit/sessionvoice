@@ -30,7 +30,7 @@ SRC = REPO / "src"
 KEEPER = ("ears-keeper.sh", "call-ears", "input-watch.swift", "ears-mail.py",
           "ears-sounds.py", "mouth-sounds.py", "held_stream.py",   # the sounds agents: EARS-429
           "phone_roots.py")                                     # call sockets: EARS-372
-SCHEMAS = ("ears.schema.json", "ears-sounds.schema.json", "mouth.schema.json")
+SCHEMAS = ("ears.schema.json", "ears-sounds.schema.json", "mouth.schema.json", "talk.schema.json")
 SEPARATOR = ("run.py", "requirements.lock")   # the split's runner and its venv's lock
 BASE = {"numpy", "pyyaml", "httpx", "sounddevice"}
 SMART_TURN = {"onnxruntime", "transformers"}

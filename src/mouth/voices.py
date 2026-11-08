@@ -7,12 +7,14 @@ own.
 A line's voice is the first of these that answers:
 
 1. the line's own: ``say --voice``, or a mail's ``X-Mouth-Voice``;
-2. the caller's session layer: ``mouth.voice`` in
-   ``~/.session/sessions/<sid>/settings/mouth.json`` (or ``mouth.d/``);
-3. the caller's seat layer: ``~/.session/seats/<seat>/settings/mouth.json``;
+2. the caller's session layer: ``mouth.voice`` in the session's own
+   ``settings/mouth.json`` (or ``mouth.d/``), in the session's folder in tools;
+3. the caller's seat layer: ``settings/mouth.json`` in the seat's folder in tools;
 4. the caller's agent layer: ``settings: {mouth.voice: ...}`` in its agent
    file. Steps 2-4 are the settings cascade above the host, as
-   ``session settings --json <sid> mouth`` merges them;
+   ``session settings --json <sid> mouth`` merges them. Tools owns those
+   folders, so this module never names them: it asks tools (that command) and
+   reads its answer;
 5. ``$MOUTH_VOICE``, in the CALLER's environment. It is
    skipped when the host (or the template under it) locks ``voice``:
    ``_locked: ["voice"]`` in the host file, or in the cascade's ``locked``;

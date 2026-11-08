@@ -257,3 +257,58 @@ def test_ears_defaults_the_page_states_are_the_codes():
     assert rows["stt_hint"][1] == f"`{json.dumps(stt.HINT_DEFAULT)}`"
     final = json.dumps({"url": stt.FALLBACK_URL, "model": stt.FALLBACK_MODEL})
     assert rows["final"][1] == f"`{final}`"
+
+
+# --- the state root and its items, pinned to ears.home (EARS-492 do-005) ----------------------
+
+
+def _item_rows() -> dict[str, list[str]]:
+    return _rows(_section(_read(CONFIG_DOC), "The state root"))
+
+
+def test_the_state_root_order_is_the_resolvers():
+    from ears import home
+
+    section = _section(_read(CONFIG_DOC), "The state root")
+    steps = re.findall(r"^\d\. `([^`]+)`", section, re.MULTILINE)
+    sv, vm = (f"~/{r}" for r in home.OLD_ROOTS)
+    new = f"~/{home.NEW}"
+    assert steps == [f"${home.ENV[0]}", f"${home.ENV[1]}", sv, new, vm], steps
+    assert section.count(f"otherwise `{new}`") == 1
+
+
+def test_the_items_table_is_home_pys_item_table():
+    """Every row of the defaults table is an item of ears.home.ITEMS, and every item has a row:
+    its default under the root, its own variable and its old path, as the code writes them."""
+    from ears import home
+
+    rows = _item_rows()
+    assert set(rows) == set(home.ITEMS), f"missing {set(home.ITEMS) - set(rows)}, extra {set(rows) - set(home.ITEMS)}"
+    for name, it in home.ITEMS.items():
+        default, var, old = rows[name]
+        assert default == f"`<root>/{it.name}{'/' if it.kind != 'file' else ''}`", (name, default)
+        assert (var == f"`{it.env}`") if it.env else var.startswith("none"), (name, var)
+        base = "${XDG_STATE_HOME:-~/.local/state}" if it.xdg else "~"
+        assert old.startswith(f"`{base}/{it.old}`"), (name, old)
+
+
+def test_the_items_table_agrees_with_the_resolver_on_a_fresh_home(tmp_path, monkeypatch):
+    """The table's default IS what each item answers on an empty HOME (no variable set)."""
+    from ears import home
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    for k in (*home.ENV, "XDG_STATE_HOME", *(it.env for it in home.ITEMS.values() if it.env)):
+        monkeypatch.delenv(k, raising=False)
+    root = tmp_path / home.NEW
+    for name, (default, _, _) in _item_rows().items():
+        assert home.state_path(name) == root / default.strip("`/").removeprefix("<root>/"), name
+    # the seat fallback and the venv, by the constants the code uses (tests/test_seat_home.py
+    # and tests/test_state_items.py pin the code to them)
+    assert f"`<root>/{home.SEATS}/<seat>/`" in _section(_read(CONFIG_DOC), "The state root")
+    assert f"`~/{home.SPEAKERS_VENV}`" in _section(_read(CONFIG_DOC), "The state root")
+
+
+def test_the_root_variables_move_only_the_roots_own_tree():
+    section = " ".join(_section(_read(CONFIG_DOC), "The state root").split())
+    assert ("The two root variables move the root's own tree only" in section
+            and "They never move a state item or a seat's own home" in section)

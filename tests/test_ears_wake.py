@@ -193,10 +193,11 @@ def test_ears_wake_env_names_the_file(tmp_path, monkeypatch):
 
 
 def test_write_is_atomic_no_temp_left(tmp_path):
+    """No temp file is left; the lock file adds take turns on (EARS-504 F13) stays."""
     f = tmp_path / "wake.json"
     wake.add("dave", "dav", f)
     wake.add("ivy", "ivey", f)
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["wake.json"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == [".wake.json.lock", "wake.json"]
 
 
 @pytest.mark.parametrize("path", [SHIPPED, EXAMPLE, SHIPPED.parent / "wake.local.json"])
@@ -237,6 +238,15 @@ def test_refuses_a_file_that_is_not_json(tmp_path):
     assert f.read_text() == "{not json"
 
 
+def test_refuses_json_nested_too_deep_to_parse(tmp_path):
+    """'[' * 200000 raises RecursionError, not ValueError: refused like any bad JSON."""
+    f = tmp_path / "wake.json"
+    f.write_text("[" * 200000)
+    with pytest.raises(wake.WakeError, match="not JSON"):
+        wake.add("dave", "", f)
+    assert wake.WakeHint(f)() == ""
+
+
 def test_list_prints_each_seat_and_its_names(tmp_path, capsys):
     f = tmp_path / "wake.json"
     assert ears_main(["wake", "list", "--file", str(f)]) == 0
@@ -245,3 +255,88 @@ def test_list_prints_each_seat_and_its_names(tmp_path, capsys):
     wake.add("ivy", "ivey", f)
     assert ears_main(["wake", "list", "--file", str(f)]) == 0
     assert capsys.readouterr().out == "dave: dave|dav|days\nivy: ivy|ivey\n"
+
+
+# -- 3. the hint is a name too; a hand-written seat's key is a literal -------------
+
+def _em():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ears_mail_wake", SCRIPT)
+    em = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(em)
+    return em
+
+
+def test_a_hint_is_merged_into_names_after_them(tmp_path):
+    """--hint David primes STT toward "David": a transcript that says it must match."""
+    f = tmp_path / "wake.json"
+    assert wake.add("dave", "dav", f, hint="David")[2] == "dave|dav|David"
+    assert json.loads(f.read_text())["seats"]["dave"] == {"names": "dave|dav|David",
+                                                          "hint": "David"}
+    m, err, rc = ears_mail(tmp_path, f, ["David, are you there?", "Hey David, what's on?"])
+    assert rc == 0, err
+    assert [r for _, _, r in rules_of(m)] == ["", "dave@host1=call"]
+
+
+def test_a_hint_that_is_the_key_in_capitals_adds_no_name(tmp_path):
+    f = tmp_path / "wake.json"
+    wake.add("dave", None, f, hint="DAVE")
+    assert json.loads(f.read_text())["seats"]["dave"] == {"names": "dave", "hint": "DAVE"}
+
+
+def test_re_adding_folds_a_hint_already_stored(tmp_path):
+    """A seat written before the fix (or a hand-written hint) picks the name up on re-add."""
+    f = tmp_path / "wake.json"
+    f.write_text(json.dumps({"seats": {"dave": {"names": "dave|dav", "hint": "David"}}}))
+    wake.add("dave", "days", f)
+    assert json.loads(f.read_text())["seats"]["dave"] == {"names": "dave|dav|days|David",
+                                                          "hint": "David"}
+
+
+def test_a_new_hint_is_folded_not_the_old_one(tmp_path):
+    f = tmp_path / "wake.json"
+    f.write_text(json.dumps({"seats": {"dave": {"names": "dave", "hint": "Davey"}}}))
+    wake.add("dave", None, f, hint="David")
+    assert json.loads(f.read_text())["seats"]["dave"] == {"names": "dave|David", "hint": "David"}
+
+
+def test_an_empty_hint_drops_the_hint_not_the_name_it_added(tmp_path):
+    f = tmp_path / "wake.json"
+    wake.add("dave", None, f, hint="David")
+    wake.add("dave", None, f, hint="")
+    assert json.loads(f.read_text())["seats"]["dave"] == {"names": "dave|David"}
+
+
+@pytest.mark.parametrize("hint, alt", [("Mary  Ann", r"Mary\ Ann"), ("D+ve", r"D\+ve"),
+                                       ("Da|ve", r"Da\|ve")])
+def test_a_hint_is_one_escaped_alternative(tmp_path, hint, alt):
+    """The hint is said, not a pattern: escaped whole, never split on '|'."""
+    f = tmp_path / "wake.json"
+    assert wake.add("dave", None, f, hint=hint)[2] == f"dave|{alt}"
+    said = " ".join(hint.split())
+    m, err, rc = ears_mail(tmp_path, f, [f"Hey {said}, what's on?", "Hey DDve, what's on?",
+                                         "Hey ve, what's on?"])
+    assert rc == 0, err
+    assert [r for _, _, r in rules_of(m)] == ["dave@host1=call", "", ""]
+
+
+def test_re_adding_keeps_an_escaped_pipe_whole(tmp_path):
+    """Stored names split on '|' only where it is not escaped, so a hint's '\\|' survives."""
+    f = tmp_path / "wake.json"
+    wake.add("dave", None, f, hint="Da|ve")
+    assert wake.add("dave", "ve", f)[2] == r"dave|Da\|ve|ve"
+
+
+def test_a_hand_written_seat_with_no_names_is_its_key_literally():
+    """load_rules' default names are the key ESCAPED, as ears wake add writes them."""
+    em = _em()
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d, "wake.json")
+        p.write_text(json.dumps({"seats": {"sessionmail+engineer": {}}}))
+        r = em.load_rules(str(p), ["only+seat"])
+    assert r["sessionmail+engineer"]["names"] == r"sessionmail\+engineer"
+    assert r["only+seat"]["names"] == r"only\+seat"
+    named = r["sessionmail+engineer"]["_named"]
+    assert named.search("ok sessionmail+engineer here")
+    assert not named.search("sessionmailllengineer")

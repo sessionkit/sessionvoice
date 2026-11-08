@@ -52,7 +52,7 @@ flowchart TB
   end
 
   subgraph OUT["Speaking"]
-    q[("mouth queue<br/>maildir ~/.mail/agents/mouth")]
+    q[("mouth queue<br/>maildir: the mouth box, `message path mouth`")]
     player["mouth player<br/>launchd mouth-mail"]
     tts["TTS :8890<br/>Kokoro, or a cloned voice"]
     spkr["Speaker<br/>(AirPods)"]

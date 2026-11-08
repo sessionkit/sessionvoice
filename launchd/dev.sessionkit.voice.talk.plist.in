@@ -9,8 +9,10 @@
      `tailscale serve` in front of it, docs/talk.md, "On a tailnet"); this job never does that.
      It answers only Host 127.0.0.1:8780 and localhost:8780. Behind tailscale
      serve, the browser's Host is the tailnet name, so add TALK_ALLOW_HOSTS (e.g.
-     machine.example.ts.net) to EnvironmentVariables, or the phone gets a 403.
-     Its first start makes the per-install pairing token, <sessionvoice home>/talk/token
+     machine.example.ts.net) to EnvironmentVariables, or the phone gets a 403
+     (`ears services install` writes it from its allow-host flag, and a re-run of
+     it keeps every TALK_ setting its own plist carries).
+     Its first start makes the per-install pairing token, <state root>/talk/token
      (0600): nothing about it goes in this file, its arguments or its
      environment. Pair each browser once: run `talk pair` in a terminal on the host and open
      the link it prints (docs/talk.md, "Pairing"). Rotating the token (`talk token` with

@@ -11,16 +11,39 @@ from the headers. The device is named by the Ears-Device header, never by the
 address. While --device-copy is on (the default) the same send, one message with
 one Message-ID, also goes Cc heard+<device>@<host>, so a session subscribed to a
 device's address still hears that device's turns. Every finished turn goes,
-addressed or not. The headers carry no X-: Ears-Kind, Ears-Rule, Ears-Seq,
-Ears-Start, Ears-End, Ears-Source, Ears-Device, Ears-Speaker. Ears-Speaker is
+addressed or not. The headers carry no X-: Ears-Kind, Ears-Rule, Ears-Addressed,
+Ears-Seq, Ears-Start, Ears-End, Ears-Source, Ears-Device, Ears-Speaker, and Ears-Echo,
+Ears-Audio, Ears-Said and Ears-Film when they have a value. Ears-Speaker is
 the turn's own `speaker` label as <label>@<host> when the capture named the turn
 (a split, or its partials' labels; speaker_of), else --speaker, unknown@<host> by default.
 After an echo cut that left words, a label naming a seat whose line was cut is
 dropped (heard_rec): the words left are the user's, so they get the default. Ears-Rule is keyed
 by ADDRESS: alice@<host>=call for "hey Alice", everyone=everyone for "hey
 everyone"; reply, light and first entries ride (only call and everyone wake).
+Ears-Addressed names the seats the turn NAMES: <seat>@<host> per seat whose
+wake-file `names`, or its key's spoken form, match anywhere in the whole
+echo-trimmed turn (word-bounded, any case; never the Subject; a vocative and a
+passing mention alike; the one guess is the key's spoken form, "mini me" for
+mini-me, which "spoken": false turns off; any other mishearing only when `names`
+lists it), plus `everyone` for an all-call ("hey
+everyone"), sorted, comma+space, each once (addressed(), addressed_header()). It is
+absent when the turn names nobody, and is on the room mail only. While a film plays,
+a named seat whose verdict is not `call` is withheld ({"skip": "addressed"}). Names
+only: never a word of the turn. A raw Ears-Addressed entry is NOT on its own "wake
+this seat": any reader of the header must apply the same two withholds, from
+Ears-Rule (=again) and Ears-Speaker (own voice), that the pager applies.
 Ears-Audio names the turn's kept WAV when the record has `audio` (recording
 on); with no `audio` there is no Ears-Audio header.
+Ears-Said names each session's own line the turn came after, for the pager's linger:
+<session>@<host>=<ISO end>, one entry per full session id (its newest line that finished
+at or before Ears-Start, within 600 s; spoken lines only, never a bed (lane file); not
+interest zero, not one cut before it played), sorted, the said row's ts verbatim
+(said_header). It rides every spoken room turn and the --to seats mail, never a cut
+notice or a call turn; with no entry there is no header.
+Ears-Film: playing marks a room turn the keeper heard while a film played (--kodi: the
+state that holds reply and light). It is a fact about the turn, one value, on the room
+mail only; with no film, or no --kodi, there is no header. Kodi is asked once per room
+turn (TurnFilm), and verdicts() reads the same answer.
 <device> is device_slug(): airpods, macbook (the built-in mic), else the name
 in lower-case words joined by "-". It names the Cc, and it is the gate: a turn
 with no slug is not mailed at all. --room names the room (default
@@ -66,7 +89,10 @@ name Ears, with every inherited CLAUDE_SESSION_* and must-sign dropped: unsigned
 until a plus seat can hold a key; $EARS_MAIL_SIGNER_SOCK and _PUB, both set, sign.
 The send mints the Message-ID, and the fire log keeps the one it returned.
 
-A seat's rules (defaults, then its own entry in the rules file):
+A seat's rules (defaults, then its own entry in the rules file). NAMES is the
+seat's `names` (else its key, literally) and, for a key of two words or more, the
+key's spoken form: its words joined by spaces, hyphens or nothing, so mini-me is
+also "mini me" and "minime" ("spoken": false turns that off; spoken_names):
   call      \\b(OPENERS)[,]? +(NAMES)\\b        "hey Alice"
   everyone  \\b(OPENERS)[,]? +(EVERYONE)\\b     "hey everyone": every seat, one verdict
   first     ^\\W*(NAMES)\\b  if name_first        "Alice, ..."
@@ -99,10 +125,15 @@ rule as heard-first and the mouth's barge guard (hold.py is_echo).
 --dry-run prints each mail it would send as one JSON line and sends nothing; the
 `mouth again` it would run goes to stderr, and is not run.
 --once reads to the end of the log and exits (tests, replays).
+The rules file is followed live (WakeRules): one stat per poll, a reload when it
+changed, so a seat `ears wake add` writes is a wake target on the next turn with no
+restart. A bad or missing file mid-run keeps the last good rules and says so once on
+stderr; a bad file at start counts as missing (the --seats seats only, plus one line).
 Stdlib only: it runs on the system python, like the rest of keeper/.
 
 """
 import argparse, difflib, glob, json, os, re, shlex, socket, subprocess, sys, time
+from pathlib import Path
 import urllib.request
 from datetime import datetime
 
@@ -126,6 +157,10 @@ DEFAULTS = {
     # ("say that again" included)
     "again": ["say again", "repeat that", "pardon", "come again", "say that again"],
     "again_window": 120,             # seconds back a say-again looks, like reply_window
+    # a key of two words or more (mini-me) is also called by its spoken form, the
+    # words joined by spaces, hyphens or nothing ("mini me", "minime"): spoken_names;
+    # false turns it off for a seat whose words are everyday speech (data-set)
+    "spoken": True,
 }
 SUBJECT_MAX = 69
 #: The room's plus tag: every finished mic turn goes To and From SENDER+ROOM,
@@ -154,15 +189,51 @@ STRIPPED_PREFIX = "CLAUDE_SESSION_"
 STRIPPED_VARS = ("CLAUDE_CODE_SESSION_ID",)
 
 
+def spoken_words(key):
+    """A seat KEY's words, lower-cased: split on every run of characters that are not
+    [0-9A-Za-z], exactly as src/ears/wake.py's spoken() splits it for the STT hint
+    (keeper/ imports nothing from src/; tests/test_ears_wake.py holds the twins equal),
+    so the keeper accepts whatever the hint primes: mini-me -> ['mini', 'me']."""
+    return [w.lower() for w in re.split(r"[^0-9A-Za-z]+", str(key)) if w]
+
+
+def spoken_names(key):
+    """The spoken alternative of a seat KEY of two words or more, else None: each word
+    escaped, joined by [\\s-]*, so mini-me gives mini[\\s-]*me and matches "mini me",
+    "mini-me" and "minime", never across other punctuation ("a mini, me"). A one-word
+    key (dave) gains nothing."""
+    words = spoken_words(key)
+    return r"[\s-]*".join(re.escape(w) for w in words) if len(words) > 1 else None
+
+
 def load_rules(path, only):
-    """{seat: rules} for EVERY seat in the rules file, defaults filled in. --seats
-    narrows who is mailed (main), never who can be addressed: with only one
-    seat's names loaded, "Hey Ada, ..." looked unaddressed and woke that seat
-    as a reply."""
+    """{seat: rules} for EVERY seat in the rules file, defaults filled in (rules_of).
+    A PATH that is unset or missing gives the --seats seats only, with the defaults."""
     conf = {}
     if path and os.path.exists(path):
         with open(path) as f:
             conf = json.load(f)
+    return rules_of(conf, only)
+
+
+def _is_off(v):
+    """False or null: how a wake file turns `everyone` off (0 and "" are no spelling of it)."""
+    return v is None or v is False
+
+
+def rules_of(conf, only):
+    """{seat: rules} for EVERY seat in the parsed rules file CONF, defaults filled in.
+    --seats (ONLY) narrows who is mailed (main), never who can be addressed: with only
+    one seat's names loaded, "Hey Ada, ..." looked unaddressed and woke that seat
+    as a reply. r["names"] is the file's names, else the key escaped; r["_names"],
+    which _call, _first, _named and the say-again strip read, adds the key's
+    spoken form (spoken_names) unless the seat's `spoken` is false. It is derived
+    here, from the KEY, whether or not names is set: no wake file is rewritten.
+    A file that would load and then stop the keeper at a turn fails HERE instead, so a
+    live reload keeps the last good rules (WakeRules): `names` and `openers` must be
+    strings and `everyone` a string, false or null (TypeError); `reply_window`,
+    `again_window` and a set `light` are read with float(), as a turn reads them
+    (ValueError or TypeError). A wrong shape raises AttributeError or TypeError."""
     base = dict(DEFAULTS, **conf.get("defaults", {}))
     seats = conf.get("seats", {})
     for s in only:
@@ -170,8 +241,24 @@ def load_rules(path, only):
     out = {}
     for seat, own in seats.items():
         r = dict(base, **(own or {}))
-        r.setdefault("names", seat)
-        names = r["names"]
+        r.setdefault("names", re.escape(seat))   # the key is a literal, as ears wake add writes it
+        for k in ("names", "openers"):           # a list or a number stops a turn (F14)
+            if not isinstance(r[k], str):
+                raise TypeError(f"seat {seat}: {k} is {type(r[k]).__name__}, not a string")
+        if not (isinstance(r.get("everyone"), str) or _is_off(r.get("everyone"))):
+            raise TypeError(f"seat {seat}: everyone is {type(r['everyone']).__name__}, "
+                            f"not a string, false or null")
+        nums = [("reply_window", r.get("reply_window", 120)),
+                ("again_window", r.get("again_window", 120))]
+        if r.get("light"):                       # 0, false or null: off, never read
+            nums.append(("light", r["light"]))
+        for k, v in nums:                        # as verdicts and again_target read them (F12)
+            try:
+                float(v)
+            except (TypeError, ValueError) as e:
+                raise type(e)(f"seat {seat}: {k} {v!r} is not a number") from None
+        alt = spoken_names(seat) if r.get("spoken", True) else None
+        names = r["_names"] = f"{r['names']}|{alt}" if alt else r["names"]
         r["_call"] = re.compile(rf"\b({r['openers']})[,]? +({names})\b", re.I)
         r["_everyone"] = (re.compile(rf"\b({r['openers']})[,]? +({r['everyone']})\b", re.I)
                           if r.get("everyone") else None)
@@ -186,6 +273,83 @@ def load_rules(path, only):
         r["_again"] = frozenset(tuple(_words(str(x))) for x in phrases if _words(str(x)))
         out[seat] = r
     return out
+
+
+#: What a wake file that will not load raises: unreadable, not JSON (a decode error is a
+#: ValueError), a wrong shape, a bad number (rules_of), a bad regex, or JSON nested too
+#: deep to parse ('[' * 200000 raises RecursionError, not ValueError).
+RULES_ERRORS = (OSError, ValueError, TypeError, AttributeError, RecursionError, re.error)
+
+
+def _seats_said(rules):
+    return ", ".join(sorted(rules)) or "none"
+
+
+class WakeRules:
+    """The rules file, followed live, as wake.WakeHint follows it for the STT hint (a
+    seat added while the keeper runs is a target with no restart): a zero-arg
+    callable that returns the current {seat: rules}. Each call stats PATH once; an
+    unchanged stamp (mtime_ns, size, inode) reads nothing. A changed
+    one reloads it: a good file replaces the rules, with one line; a bad file
+    (RULES_ERRORS) or a missing one keeps the LAST GOOD rules, with one line, and
+    the same stamp says nothing more. The first call is the start: a missing file gives
+    the --seats (ONLY) seats with the defaults, as load_rules does; a BAD file gives
+    the same, plus one line, never a traceback, so the keeper starts and picks up the
+    fixed file live. To clear every seat, write {"seats": {}}. SAY prints one line
+    (default: stderr). `failed` is true while the rules held are not the file's."""
+
+    _UNSEEN = object()
+
+    def __init__(self, path, only, say=None):
+        self.path, self.only = path, list(only)
+        self.say = say if say is not None else (lambda line: print(line, file=sys.stderr, flush=True))
+        self._stamp, self.rules, self.failed = self._UNSEEN, None, False
+
+    def _stat(self):
+        try:
+            st = os.stat(self.path)
+        except (OSError, TypeError, ValueError):     # missing, or no path at all
+            return None
+        return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+    def _load(self):
+        with open(self.path) as f:      # never load_rules: a file gone since the stat
+            conf = json.load(f)         # is a failure (OSError), not "no seats"
+        return rules_of(conf, self.only)
+
+    def __call__(self):
+        stamp = self._stat()
+        if stamp == self._stamp:
+            return self.rules
+        first, self._stamp = self.rules is None, stamp
+        p = self.path
+        if stamp is None:
+            if first:
+                self.rules = rules_of({}, self.only)
+            else:
+                self.failed = True
+                self.say(f"ears-mail: wake file {p} is missing: kept the last good rules "
+                         f"(seats: {_seats_said(self.rules)}); write {{\"seats\": {{}}}} "
+                         f"to clear them")
+            return self.rules
+        try:
+            rules = self._load()
+        except RULES_ERRORS as e:
+            why = f"{type(e).__name__}: {e}"
+            self.failed = True
+            if first:
+                self.rules = rules_of({}, self.only)
+                seats = _seats_said(self.rules)
+                self.say(f"ears-mail: wake file {p} not loaded ({why}): starting with seats: "
+                         f"{seats}{'; no turn is a call' if not self.rules else ''} until it loads")
+            else:
+                self.say(f"ears-mail: wake file {p} not loaded ({why}): kept the last good "
+                         f"rules (seats: {_seats_said(self.rules)})")
+            return self.rules
+        self.rules, self.failed = rules, False
+        if not first:
+            self.say(f"ears-mail: wake rules reloaded from {p}: names known: {_seats_said(rules)}")
+        return self.rules
 
 
 # -- time -------------------------------------------------------------------
@@ -218,6 +382,11 @@ LEAD_WORDS, LEAD_WPS = 3, 5.0
 # into a line and cover at most 57% of it; echoes cover 59-100%). ALIGN_SLACK: a
 # word-for-word copy has as many words as the line, give or take this ("Lumen").
 COVER, OPEN_S, ALIGN_SLACK = 0.5, 2.0, 2
+# A turn that opened while a line played can hold only the line's TAIL, the words the
+# speakers were playing from then on. Those are judged on their own: the
+# words left at the turn's open, by an even pace over played_s, less TAIL_SLACK words
+# for an uneven one. A quote repeats words already heard, before the open.
+TAIL_SLACK = 3
 LAG_MAX_S = 15.0    # a turn row lands at most this long after the user's last word (7.9 seen)
 # no acoustic path from these to the mic: mouth hold.py BARGE_DEVICES, kept by hand
 HEADPHONES = re.compile(r"airpods|headphone|headset|buds|beats", re.I)
@@ -341,6 +510,9 @@ class Room:
         self.meta = {}       # utt -> {audio, lane, again_of, resume_of, voice, volume, session,
                              #         played_s}: what a say-again needs (note())
         self.streams = {}    # (source, session, device) -> when its stream began
+        self.spoken = []     # [(end_t, ts, session, interest, played_s)] from each said
+                             # row of a spoken line (no lane file), oldest first: what
+                             # Ears-Said names (said_header())
 
     def note(self, rec):
         k, utt = rec.get("kind"), rec.get("utt")
@@ -365,6 +537,13 @@ class Room:
             self._meta(utt, rec)
             agent = rec.get("agent") or (known and known[3])
             interest = rec.get("interest") or (known and known[4]) or "normal"
+            # a bed (lane file: music, a sound file) is no spoken line: often under speech,
+            # it would stretch the linger by its own length past the line it played under
+            bed = (rec.get("lane") or (self.meta.get(utt) or {}).get("lane")) == "file"
+            if end is not None and not bed:   # the said row's own ts, session and played_s
+                self.spoken.append((end, rec.get("ts"), rec.get("session"), interest,
+                                    rec.get("played_s")))
+                del self.spoken[:-SPOKEN_KEPT]
             if known:
                 known[1] = end
                 try:
@@ -456,6 +635,8 @@ class Room:
         The best-matched line is cut first and the rest re-matched on what is left. A
         turn that is all echo gives ("", None, cuts). The user's words begin when a leading
         echo's line finished, so a reply is judged against the room the user answered.
+        On the real span, a turn that opened while a line played may hold just the
+        line's tail; it is cut when that tail opens the turn.
         It reads and changes words only, never REC's `speaker`; heard_rec() drops a label
         that names a seat whose line was cut."""
         text, began, stop = str(rec.get("text") or ""), _start(rec), _t(rec)
@@ -479,6 +660,12 @@ class Room:
                 if (k and n >= COVER * len(l) and (best is None or n > best[3])
                         and (not real or start <= a + OPEN_S or n >= len(sub) / 2)):
                     best = (utt, ld, k, n)
+                elif real and end is not None and a < start < end:
+                    # the turn opened mid-line: its tail, opening the turn
+                    t = l[max(0, int(len(l) * (start - a) / (end - a)) - TAIL_SLACK):]
+                    ld, k, n = echo_span(sub, t, 1)
+                    if k and n >= COVER * len(t) and (best is None or n > best[3]):
+                        best = (utt, ld, k, n)
             if best is None:
                 break
             utt, ld, k = best[:3]
@@ -565,7 +752,7 @@ class Twins:
 # pauses; "hey Alice" still wakes Alice. Kodi unreachable = today's behaviour.
 class Kodi:
     def __init__(self, url, timeout=1.0):
-        self.url, self.timeout = url, timeout   # asked only for an unaddressed verdict
+        self.url, self.timeout = url, timeout   # a room turn asks once (TurnFilm)
         self.down = False
 
     def _rpc(self, method, **params):
@@ -604,6 +791,23 @@ def _film(playing, room, out):
     return bool(state)
 
 
+class TurnFilm:
+    """The film state for ONE turn: Kodi is asked at most once, on the first
+    question, and every later question about the same turn gets that answer.
+    verdicts(), Ears-Addressed (addressed()) and Ears-Film (main) share one per
+    room turn, so neither header adds a Kodi call; a turn nobody asks about asks Kodi nothing.
+    Calling it is KODI.playing(): 'kodi playing at H:MM:SS', or None.
+    .asked says whether this turn has asked yet."""
+
+    def __init__(self, kodi):
+        self.kodi, self.asked, self.state = kodi, False, None
+
+    def __call__(self):
+        if not self.asked:
+            self.state, self.asked = self.kodi.playing(), True
+        return self.state
+
+
 # -- say again (designs/say-again.md sections 1-2) ----------------------
 # Stripped from the two ENDS of a turn only, with any seat's names and openers.
 AGAIN_COURTESY = ("sorry", "please", "um", "uh", "er", "oh", "ok", "okay", "could you", "can you")
@@ -630,7 +834,7 @@ def again_match(text, rules):
     caller compares what is left, whole, with a seat's phrases (`r["_again"]`)."""
     s = " ".join(_words(text or ""))
     named = set()
-    strips = [(seat, r["names"]) for seat, r in rules.items()]
+    strips = [(seat, r["_names"]) for seat, r in rules.items()]
     strips += [(None, alt) for alt in sorted({r["openers"] for r in rules.values()})]
     strips.append((None, "|".join(w.replace(" ", " +") for w in AGAIN_COURTESY)))
     changed = True
@@ -907,6 +1111,52 @@ def heard_rec(rec, his, cuts):
     return {k: v for k, v in rec.items() if k != "speaker"}
 
 
+# -- Ears-Said: each session's own line, for the pager's linger --------------------
+#: How far back before a turn's start a line still counts (the grammar agreed with sessionmail).
+SAID_HORIZON_S = 600.0
+#: said rows Room.spoken keeps: far more than 600 s of lines.
+SPOKEN_KEPT = 200
+#: A FULL session id, the uuid the pager knows as its own session (X-Session-From on the
+#: line's mail). Any other form (an 8-character short id, a seat name, an address) never
+#: matches the pager's own id, so its row is left out.
+SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
+
+
+def said_header(room, at, domain, horizon=SAID_HORIZON_S):
+    """Ears-Said for one spoken turn: "<session>@<domain>=<ISO end>, ..." ("" for none),
+    the grammar agreed with sessionmail's pager linger. AT is the turn's Ears-Start
+    (its end when it has no start). Each SESSION gets ONE entry: its newest line that
+    finished at or before AT and within HORIZON seconds of it; entries sorted by key.
+    <session> is the said row's own `session`, verbatim, and only a full session id
+    (SESSION_ID): a row with none, or a short one, is left out. <ISO end> is the said
+    row's `ts`, verbatim, the format Ears-End carries. A line cut by a barge-in after
+    part of it played counts, at its cut (its said row's ts). Spoken lines only: a bed
+    (lane file, a music bed or sound file) is never in room.spoken, so a spoken line
+    stays its session's newest when a bed ends after it. Left out: interest zero (as
+    reply leaves it), and a line cut before it played a word (played_s 0): never heard,
+    it restarts no window. Names and times only, never a line's text (keep nothing)."""
+    if at is None:
+        return ""
+    newest = {}
+    for end, ts, session, interest, played in room.spoken:
+        if not isinstance(session, str) or not SESSION_ID.fullmatch(session):
+            continue
+        if interest == "zero" or end > at or at - end > horizon:
+            continue
+        try:
+            if played is not None and float(played) <= 0:
+                continue                    # dropped unplayed: nobody heard it
+        except (TypeError, ValueError):
+            pass                            # unreadable: judged as a line with no played_s
+        ts = str(ts or "")
+        if not ts or any(c in ts for c in ", ="):
+            continue                        # a ts that would break the entry grammar
+        key = f"{session}@{domain}"
+        if key not in newest or end >= newest[key][0]:
+            newest[key] = (end, ts)
+    return ", ".join(f"{k}={newest[k][1]}" for k in sorted(newest))
+
+
 def rule_header(hit, domain):
     """Ears-Rule for the device mail: comma-separated key=rule entries keyed by
     ADDRESS (the pager compares each entry whole). "hey everyone" is the
@@ -916,6 +1166,42 @@ def rule_header(hit, domain):
     imported): `again`, like reply, light and first, calls nobody."""
     out = {"everyone=everyone" if r == "everyone" else f"{s}@{domain}={r}"
            for s, r in hit.items()}
+    return ", ".join(sorted(out))
+
+
+def addressed(text, rules, hit, playing=None):
+    """Who the turn TEXT names, for Ears-Addressed: (seats, everyone, withheld).
+    TEXT is the whole echo-trimmed turn, at any length, never the Subject. SEATS
+    are the keys of RULES (every seat in the rules file, whatever --seats says)
+    whose `_named` matches: \\b(names)\\b, case-insensitive, the one list call,
+    first and the named reply read; names here is `_names`, the seat's names plus
+    its key's spoken form ("mini me" for mini-me) unless its `spoken` is false.
+    Any other mishearing counts only when the seat's names list it; a vocative
+    ("Ivy, ...") and a passing mention ("I told Ivy") both count. EVERYONE is
+    true for an all-call only: any seat's `_everyone` (an opener, then the
+    everyone word), the test Ears-Rule's everyone=everyone
+    uses. HIT is the final verdict (after act()). While a film plays (PLAYING(),
+    a TurnFilm), every named seat whose verdict is not `call` is WITHHELD: the
+    film's dialogue is not the user's. PLAYING is asked only when that could
+    change the answer, a named seat that is not a call; `everyone` stays.
+    Nothing else is withheld: a say-again or a seat's own voice names its seat
+    like any turn, and the reader applies those two withholds, from Ears-Rule
+    (=again) and Ears-Speaker (own voice), as the pager does."""
+    named = sorted(s for s, r in rules.items() if r["_named"].search(text))
+    everyone = any(r["_everyone"] is not None and r["_everyone"].search(text)
+                   for r in rules.values())
+    soft = [s for s in named if hit.get(s) != "call"]
+    if soft and playing and playing():
+        return [s for s in named if s not in soft], everyone, soft
+    return named, everyone, []
+
+
+def addressed_header(seats, everyone, domain):
+    """Ears-Addressed's value: <seat>@<domain> per seat named, plus `everyone` for
+    an all-call, sorted as plain strings, comma+space, each once. "" when the turn
+    names nobody: the header is then absent (mail_for), never empty. Names only:
+    seat keys, the domain and the literal `everyone`, never a word of the turn."""
+    out = {f"{s}@{domain}" for s in seats} | ({"everyone"} if everyone else set())
     return ", ".join(sorted(out))
 
 
@@ -954,8 +1240,10 @@ def subject_of(text):
 
 
 def mail_for(rec, to, rules_hit, kind="spoken", his=None, rule=None, frm=None, speaker=None,
-             whole=True, cuts=(), cc=()):
+             whole=True, cuts=(), cc=(), addressed=None, said="", film=False):
     """HIS is the turn with the mouth's echo cut off; the whole turn follows it.
+    ADDRESSED is the Ears-Addressed value (addressed_header()), room mail only:
+    the header goes right after Ears-Rule, and only when it has a value.
     TO is local parts; FRM the sender's local part (None: the keeper's own).
     CC is local parts copied on the SAME send (a room turn's device address):
     one message, one Message-ID, never a second send. Only a mail with a Cc
@@ -964,7 +1252,9 @@ def mail_for(rec, to, rules_hit, kind="spoken", his=None, rule=None, frm=None, s
     WHOLE=False drops the "heard whole" copy: a device mail rides WHOLE into
     every subscriber, so the copy would double the carry.
     CUTS, [(seat, utt, n)] from trim_echo, is Ears-Echo: ONE header, a comma list
-    with an entry per line cut, '<seat>/<utt> <n> words cut'."""
+    with an entry per line cut, '<seat>/<utt> <n> words cut'.
+    SAID is Ears-Said (said_header()); empty, the mail has no Ears-Said header.
+    FILM true is Ears-Film: playing (the turn was heard while a film played); false, none."""
     whole_text = str(rec.get("text") or "")
     his = whole_text if his is None else his
     body = his + "\n" + (f"\n-- heard whole, echo included --\n{whole_text}\n"
@@ -981,6 +1271,7 @@ def mail_for(rec, to, rules_hit, kind="spoken", his=None, rule=None, frm=None, s
         "headers": {                 # no X- headers
             "Ears-Kind": kind,
             "Ears-Rule": rule,
+            **({"Ears-Addressed": addressed} if addressed else {}),
             "Ears-Seq": str(rec.get("seq", "")),
             "Ears-Start": datetime.fromtimestamp(_start(rec)).astimezone().isoformat(timespec="milliseconds")
             if _start(rec) else "",
@@ -988,6 +1279,8 @@ def mail_for(rec, to, rules_hit, kind="spoken", his=None, rule=None, frm=None, s
             "Ears-Source": str(rec.get("source", "")),
             "Ears-Device": str(rec.get("device", "")),
             "Ears-Speaker": speaker or "",
+            **({"Ears-Said": said} if said else {}),
+            **({"Ears-Film": "playing"} if film else {}),
             **({"Ears-Echo": ", ".join(f"{s}/{u} {n} words cut" for s, u, n in cuts)}
                if cuts else {}),
             # The turn's kept audio, when recording was on and it was written
@@ -1124,19 +1417,38 @@ def send(m, sender, domain):
 VOICE_SETTINGS = ".sessionkit/voice/settings"
 
 
-def sessionvoice_home():
-    """sessionvoice's home: a copy of ears.home.sessionvoice_home (tests/test_home.py holds
-    it). $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it
-    holds the heard log, else ~/.sessionvoice."""
-    import glob, os
-    for name in ("SESSIONVOICE_HOME", "VOICEMODE_BASE_DIR"):
-        if os.environ.get(name):
-            return os.path.expanduser(os.path.expandvars(os.environ[name]))
-    for d in ("~/.sessionvoice", "~/.voicemode"):
-        c = os.path.expanduser(d + "/logs/conversations")
-        if os.path.exists(c + "/heard.lock") or glob.glob(glob.escape(c) + "/heard_*.jsonl"):
-            return os.path.expanduser(d)
-    return os.path.expanduser("~/.sessionvoice")
+HERE = Path(__file__).resolve().parent
+
+
+def voice_home():
+    """ears/home.py, the ONE place voice names its state root and its log folder.
+    keeper/ imports nothing from the ears package, so it loads home.py
+    (standard library only) by its path, once: the checkout's src/ears/home.py, else the wheel's
+    ears/home.py above ears/_keeper/.
+    Not there: exit 2, naming where it looked; there is no copy of the rule to fall back
+    on."""
+    mod = getattr(voice_home, "mod", None)
+    if mod is None:
+        import importlib.util, sys
+        tried = [HERE.parent / "src/ears/home.py", HERE.parent / "home.py"]
+        f = next((f for f in tried if f.is_file()), None)
+        if f is None:
+            print(f"ears-mail: no ears/home.py at {' nor '.join(map(str, tried))}: it names "
+                  "voice's state root. Run it from a sessionvoice checkout, the plugin or the "
+                  "package", file=sys.stderr)
+            sys.exit(2)
+        spec = importlib.util.spec_from_file_location("_voice_home", f)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        voice_home.mod = mod
+    return mod
+
+
+def voice_state_dir() -> Path:
+    """voice's state root, as the PACKAGE answers it (ears.home.asked_state_dir, design.md
+    D4.1): asked once per process, and exit 2, naming both answers, when the package cannot
+    be asked or disagrees with this checkout's home.py."""
+    return voice_home().asked_state_dir("ears-mail")
 
 
 # -- a Delta call's turns: To its call box, calls+<bot>-<N> --------------------
@@ -1367,17 +1679,19 @@ def main(argv=None):
         ap.error(f"--room {a.room!r}: one plus tag, lower-case letters, digits and - only")
     speaker = a.speaker or f"unknown@{a.domain}"  # an unplaced voice is not the operator
     only = [s.strip() for s in a.seats.split(",") if s.strip()]
-    rules = load_rules(a.rules, only)
+    wake = WakeRules(a.rules, only)     # followed live: one stat per poll
+    rules = wake()
     if not rules:
         # a fresh install ships no seats (keeper/defaults/wake.json). Device mail
         # still goes for every finished turn, just with no call marks; seats mail has no one.
         if a.to == "seats":
             ap.error("no seats: give --seats or a rules file with seats")
+    if not rules and not wake.failed:   # a bad file has said its one line
         print(f"ears-mail: no seats in {a.rules}: no turn is a call; add one with: "
               f"ears wake add <seat>", file=sys.stderr, flush=True)
     mailto = set(only) or set(rules)
     sources = {x.strip() for x in a.source.split(",") if x.strip()}
-    base = sessionvoice_home()
+    base = voice_state_dir()
     logdir = os.path.expanduser(a.logdir or os.path.join(base, "logs", "conversations"))
 
     def files():
@@ -1405,7 +1719,7 @@ def main(argv=None):
                     room.note(json.loads(raw))
                 except ValueError:
                     pass
-        offsets[p] = saved[p] if (p in saved and saved[p] <= size) else size
+        offsets[p] = voice_home().saved_offset(saved, p, size)  # its path, else samefile
 
     def save():
         if a.state:
@@ -1425,7 +1739,11 @@ def main(argv=None):
             out = {"at": datetime.now().astimezone().isoformat(timespec="milliseconds"),
                    "seq": rec.get("seq"), "to": one["to"],
                    **({"cc": m["cc"]} if m.get("cc") else {}),   # the same send's copies
-                   "rule": m["headers"].get("Ears-Rule"), "subject": m["subject"]}
+                   "rule": m["headers"].get("Ears-Rule"),
+                   # who the room turn names: only a mail that carries the header
+                   **({"addressed": m["headers"]["Ears-Addressed"]}
+                      if m["headers"].get("Ears-Addressed") else {}),
+                   "subject": m["subject"]}
             if a.dry_run:
                 out["dry_run"] = True
                 out["mail"] = one
@@ -1476,6 +1794,8 @@ def main(argv=None):
         skip("again-failed", rec, seat=seat, utt=room.again["utt"], fallback="call", **facts)
         return {**hit, seat: "call"}
     while True:
+        rules = wake()                  # a seat added since the last pass is a target now
+        mailto = set(only) or set(rules)
         for p in files():
             try:
                 with open(p, "rb") as f:
@@ -1528,12 +1848,21 @@ def main(argv=None):
                     continue
                 # who said HIS: never the seat whose echo was just cut out (heard_rec)
                 his_rec = heard_rec(rec, his, cuts)
+                # each session's own line before this turn began: names and times only.
+                # Never on a call turn: --to seats still mails one to its seats (rule call)
+                said = "" if rec.get("source") == "call" else said_header(room, _start(rec),
+                                                                          a.domain)
                 if slug:                # EVERY finished turn of the user, To and From the room
-                    hit = act(verdicts(his_rec, rules, room, his, began, kodi and kodi.playing),
-                              rec, his)
+                    film = TurnFilm(kodi) if kodi else None    # Kodi asked once per turn
+                    hit = act(verdicts(his_rec, rules, room, his, began, film), rec, his)
                     if room.held:
                         skip("film", rec, seats=room.held["seats"], rules=room.held["rules"],
                              media=room.held["media"], mailed="without those rules")
+                    # who HIS names, over every seat (not only --seats), never the Subject
+                    named, everyone, withheld = addressed(his, rules, hit, film)
+                    if withheld:
+                        skip("addressed", rec, seats=withheld, cause="film", media=film(),
+                             mailed="without those entries")
                     # one address for the room, whatever device the capture follows; the
                     # device is Ears-Device, and (while --device-copy is on) a Cc on
                     # the same send, so its own address still hears it
@@ -1542,7 +1871,9 @@ def main(argv=None):
                     cc = [copy] if a.device_copy == "on" and copy != addr else []
                     deliver(mail_for(rec, [addr], hit, his=his, rule=rule_header(hit, a.domain),
                                      frm=addr, speaker=speaker_of(his_rec, speaker, a.domain),
-                                     whole=False, cuts=cuts, cc=cc), rec)
+                                     whole=False, cuts=cuts, cc=cc, said=said,
+                                     film=bool(film and film()),
+                                     addressed=addressed_header(named, everyone, a.domain)), rec)
                     continue
                 hit = {s: r for s, r in verdicts(his_rec, rules, room, his, began,
                                                  kodi and kodi.playing).items() if s in mailto}
@@ -1564,7 +1895,7 @@ def main(argv=None):
                     # `wake to:$me` and wake it (section 4b); a failed one is now a call
                     hit = {s: r for s, r in act(hit, rec, his).items() if r != "again"}
                 if hit:
-                    deliver(mail_for(rec, hit.keys(), hit, his=his, cuts=cuts), rec)
+                    deliver(mail_for(rec, hit.keys(), hit, his=his, cuts=cuts, said=said), rec)
             save()
         if a.once:
             return 0

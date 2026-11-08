@@ -24,12 +24,14 @@ which side. That is the direct check for a chop, so start there:
 
     jq -c 'select(.kind == "said") | {ts, utt, voice, backend, device,
       underruns, underrun_s, device_gaps, device_gap_s, device_gap_max_s}' \
-      ~/.voicemode/logs/conversations/heard_$(date +%F).jsonl | tail -20
+      "$(ears home state-dir)/logs/conversations/heard_$(date +%F).jsonl" | tail -20
 
-The heard log is `<home>/logs/conversations/heard_YYYY-MM-DD.jsonl`
-(`src/ears/heard.py`). The home is `~/.voicemode` on a host that already keeps
-its heard log there, else `~/.sessionvoice`; `$SESSIONVOICE_HOME` moves it
-([logs.md](logs.md#sessionvoices-home)). `ears services status` prints it.
+The heard log is `<root>/logs/conversations/heard_YYYY-MM-DD.jsonl`
+(`src/ears/heard.py`). The state root is `~/.sessionkit/voice/state`, or the old
+`~/.sessionvoice` or `~/.voicemode` on a host that already keeps its heard log
+there; `$SESSIONVOICE_HOME` moves it ([logs.md](logs.md#the-state-root)).
+`ears home state-dir` prints it, and so does the `state` row of
+`ears services status`.
 On a fresh host that also runs VoiceMode's `converse` as a heard guest, set
 `SESSIONVOICE_HOME=~/.voicemode` (or `VOICEMODE_BASE_DIR`), so that both
 write one log; otherwise whichever writes first decides.
@@ -97,12 +99,12 @@ time, the device runs dry mid-line.
 - `underruns` > 0 on the `said` rows, with `backend` `clone`.
 - The kept WAV is clean. `ffmpeg silencedetect` finds only natural pauses:
 
-      ffmpeg -nostdin -hide_banner -i ~/.voicemode/mouth/audio/YYYY-MM-DD/UTT.wav \
+      ffmpeg -nostdin -hide_banner -i $(ears home state-dir)/mouth/audio/YYYY-MM-DD/UTT.wav \
         -af silencedetect=noise=-40dB:d=0.3 -f null - 2>&1 | grep silence_
 
   The path is `<audio dir>/<YYYY-MM-DD>/<utt>.wav` (`src/mouth/audio.py`).
   The audio dir is `$MOUTH_AUDIO_DIR`, else `<mouth dir>/audio`,
-  and the mouth dir defaults to `<home>/mouth`. The `said` row's
+  and the mouth dir defaults to `<root>/mouth` (the state root). The `said` row's
   `audio` field holds the exact path. Lines are kept for 7 days by default
   (`$MOUTH_AUDIO_DAYS`).
 - Request-to-kept time over `dur_s`, from `mouth audio --voice CLONE`. Each
@@ -129,8 +131,8 @@ starves the clone too).
   [Your voice](mouth.md#your-voice).
 - For the host: `voice` in the mouth's settings file
   (`$MOUTH_SETTINGS`, else `~/.sessionkit/voice/settings/mouth.json` when it
-  exists, else the old `<home>/mouth/settings.json`, `<home>` being
-  sessionvoice's home),
+  exists, else the old `<root>/mouth/settings.json`, `<root>` being
+  voice's state root),
   which the phone's Settings app writes. A session, seat or agent
   `mouth.voice`, or the caller's `$MOUTH_VOICE`, outranks it for
   that caller's lines, unless the file locks `voice`
@@ -205,7 +207,7 @@ and it writes an `ears-deaf` and an `ears-hearing` event to the heard log.
 with its exact mail. To read the events:
 
     jq -c 'select(.event == "ears-deaf" or .event == "ears-hearing") | {ts, event, device, text}' \
-      ~/.voicemode/logs/conversations/heard_$(date +%F).jsonl
+      "$(ears home state-dir)/logs/conversations/heard_$(date +%F).jsonl"
 
 The keeper log, `~/.sessionkit/voice/log/ears-keeper.log`, has a
 `DEAF (CHANNEL): CAUSE` line for each, and every step it took.

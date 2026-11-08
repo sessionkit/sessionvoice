@@ -82,7 +82,7 @@ def turn(sec, text, seq):
 
 
 @pytest.fixture
-def rig(tmp_path, monkeypatch):
+def rig(tmp_path, monkeypatch, fake_message_on_path):
     home, base, d = tmp_path / "home", tmp_path / "base", tmp_path / "mouth"
     aud, hb = tmp_path / "audio", tmp_path / "heard-box"
     for p in (home / ".mail" / "agents" / "s-vera-1" / "new", base / "logs" / "conversations", d):

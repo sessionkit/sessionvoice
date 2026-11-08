@@ -29,44 +29,50 @@ import ast, json, os, statistics, subprocess, sys, time
 from pathlib import Path
 from datetime import datetime, date
 
-def sessionvoice_home():
-    """sessionvoice's home: a copy of ears.home.sessionvoice_home (tests/test_home.py holds
-    it). $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it
-    holds the heard log, else ~/.sessionvoice."""
-    import glob, os
-    for name in ("SESSIONVOICE_HOME", "VOICEMODE_BASE_DIR"):
-        if os.environ.get(name):
-            return os.path.expanduser(os.path.expandvars(os.environ[name]))
-    for d in ("~/.sessionvoice", "~/.voicemode"):
-        c = os.path.expanduser(d + "/logs/conversations")
-        if os.path.exists(c + "/heard.lock") or glob.glob(glob.escape(c) + "/heard_*.jsonl"):
-            return os.path.expanduser(d)
-    return os.path.expanduser("~/.sessionvoice")
+HERE = Path(__file__).resolve().parent
+
+
+def voice_home():
+    """ears/home.py, the ONE place voice names its state root and its log folder.
+    view/ imports nothing from the ears package, so it loads home.py
+    (standard library only) by its path, once: the checkout's src/ears/home.py (view/ ships in the
+    checkout and the plugin only).
+    Not there: exit 2, naming where it looked; there is no copy of the rule to fall back
+    on."""
+    mod = getattr(voice_home, "mod", None)
+    if mod is None:
+        import importlib.util, sys
+        tried = [HERE.parent / "src/ears/home.py"]
+        f = next((f for f in tried if f.is_file()), None)
+        if f is None:
+            print(f"push: no ears/home.py at {' nor '.join(map(str, tried))}: it names "
+                  "voice's state root. Run it from a sessionvoice checkout, the plugin or the "
+                  "package", file=sys.stderr)
+            sys.exit(2)
+        spec = importlib.util.spec_from_file_location("_voice_home", f)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        voice_home.mod = mod
+    return mod
+
+
+def voice_state_dir() -> Path:
+    """voice's state root, as the PACKAGE answers it (ears.home.asked_state_dir, design.md
+    D4.1): asked once per process, and exit 2, naming both answers, when the package cannot
+    be asked or disagrees with this checkout's home.py."""
+    return voice_home().asked_state_dir("push")
 
 
 HOME = os.path.expanduser("~")
-LOGDIR = os.path.join(sessionvoice_home(), "logs/conversations")   # heard_*
+LOGDIR = os.path.join(voice_state_dir(), "logs/conversations")   # heard_*
 # VoiceMode's own exchanges log stays in VoiceMode's home, whatever sessionvoice's is
 VM_LOGDIR = os.path.join(HOME, ".voicemode/logs/conversations")
-HERE = Path(__file__).resolve().parent
 
 
 def voice_log_dir() -> Path:
     """ears.home.log_dir(), the ONE place the voice log folder is named ($EARS_LOG_DIR, else
-    the kit's log home). view/ imports nothing from the ears package, so it loads home.py
-    (standard library only) by its path: the checkout's src/ears/home.py (view/ ships in the
-    checkout only). Not there: exit 2, naming it; there is no copy to fall back on."""
-    import importlib.util, sys
-    tried = [HERE.parent / "src/ears/home.py"]
-    for f in tried:
-        if f.is_file():
-            spec = importlib.util.spec_from_file_location("_voice_home", f)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            return mod.log_dir()
-    print(f"push: no ears/home.py at {' nor '.join(map(str, tried))}: it names the log "
-          "folder. Run it from a sessionvoice checkout", file=sys.stderr)
-    sys.exit(2)
+    the kit's log home). Loaded by voice_home()."""
+    return voice_home().log_dir()
 
 
 LOG = str(voice_log_dir() / "ears-view-push.log")

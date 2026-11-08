@@ -74,46 +74,50 @@ from held_stream import HeldStream   # beside this file (the script's dir is on 
 VOICE_SETTINGS = ".sessionkit/voice/settings"
 
 
-def sessionvoice_home():
-    """sessionvoice's home: a copy of ears.home.sessionvoice_home (tests/test_home.py holds
-    it). $SESSIONVOICE_HOME, $VOICEMODE_BASE_DIR, ~/.sessionvoice or ~/.voicemode if it
-    holds the heard log, else ~/.sessionvoice."""
-    import glob, os
-    for name in ("SESSIONVOICE_HOME", "VOICEMODE_BASE_DIR"):
-        if os.environ.get(name):
-            return os.path.expanduser(os.path.expandvars(os.environ[name]))
-    for d in ("~/.sessionvoice", "~/.voicemode"):
-        c = os.path.expanduser(d + "/logs/conversations")
-        if os.path.exists(c + "/heard.lock") or glob.glob(glob.escape(c) + "/heard_*.jsonl"):
-            return os.path.expanduser(d)
-    return os.path.expanduser("~/.sessionvoice")
+HERE = Path(__file__).resolve().parent
 
 
-LOGDIR = Path(os.environ.get("EARS_SOUNDS_HEARD_DIR") or Path(sessionvoice_home()) / "logs/conversations")
+def voice_home():
+    """ears/home.py, the ONE place voice names its state root and its log folder.
+    keeper/ imports nothing from the ears package, so it loads home.py
+    (standard library only) by its path, once: the checkout's src/ears/home.py, else the wheel's
+    ears/home.py above ears/_keeper/.
+    Not there: exit 2, naming where it looked; there is no copy of the rule to fall back
+    on."""
+    mod = getattr(voice_home, "mod", None)
+    if mod is None:
+        import importlib.util, sys
+        tried = [HERE.parent / "src/ears/home.py", HERE.parent / "home.py"]
+        f = next((f for f in tried if f.is_file()), None)
+        if f is None:
+            print(f"ears-sounds: no ears/home.py at {' nor '.join(map(str, tried))}: it names "
+                  "voice's state root. Run it from a sessionvoice checkout, the plugin or the "
+                  "package", file=sys.stderr)
+            sys.exit(2)
+        spec = importlib.util.spec_from_file_location("_voice_home", f)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        voice_home.mod = mod
+    return mod
+
+
+def voice_state_dir() -> Path:
+    """voice's state root, as the PACKAGE answers it (ears.home.asked_state_dir, design.md
+    D4.1): asked once per process, and exit 2, naming both answers, when the package cannot
+    be asked or disagrees with this checkout's home.py."""
+    return voice_home().asked_state_dir("ears-sounds")
+
+
+LOGDIR = Path(os.environ.get("EARS_SOUNDS_HEARD_DIR") or Path(voice_state_dir()) / "logs/conversations")
 # In a row, then exit 1 so launchd's KeepAlive starts a fresh process. The night of Tue
 # 2030-06-09 it logged 599 failures in a row (-9986) and never exited, so KeepAlive never fired.
 MAX_FAILS = int(os.environ.get("EARS_SOUNDS_MAX_FAILS") or 20)
-HERE = Path(__file__).resolve().parent
 
 
 def voice_log_dir() -> Path:
     """ears.home.log_dir(), the ONE place the voice log folder is named ($EARS_LOG_DIR, else
-    the kit's log home). keeper/ imports nothing from the ears package, so it loads home.py
-    (standard library only) by its path: the checkout's src/ears/home.py, else the wheel's
-    ears/home.py above ears/_keeper/. Neither: exit 2, naming both; there is no copy to fall
-    back on."""
-    import importlib.util, sys
-    tried = [HERE.parent / "src/ears/home.py", HERE.parent / "home.py"]
-    for f in tried:
-        if f.is_file():
-            spec = importlib.util.spec_from_file_location("_voice_home", f)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            return mod.log_dir()
-    print(f"ears-sounds: no ears/home.py at {' nor '.join(map(str, tried))}: it names the log "
-          "folder. Pass --sound-log (or set EARS_SOUNDS_LOG), or run it from a checkout or "
-          "the package", file=sys.stderr)
-    sys.exit(2)
+    the kit's log home). Loaded by voice_home()."""
+    return voice_home().log_dir()
 
 
 ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
@@ -127,11 +131,32 @@ a = ap.parse_args()
 a.sound_log = a.sound_log or str(voice_log_dir() / "ears-sounds.jsonl")
 os.makedirs(os.path.dirname(os.path.abspath(a.sound_log)), exist_ok=True)
 
-_settings, _mtime = {}, None
+# The defaults: written to --settings when that file is absent (a fresh Mac), and what plays
+# until it exists. The tick that says "you were heard" is on from the first turn, which is the
+# consent page's promise; the Settings page is where a user turns it off. The same values as
+# keeper/defaults/ears-sounds.json (a test holds the two equal); a file that exists is read as
+# it is, never rewritten. mouth-sounds.py does the same for its file.
+DEFAULT = {"allow": True, "to": [], "pair": False, "sounds": {
+    "turn": {"on": True, "freq": 1320, "ms": 45, "volume": 0.15},
+    "partial": {"on": True, "freq": 2400, "ms": 12, "volume": 0.06},
+    "event:device-change": {"on": False, "freq": 880, "ms": 90, "volume": 0.15},
+    "event:turn-discarded": {"on": False, "freq": 440, "ms": 60, "volume": 0.09},
+    "event:listen-stopped": {"on": False, "freq": 330, "ms": 200, "volume": 0.15}}}
+if not os.path.exists(a.settings):
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(a.settings)), exist_ok=True)
+        with open(a.settings, "w") as f:
+            json.dump(DEFAULT, f, indent=2)
+            f.write("\n")
+        print(f"ears-sounds: no settings file; wrote the defaults to {a.settings}", flush=True)
+    except OSError as x:
+        print(f"ears-sounds: no settings file and none written ({x}); the defaults apply", flush=True)
+_settings, _mtime = json.loads(json.dumps(DEFAULT)), None
 
 
 def settings() -> dict:
-    """The settings file, reread when it changes; the last good copy on a bad edit."""
+    """The settings file, reread when it changes; the last good copy on a bad edit; the
+    defaults above until a file exists."""
     global _settings, _mtime
     try:
         m = os.stat(a.settings).st_mtime

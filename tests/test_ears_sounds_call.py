@@ -92,3 +92,40 @@ def test_a_call_that_ended_falls_back_to_the_default(run, tmp_path):
     assert r.returncode == 0, r.stderr
     assert "pair:call->default (DeviceAbsent" in r.stdout
     assert opened(tmp_path) == ["Fake Speakers"]
+
+
+def test_a_missing_settings_file_is_written_with_the_defaults_and_the_turn_plays(tmp_path):
+    """A fresh Mac has no ears-sounds.json: the watcher writes its defaults there (the same values
+    as keeper/defaults/ears-sounds.json) and the turn tick plays, so the tick is on from the
+    first turn (the consent page's promise). mouth-sounds.py already did this for its file."""
+    st = tmp_path / "settings" / "ears-sounds.json"
+    env = dict(os.environ, MOUTH_CALL_SOCKS="/tmp/nope-nothing-here.sock",
+               EARS_SOUNDS_DEFAULT_CMD="echo Fake Speakers",
+               FAKE_SD_LOG=str(tmp_path / "sd.log"), FAKE_SD_FAIL="",
+               PYTHONPATH=os.pathsep.join([str(FAKE), str(SCRIPT.parents[1] / "src"),
+                                           os.environ.get("PYTHONPATH", "")]))
+    r = subprocess.run([sys.executable, str(SCRIPT), "--settings", str(st), "--sound-log", str(tmp_path / "sounds.jsonl"),
+                        "--test", "turn", "--mic", "AirPods"], capture_output=True, text=True, env=env, timeout=60, check=False)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"wrote the defaults to {st}" in r.stdout
+    written = json.loads(st.read_text())
+    shipped = {k: v for k, v in json.loads((SCRIPT.parent / "defaults" / "ears-sounds.json").read_text()).items()
+               if not k.startswith("_")}
+    assert written == shipped, "keeper/defaults/ears-sounds.json and ears-sounds.py's DEFAULT must be the same values"
+    assert written["sounds"]["turn"]["on"] is True and written["allow"] is True
+    assert opened(tmp_path), "the turn tick did not open a stream"
+
+
+def test_an_existing_settings_file_is_never_rewritten(tmp_path):
+    st = tmp_path / "ears-sounds.json"
+    st.write_text(json.dumps({"allow": False, "to": [], "pair": False, "sounds": {}}))
+    env = dict(os.environ, MOUTH_CALL_SOCKS="/tmp/nope-nothing-here.sock",
+               EARS_SOUNDS_DEFAULT_CMD="echo Fake Speakers",
+               FAKE_SD_LOG=str(tmp_path / "sd.log"), FAKE_SD_FAIL="",
+               PYTHONPATH=os.pathsep.join([str(FAKE), str(SCRIPT.parents[1] / "src"),
+                                           os.environ.get("PYTHONPATH", "")]))
+    r = subprocess.run([sys.executable, str(SCRIPT), "--settings", str(st), "--sound-log", str(tmp_path / "sounds.jsonl"),
+                        "--test", "turn", "--mic", "AirPods"], capture_output=True, text=True, env=env, timeout=60, check=False)
+    assert "wrote the defaults" not in r.stdout
+    assert json.loads(st.read_text()) == {"allow": False, "to": [], "pair": False, "sounds": {}}
+    assert not opened(tmp_path)   # allow false: nothing plays

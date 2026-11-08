@@ -13,6 +13,10 @@
                                        their names also prime the STT
   ears speakers enrol | record | clusters DIR | name DIR L0=NAME ...
                                        a reference per person for the speaker side-car
+  ears home    state-dir [ITEM] [--json] | log-dir | migrate [--dry-run] [--json]
+                                       where voice keeps its state (ears.home.state_dir);
+                                       --json is the contract peers parse; migrate moves
+                                       an old root into it, once per host (--help)
 """
 import argparse, json, os, shutil, subprocess, sys, time
 from .backends import open_backend, available, NoBackend
@@ -119,6 +123,8 @@ def main(argv=None):
     #   ears heard ...     the heard log's own CLI (hook, write, last-seq)
     #   ears eval ...      every STT engine on the same audio (a file, or a call's turns)
     #   ears wake ...      the seats "hey NAME" wakes: add, list (the user wake file)
+    #   ears home ...      where voice keeps its state: state-dir [ITEM] [--json], log-dir,
+    #                      migrate [--dry-run] [--json] (ears.migrate)
     if argv and argv[0] == "capture":
         from .listen.__main__ import main as listen_main
         return listen_main(argv, own_process=own_process)
@@ -137,6 +143,12 @@ def main(argv=None):
     if argv and argv[0] == "wake":
         from .wake import main as wake_main
         return wake_main(argv[1:])
+    if argv[:2] == ["home", "migrate"]:
+        from .migrate import main as migrate_main
+        return migrate_main(argv[2:], prog="ears home migrate")
+    if argv and argv[0] == "home":
+        from .home import main as home_main
+        return home_main(argv[1:], prog="ears home")
     if argv and argv[0] == "recording":
         from .recording import main as recording_main
         return recording_main(argv[1:])
@@ -158,6 +170,7 @@ def main(argv=None):
     sub.add_parser("heard", help="the heard log: hook, write, last-seq")
     sub.add_parser("eval", help="a clip or a call through every STT engine, side by side (ears eval --help)")
     sub.add_parser("wake", help="the seats \"hey NAME\" wakes: add, list (ears wake --help)")
+    sub.add_parser("home", help="where voice keeps its state: state-dir [ITEM] [--json], log-dir, migrate")
     sub.add_parser("recording", help="whether captured audio is kept (off by default): status, on, off")
     a = ap.parse_args(argv)
 

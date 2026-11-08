@@ -50,9 +50,23 @@ Talk ships in the sessionvoice wheel as the `talk` command (`src/talk/`).
   - Its log is `~/.sessionkit/voice/log/talk.log`. `ears services status` has a
     row for it, and `ears services uninstall --only talk` removes it.
   - `--dry-run` prints the plist and changes nothing.
-  - To change the port or add a `TALK_*` variable, render
-    `launchd/dev.sessionkit.voice.talk.plist.in` by hand instead. Its header
-    carries the line that fills it in and the lines that load and remove it.
+  - `--allow-host NAME` (repeatable) writes `TALK_ALLOW_HOSTS` into the job,
+    checked as `talk serve --allow-host` checks it: behind `tailscale serve`,
+    give the tailnet name (`--allow-host machine.example.ts.net`), or the
+    phone gets a 403. Install says which names the job answers, and how to
+    add one when it answers loopback only.
+  - A re-run, an upgrade's too, keeps every `TALK_*` setting the plist it
+    replaces carries, so a name or a Settings link added there survives it.
+    `--allow-host` replaces the names alone. To start clean,
+    `ears services uninstall --only talk`, then install.
+  - Once talk has loaded, install's closing lines say each browser pairs
+    once with `talk pair` (see [Pairing](#pairing)), and that a Talk tab
+    already open should be reloaded: a page served before the install keeps
+    its old code.
+  - To change the port or add a `TALK_*` variable install has no flag for,
+    render `launchd/dev.sessionkit.voice.talk.plist.in` by hand instead. Its
+    header carries the line that fills it in and the lines that load and
+    remove it.
     Install leaves a hand render alone and skips its own job, so two never
     fight over the port.
 
@@ -111,8 +125,8 @@ hands its cookie to whatever answers the address it dials.
 
 ### The token file
 
-- **Where:** `<home>/talk/token`, under sessionvoice's home ([where that
-  is][home]). The file is 0600 and its `talk/` directory 0700, both owned by
+- **Where:** `<root>/talk/token`, under voice's state root ([where that
+  is][home]: `~/.sessionkit/voice/state` on a new host). The file is 0600 and its `talk/` directory 0700, both owned by
   the user who runs talk.
 - **What:** 43 characters of `A-Z a-z 0-9 _ -` (256 bits) and a newline.
 - **Made once, whole,** by the first `talk serve`, before it binds. The
@@ -138,16 +152,17 @@ you.
 - **Over TCP:** leave talk on 127.0.0.1 and put Tailscale in front, e.g.
   `tailscale serve --bg --set-path /talk http://127.0.0.1:8780`, then allow
   the name your devices use: `talk serve --allow-host
-  machine.example.ts.net` (or `TALK_ALLOW_HOSTS=machine.example.ts.net`).
-  tailscale serve passes the browser's Host through, with no port, so
-  without it the phone gets the 403.
+  machine.example.ts.net` (or `TALK_ALLOW_HOSTS=machine.example.ts.net`;
+  as a service, `ears services install --only talk --allow-host
+  machine.example.ts.net`). tailscale serve passes the browser's Host
+  through, with no port, so without it the phone gets the 403.
 - **Behind a proxy, prefer socket mode:** `talk serve --unix` (or
   `TALK_UNIX_SOCKET=PATH`) binds a unix socket and **no TCP port**, so no
   other user can take talk's port while it is down and collect your
   browser's cookie. Map it with
   `tailscale serve --bg --set-path /talk unix:<PATH>`, with
   `--allow-host machine.example.ts.net` as before. PATH defaults to
-  `<home>/talk/talk.sock`, beside the token.
+  `<root>/talk/talk.sock`, beside the token.
   - The socket is 0600 in a 0700 directory. A directory with group or
     other bits, or a file at PATH that is not a stale socket of yours,
     exits 2 before anything binds. A unix socket path holds at most 103
@@ -235,19 +250,21 @@ below. The front door runs it; you never run it by hand.
 Read-only; talk writes none of these.
 
 - **Today's heard log,** where the kit's own writer puts it:
-  `<home>/logs/conversations/heard_<date>.jsonl`, where `<home>` is
-  sessionvoice's home ([where that is][home]).
+  `<root>/logs/conversations/heard_<date>.jsonl`, where `<root>` is
+  voice's state root ([where that is][home]; `ears home state-dir` prints it).
 - **Each seat's waiter offsets:** `heard.state` in the seat's home, found
-  the way `ears-arm` finds it: `$EARS_HOME`, else
-  `~/.session/agents/home/<seat>`, else `~/.<seat>`, else `~/.ears` (shown
-  as "ears"). No heard.state at all is fine: turns and mouth lines still
+  the way `ears-arm` finds it: `$EARS_HOME`, else the seat's home in
+  sessiontools (asked of tools, never built from a path), else `~/.<seat>`,
+  else the old shared `~/.ears` while a host still has one (shown as "ears"),
+  else voice's own `<root>/seats/<seat>/`. No heard.state at all is fine: turns and mouth lines still
   show; only the "scanned" ticks need one.
 - **Presence and the "shown to" ticks:** `session list --json`
-  (sessiontools), the heard-cursor (`<home>/state/heard-cursor`) and the
-  pager's ride records. Without the `session` command those are simply
+  (sessiontools), the heard-cursor (`<root>/state/heard-cursor`) and the
+  pager's ride records, in each session's folder as sessiontools names it
+  (the old `~/.sessionmail` is read only when `$SESSIONMAIL_HOME` names it). Without the `session` command those are simply
   empty.
-- **Faces, if any:** `~/.session/agents/<name>/avatar.jpg`; else a coloured
-  initial.
+- **Faces, if any:** `avatar.jpg` in the agent's config folder, asked of
+  sessiontools; else a coloured initial.
 
 ## Settings
 
@@ -268,7 +285,7 @@ variable.
 `SESSIONVOICE_HOME` moves the heard log and the token, the same as for the
 ears.
 
-[home]: logs.md#sessionvoices-home
+[home]: logs.md#the-state-root
 [kit]: #in-the-kits-web-page
 [pairing]: #pairing
 [settings]: #settings

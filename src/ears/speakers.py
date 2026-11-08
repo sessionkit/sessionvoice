@@ -97,9 +97,17 @@ def _private_dir(d: Path) -> Path:
 
 # ---- before anyone talks: the python, the model, the keeper --------------------------------
 
+#: The installed-plist lines this process has said (preflight runs at each step of enrol).
+_told: set[str] = set()
+
+
 def preflight() -> None:
     """Refuse, in one line, when a later step would: no service python, no diarizer in it,
     or no model cached. Run before recording, so a refusal never costs anyone their minutes."""
+    for line in services.installed_state_lines(["speakers"]):   # it reads an old home: say so,
+        if line not in _told:                                    # once per process
+            _told.add(line)
+            _say(line)
     py = _py()
     if not py.exists():
         raise Refused(f"no speaker python at {py}: run `{INSTALL}` (it builds it), or set "

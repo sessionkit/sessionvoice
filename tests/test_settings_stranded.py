@@ -250,10 +250,24 @@ def test_install_schema_skips_only_the_stranded_files_schema(fake_home):
 
 
 def test_install_schema_with_every_schema_stranded_makes_no_folder(fake_home):
+    # Talk's schema (talk.json is new since 0.1.0) waits too: it never makes the folder alone,
+    # so the host step's whole-folder move cannot nest the old folder in a new one
     for name in ("ears.json", "ears-sounds.json", "mouth.json"):
         strand(fake_home, name)
-    assert "schema: none in" in services.install_schema()
+    line = services.install_schema()
+    assert "schema: none in" in line and "waits for the 0.1.0 files to move" in line
     assert not home.settings_dir().exists()
+
+
+def test_talks_schema_lands_once_the_folder_exists(fake_home):
+    strand(fake_home, "mouth.json")                  # one 0.1.0 file still waits...
+    home.settings_dir().mkdir(parents=True)          # ...but the new folder is already there
+    services.install_schema()
+    assert (home.settings_dir() / ".talk.schema.json").exists()
+
+
+def test_a_file_0_1_0_never_had_is_never_stranded(fake_home):
+    assert home.stranded("talk.json") is None
 
 
 # --- the commands: ears, ears services, mouth, talk -------------------------------------

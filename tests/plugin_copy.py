@@ -7,7 +7,8 @@ would find the checkout's real bin/heard-first and could arm a real waiter on th
 real mic log.
 
 The fence is therefore a copy. :func:`make` copies ears-arm and ears-count (the
-scripts and their bin/ shims) into ``<tmp>/plugin/``, laid out as the plugin is,
+scripts and their bin/ shims) and ``src/ears/home.py`` (where ears-arm asks for the seat's
+home) into ``<tmp>/plugin/``, laid out as the plugin is,
 and writes ``<tmp>/plugin/bin/heard-first`` as a stub that records its own path and
 argv and exits 99. Run the COPY, and its own location IS the stub. Nothing here
 reaches the checkout's bin/heard-first.
@@ -73,6 +74,9 @@ def make(tmp: Path, *, heard_first: bool = True) -> Path:
     for name in SCRIPTS:
         shutil.copy2(ROOT / "skills" / "ears" / "scripts" / name, scripts / name)
         shutil.copy2(ROOT / "bin" / name, plugin / "bin" / name)
+    # ears-arm asks the plugin's home.py for the seat's home (EARS-492 design.md D5)
+    (plugin / "src" / "ears").mkdir(parents=True)
+    shutil.copy2(ROOT / "src" / "ears" / "home.py", plugin / "src" / "ears" / "home.py")
     if heard_first:
         stub_heard_first(plugin / "bin", tmp / "plugin-ran")
     return plugin

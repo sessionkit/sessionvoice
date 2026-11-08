@@ -427,7 +427,9 @@ def write_record(on: bool, path: Optional[str] = None, days: Optional[int] = Non
             raise WriteRefused(f"{p} is not a JSON object: fix or move it, nothing written")
         mode = p.stat().st_mode & 0o777
     else:
-        d = {}
+        # whoever CREATES ears.json says the room's ear is off (services._seed_stt, the same
+        # rule): a missing listen reads as on, and nobody said yes yet
+        d = {"listen": False}
     d[KEY_RECORD] = bool(on)
     if days is not None:
         d[KEY_DAYS] = days
