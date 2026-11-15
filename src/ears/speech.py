@@ -116,10 +116,14 @@ class Probe:
 @dataclass(frozen=True)
 class Decision:
     """``kind`` is one of KINDS; ``line`` is what install prints; ``fatal`` means the ears
-    would be deaf, so install exits non-zero."""
+    would be deaf, so install exits non-zero. ``label``: the launchd label of the job the
+    decision is about (the port's holder for use and refuse-foreign, the loaded job for
+    refuse-loaded-down), None when there is none or lsof cannot name it: install's service
+    file tells ours (LABEL) from another program by it."""
     kind: str
     line: str
     fatal: bool = False
+    label: str | None = None
 
     @property
     def installs(self) -> bool:
@@ -312,8 +316,9 @@ def decide(p: Probe, final_url: str | None = None, mouth: bool = False) -> Decis
     # 2. something holds the port: use it only if it says it is mlx-audio
     if p.held:
         who = p.holder.describe() if p.holder else "holder unknown: lsof does not see it"
+        label = p.holder.label if p.holder else None
         if p.identity == "mlx-audio":
-            return Decision("use", f"speech: using mlx-audio on {at} ({who})")
+            return Decision("use", f"speech: using mlx-audio on {at} ({who})", label=label)
         if p.identity == "no-answer":
             what = f"{at} is held but does not answer ({p.why})"
         else:
@@ -322,13 +327,14 @@ def decide(p: Probe, final_url: str | None = None, mouth: bool = False) -> Decis
                if here else f"free {at}; the mouth falls back to `say` until then")
         return Decision("refuse-foreign",
                         f"speech: REFUSED: {what}; holder {who}. Installing nothing, starting nothing: {fix}",
-                        fatal=here)
+                        fatal=here, label=label)
     # 3. a loaded job that runs mlx_audio.server, down or restarting: never a second server
     loaded = [j for j in p.jobs if j.loaded]
     if loaded:
         j = loaded[0]
         return Decision("refuse-loaded-down",
-                        f"speech: {j.label} is loaded but {at} is not answering; not installing a second server")
+                        f"speech: {j.label} is loaded but {at} is not answering; not installing a second server",
+                        label=j.label)
     # 4. nothing there at all
     return Decision("install", f"speech: nothing on {at} and no mlx-audio job loaded; install {LABEL}")
 

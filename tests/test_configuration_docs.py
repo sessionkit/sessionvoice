@@ -219,13 +219,16 @@ def test_each_sound_field_is_the_schemas_with_the_codes_default():
 def test_the_layers_list_is_the_mouths():
     from mouth import voices
 
+    # a line's keys, then the two a remote URL play reads in a run of its own,
+    # then the ones that place a play, read in a run of their own when no flag answers
+    layered = [*voices.LINE_KEYS, *voices.PLAY_URL_KEYS, *voices.PLAY_MODE_KEYS]
     section = _section(_read(SETTINGS_DOC), "The mouth reads some keys from the layers", "###")
     first = section.strip().split("\n\n")[0]
-    assert re.findall(r"`([a-z_]+)`", first) == list(voices.LINE_KEYS)
+    assert re.findall(r"`([a-z_]+)`", first) == layered
     rows = _rows(_section(_read(SETTINGS_DOC), "mouth.json"))
     for key, cells in rows.items():
-        assert cells[-1] == ("yes" if key in voices.LINE_KEYS else "no"), key
-    file_only = set(_schema("mouth.json")) - {"$schema"} - set(voices.LINE_KEYS)
+        assert cells[-1] == ("yes" if key in layered else "no"), key
+    file_only = set(_schema("mouth.json")) - {"$schema"} - set(layered)
     last = section.strip().split("\n\n")[-1]
     assert set(re.findall(r"`([a-z_]+)`", last)) == file_only
 

@@ -318,7 +318,24 @@ an agent seat should be woken when you speak. Before it writes anything,
 install says how big the speech models are (about 2.9 GB, fetched once,
 after the speech server loads) and that the speech server runs as a login
 service; `--dry-run` prints the same line, and `--no-prefetch` leaves the
-download to the first call.
+download to the first call. `--no-prefetch` does not cover the Silero VAD
+model (2.3 MB): install still fetches a missing one, because the keeper
+cannot hear without it.
+
+A fresh install leaves the room's ear off. To turn it on now, and check the
+microphone while you are at the Mac:
+
+    ears services install --agent NAME --listen
+
+- Typing `--listen` is the consent: it writes `"listen": true` to `ears.json`
+  before the keeper loads.
+- macOS asks to let the keeper's Python use the microphone: click Allow.
+- Install waits up to 60 s for the keeper to hear something. If it does not,
+  one line names System Settings > Privacy & Security > Microphone and the
+  app, and install exits 2
+  ([troubleshooting](docs/troubleshooting.md#install-the-microphone-was-not-heard)).
+- A re-install with listening already on runs the same check.
+  `EARS_MIC_CHECK_S=0` turns it off.
 
 ### The proof of a working install: you speak, and the agent WAKES and answers
 
@@ -329,7 +346,8 @@ it pages nobody: the agent is woken by the turn MAIL (`mail`,
 An install that stops at "the user speaks, a heard line appears" can leave the
 agent deaf to its person, and one that retires room mode on that proof goes
 deaf for good. So the proof is: say "hey NAME", and NAME wakes and
-answers.
+answers. Install's `mic    heard:` line proves the keeper hears, not that
+anyone wakes: when the mic is NOT heard, install leaves out its proof line.
 
 `ears services install` (`--dry-run` lists the same checks and writes nothing).
 Before it writes anything, it checks every prerequisite it can check without
@@ -432,7 +450,14 @@ as its `log` row ([logs](docs/logs.md#the-log-files)). It then:
   STT models: this project's own extra pins `mlx-audio>=0.5.4`. An mlx-audio
   that answers every Parakeet request 500 (`No module named
   mlx_audio.tts.models.parakeet_tdt_0`) is not one, and the probe catches it.
-  That the cause is an older mlx-audio is an inference, not measured.
+  That the cause is an older mlx-audio is an inference, not measured;
+- with listening on (`--listen`, or already on), after the last service loads
+  and before the speech weights download, waits up to 60 s
+  (`EARS_MIC_CHECK_S`) for the keeper's first heartbeat with sound. Heard: one
+  `mic` row. Not heard: one line on stderr naming the Privacy setting and the
+  app, and exit 2. Every case it cannot check (listening off, no microphone,
+  a live call, a hand-made keeper, `EARS_MIC_CHECK_S=0`) gets one
+  `mic    not checked:` row instead, with the exit unchanged.
 
 **The ride-along hook is a step of its own.** Installing the Claude Code
 plugin does not turn it on: the plugin ships no hooks, so no agent sees what

@@ -27,7 +27,9 @@ arrival). A lead buffer of ``lead_s`` before the first frame would have played
 the line with no dry-out.
 
 Each line is said with ``--lead S`` (default 2.5, as ``mouth say --lead 2.5``);
-the mouth's own default is 0, the fix OFF.
+``--lead 0`` is the fix OFF. The mouth's own default for a clone line is 3 s
+(``voices.BUILTIN_LEAD_BY_BACKEND``); ``run_line(lead_s=None)``
+plays at that default.
 
     uv run --locked python bench/clone_underrun.py            # every scenario, every path
     uv run --locked python bench/clone_underrun.py loaded-1.25 --json out.jsonl
@@ -226,6 +228,7 @@ def run_line(scenario: dict, path: str = "null", workdir: Optional[Path] = None,
             "gen_s": saying.get("gen_s"), "played_s": said.get("played_s"), "dur_s": said.get("dur_s"),
             "underruns": said.get("underruns"), "underrun_s": said.get("underrun_s"),
             "over": said.get("over"), "lead_s": fake.lead_s(), "held_s": saying.get("held_s"),
+            "lead_from": saying.get("lead_from"),   # where the lead it held came from
             "wall_s": round(wall, 3),
             "chunks": len(fake.arrivals),
         }

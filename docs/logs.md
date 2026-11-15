@@ -306,6 +306,10 @@ Written at the line's first audio frame, like a partial
   `requested_ts`, `mail_id`, `file`, `start`, `end`, `hold`, `interest`,
   `resume_of`, `again_of` (a say-again replay: the utt it replays),
   `expires_t`, `volume`, `volume_from`, `in_reply_to` and `call_id`.
+- `alert: true` on an alert line only (`mouth say --alert`, and the rest
+  that a barge-in's replay queues of one): the host's own line, which no
+  seat said. No other line's rows carry the key
+  ([mouth.md](mouth.md)).
 - A played file's own, each dropped when it has none: `source_file` (the
   file asked for, when its instrumental or a stem played in its place;
   `file` is then what played), `instrumental_from` (the layer that turned
@@ -393,7 +397,10 @@ The capture writes these (`src/ears/listen/loop.py`):
   keeper tells its room capture's beats from a call leg's by it), and the
   input's level over the period: `peak`, `rms`,
   `rms_dbfs`. Under silero it also carries `speech_prob_max`. `peak: 0`
-  is a dead microphone.
+  is a dead microphone. `code` is the capture's code stamp, taken at its
+  start (`src/ears/codestamp.py`, for example `0.3.3+1a2b3c4d5e6f`): a
+  restarted keeper restarts, once, a capture whose stamp is not the one it
+  would start. A reader that does not know it ignores it.
   On a real-time source it adds `audio_ts`, `lag_s` and `stt_backlog_s`,
   and on the mic `input_overflows`.
 - `vad` (`loop.py:739`): a voice onset (`speech: true`) or offset
@@ -583,7 +590,16 @@ a file.
   one `HH:MM:SS` line per keeper event (`keeper/ears-keeper.sh:292`): an
   input change, a capture start or restart, a call live or ended, the
   missed-reply window, a recogniser that fell behind or caught up, and
-  every notice it mailed or could not mail. The keeper reads the heard
+  every notice it mailed or could not mail: `mail FAILED (<why>): SUBJECT`,
+  where the why is `exit N`, `timed out after 30 s` (each send has 30 s)
+  or `not run: ...`, and `mail FAILED (no message binary ...)`. At the Nth
+  failed notice in a row (`mail_alert_after`, 3 by default) one more line
+  follows, `ears-keeper: ERROR: mail alert: <n> notices in a row failed;
+  queued for the mouth (utt <utt>)` (or `not said: <why>`), and the mouth
+  says it; the first notice that goes through after it writes
+  `ears-keeper: mail recovered: a notice went through after <n> in a row
+  failed; ...`. Its count is `keeper-mail.json` in the keeper's run dir,
+  apart from the turn mailer's. The keeper reads the heard
   log's new lines each loop and mails a `recogniser-lag` as
   `ears: recogniser N s behind on DEVICE at HH:MM EOM`, at most once every
   `EARS_LAG_MAIL_GAP` seconds (default 600). The ones it holds back are
@@ -600,7 +616,12 @@ a file.
   SIGKILL after `EARS_TERM_WAIT` more (5). At start the keeper adopts a
   running room capture only if its last heartbeat in the heard log is
   within `EARS_BEAT_KILL`. Otherwise it notes `not adopting wedged
-  capture`, sends the one DEAF mail and stops that capture hard. A keeper
+  capture`, sends the one DEAF mail and stops that capture hard. A capture
+  that still beats, but whose heartbeat's `code` is not the stamp of the
+  code the keeper would start (or has none), is noted as `runs other code:
+  HAS, this keeper starts WANT: restarting it once` and stopped, and the
+  keeper starts a fresh one. At most once per keeper start: a capture
+  still on other code after it is noted `STILL RUNS OTHER CODE` and kept. A keeper
   loop that `ears-keeper.pid` (in the keeper's run dir) names is ended
   first, so two loops never run at once. A room capture that stops because
   its speech to text failed (`listen-stopped`, `error` carrying
@@ -670,7 +691,18 @@ a file.
   "call", "cause", ...}` when the mouth failed, timed out (`cause`
   `timeout`, with `timeout_s`), would not start (`not run`) or had nothing
   to replay (`exit 3`, with its `err`). That turn's
-  mail then carries `call` instead of `again`. While a film plays
+  mail then carries `call` instead of `again`. Each failed send writes
+  `ears-mail: ERROR: send to <seat> failed, exit <code>: <why>`. At the
+  Nth send in a row that fails (`mail_alert_after`, 3 by default) one more
+  line follows, `ears-mail: ERROR: mail alert: <n> sends in a row failed;
+  queued for the mouth (utt <utt>)`, and the mouth says it; when the mouth
+  could not take it, the line ends `not said: <why>` instead (`mouth say
+  exit <code>: ...`, `mouth say timed out after 5 s` or `mouth say not
+  run: ...`). Nothing more is written for that run of failures. The first
+  send that goes through after it writes `ears-mail: mail recovered: a
+  send went through after <n> in a row failed; queued for the mouth (utt
+  <utt>)` (or `not said: <why>`). The utt finds the line's own `said` row
+  in the heard log. While a film plays
   (`--kodi`), a room turn that names a seat whose verdict is not `call`
   adds `{"skip": "addressed", "seq", "seats", "cause": "film", "media",
   "mailed": "without those entries"}`: the mail goes without those seats'
@@ -688,13 +720,23 @@ a file.
   launch agent, as stdout and stderr (`src/ears/services.py:717`). The
   player runs inside it and prints its records there: `kind: barge`
   decisions and duck records (`src/mouth/player.py:259-266`), and one line
-  per drop notice (`src/mouth/notice.py:542`).
+  per drop notice (`src/mouth/notice.py:542`). A notice that fails adds
+  `mouth: ERROR: notice to <addr> failed: ...`. At the Nth notice in a row
+  that fails (`notice_alert_after`, 3 by default) one more line follows,
+  `mouth: ERROR: notice alert: <n> notices in a row failed; queued for the
+  mouth (utt <utt>)`, and the mouth says it; when the line could not be
+  queued it ends `not said: <why>` instead, the error's type and text.
+  Nothing more is written for that run of failures. The first notice that
+  goes out after it writes `mouth: notices recovered: one went out after
+  <n> in a row failed; queued for the mouth (utt <utt>)` (or `not said:
+  <why>`). The utt finds the line's own `said` row in the heard log.
 - **`player.log`** and **`split.log`** in `~/.sessionkit/voice/log/` (they were
   in the mouth's folder, `$MOUTH_DIR`, by default `<root>/mouth/`, and its
   `splits/`; `~/.voicemode/mouth/` in 0.1.0). The mouth's other records, locks
   and speed stay in the mouth's folder. `player.log`'s writer: a player that
   `mouth say` started because none was running (`src/mouth/__init__.py:72`).
-  It shows the same records as `ears-mouth.log`.
+  It shows the same records as `ears-mouth.log`, the notice alert's lines
+  among them.
 - **`ears-stt.log`** and **`ears-speakers.log`** in `~/.sessionkit/voice/log/`.
   Writer: the opt-in `stt` and `speakers` launch agents
   (`src/ears/services.py:717`). The side-car started by hand logs to
@@ -743,7 +785,7 @@ a file.
   fields and events are new since 0.1.0, so a 0.1.0 log never has them:
   - the `vad`, `missed-reply`, `missed-reply-off`, `missed-reply-error` and
     `duck-skipped` events;
-  - `speech_prob_max` and `pid` on `heartbeat`, and `missed_reply_s`,
+  - `speech_prob_max`, `pid` and `code` on `heartbeat`, and `missed_reply_s`,
     `record`, `record_from` and `record_invalid` on `listen-started`;
   - `audio_ts` and `lag_s` on `partial`, `turn`, `turn-discarded`, `vad`
     and `heartbeat`, and `stt_backlog_s` and `input_overflows` on

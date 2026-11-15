@@ -292,7 +292,7 @@ def test_a_refusal_before_anything_is_written_writes_no_log(tripwire, capsys):
 
 
 def test_a_late_refusal_after_the_host_changed_is_logged_and_says_where(tripwire, monkeypatch, capsys):
-    monkeypatch.setattr(services, "speech_step", lambda names, dry_run, d=None: (False, False))
+    monkeypatch.setattr(services, "speech_step", lambda names, dry_run, d=None: (False, False, None))
     rc, cap = _install(capsys)
     assert rc == 2
     assert cap.out.endswith(f"log    {tripwire['log']}\n")      # printed by the run's wrapper

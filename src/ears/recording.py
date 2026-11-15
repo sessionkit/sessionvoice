@@ -405,14 +405,26 @@ class WriteRefused(Exception):
 
 def write_record(on: bool, path: Optional[str] = None, days: Optional[int] = None) -> str:
     """Set ``"record": on`` (and ``"record_days": days`` when given) in ears.json, keeping
-    every other key, in ONE atomic write (a temp file beside it, then a rename). A file
-    that is not a JSON object is refused, never replaced. A new file is made 0600 in its
-    directory; an existing one keeps its mode. A STRANDED file (``ears.home.stranded``) is
-    refused: nothing is written. Returns the path."""
+    every other key, in ONE atomic write (:func:`update_conf`, which refuses a stranded file,
+    or one that is not a JSON object). Returns the path."""
     if days is not None and (isinstance(days, bool) or not isinstance(days, int) or days < 0):
         raise WriteRefused(f"record_days must be a whole number of days, 0 or more, not {days!r}: nothing written")
+    keys: dict = {KEY_RECORD: bool(on)}
+    if days is not None:
+        keys[KEY_DAYS] = days
+    return update_conf(keys, path)
+
+
+def update_conf(keys: Mapping, path: Optional[str] = None, who: str = "ears recording",
+                dry_run: bool = False) -> str:
+    """Set KEYS in ears.json, keeping every other key, in ONE atomic write (a temp file beside
+    it, then a rename). A file that is not a JSON object is refused, never replaced. A new
+    file is made 0600 in its directory, and says ``"listen": false`` unless KEYS sets it; an
+    existing one keeps its mode. A STRANDED file (``ears.home.stranded``) is refused: nothing
+    is written. WHO names the caller in that refusal. ``dry_run`` makes every check and
+    writes nothing. Returns the path."""
     p = Path(path or conf_path())
-    why = refuse_stranded(p, "ears.json", "ears recording")   # a 0.1.0 file not moved yet
+    why = refuse_stranded(p, "ears.json", who)   # a 0.1.0 file not moved yet
     if why:
         raise WriteRefused(why)
     mode = None
@@ -430,9 +442,9 @@ def write_record(on: bool, path: Optional[str] = None, days: Optional[int] = Non
         # whoever CREATES ears.json says the room's ear is off (services._seed_stt, the same
         # rule): a missing listen reads as on, and nobody said yes yet
         d = {"listen": False}
-    d[KEY_RECORD] = bool(on)
-    if days is not None:
-        d[KEY_DAYS] = days
+    d.update(keys)
+    if dry_run:
+        return str(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{p.name}.", suffix=".tmp", dir=p.parent)
     try:

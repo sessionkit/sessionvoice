@@ -88,13 +88,27 @@ woken by mail. Code: `src/ears/`, `keeper/`, `bin/`.
   directory, so a lookup on PATH alone failed every send. A
   `$EARS_MAIL_MESSAGE` that is set is looked up on PATH only: what is
   named is what runs. With `message` in none of those places, each send
-  fails with exit 127 and an `err` that names every place looked. It goes unsigned, display name `Ears`, with
+  fails with exit 127 and an `err` that names every place looked; a
+  `message` installed later is found at the next send, with no restart.
+  A `message` that was found but can no longer start (removed, moved, or
+  not runnable) fails that send with exit 126, and the keeper looks for
+  it once more, for the next send. The `err` ends with what it found:
+  `looked again: sends by <path>`, or `looked again: no message binary
+  (...)`. The mail that failed is not sent again. It goes unsigned, display name `Ears`, with
   any inherited `CLAUDE_SESSION_*` and must-sign dropped;
   `$EARS_MAIL_SIGNER_SOCK` and `$EARS_MAIL_SIGNER_PUB`, both set, sign it.
   The send mints the Message-ID, and the fire log keeps the one it
   returned; a failed send is a fire-log row with `exit` and `err`, plus one
   `ears-mail: ERROR: send to <seat> failed, exit <code>: <why>` line on
-  stderr (the launchd log), and the keeper keeps running. Under `--to seats` it is one send per seat, so one
+  stderr (the launchd log), and the keeper keeps running. When several
+  sends fail in a row (`ears.json`'s `mail_alert_after`, 3 by default),
+  the keeper also says so once, out loud, with `mouth say --alert`, which
+  needs no mail, and writes one `ears-mail: ERROR: mail alert:` line. It
+  stays quiet while sends go on failing, then says once that turn mail is
+  working again, after which a new run of failures is said again. What you
+  said while mail failed was not sent. `mail_alert` (or
+  `EARS_MAIL_ALERT`) `off` turns this off; nothing ever exits over it
+  ([settings](settings.md#earsjson), [logs](logs.md)). Under `--to seats` it is one send per seat, so one
   dead box does not silence the rest. With no `sendmail` key in
   sessionmail's settings file (`~/.sessionkit/mail/settings/mail.json`)
   and no `SESSIONMAIL_SENDMAIL`, sessionmail (0.2.0 and later) delivers
@@ -321,7 +335,17 @@ woken by mail. Code: `src/ears/`, `keeper/`, `bin/`.
   when the device never answers.
   A restarted keeper adopts a
   running capture only if it still beats, and ends any keeper loop its
-  pidfile names. The capture is launched with no
+  pidfile names. The capture is its own process, so it outlives a keeper
+  restart (a deploy's or an upgrade's) and keeps the code it started with.
+  Every heartbeat carries the capture's code stamp (`code`,
+  `src/ears/codestamp.py`: the version and a hash of the package's source),
+  and the keeper compares it with the stamp of the code it would start. A
+  capture on other code, or with no stamp (older code), is restarted once
+  through its stop file, with one note naming both stamps, and the keeper
+  starts a fresh one; hearing stops for about a second. Never twice in one
+  keeper start: a capture that still differs after that restart is kept,
+  with a loud note. After a deploy, confirm the room capture's start,
+  `ps -o lstart= -p PID`, is later than the deploy. The capture is launched with no
   shell left waiting on it, so no stray `ears-keeper.sh` outlives a restart.
   `bin/call-tap` puts a call from any app in.
 - **The engine alone:** `ears listen` (PCM on stdin) and `ears file` run
@@ -362,6 +386,11 @@ timestamped, to the install log, `install.log` in the log folder, `~/.sessionkit
 ([logs](logs.md#the-log-files)), and prints that path as its `log` row. A
 dry run writes no log.
 
+A job that loaded but whose service file could not be written stays loaded,
+and install exits 3, not 2; uninstall does the same for a file it could not
+rewrite ([service files](configuration.md#the-keeper-and-the-launch-agents)).
+A `mic NOT HEARD` still exits 2, which wins over 3.
+
 A phone-only Mac (for example one that runs a Delta bot, with no agent
 seat to wake) installs with `--no-agent`: nobody is woken when you speak,
 and the keeper's notices go to the log. `--agent NAME` is for a Mac where
@@ -369,7 +398,9 @@ an agent seat should be woken when you speak. Before it writes anything,
 install says how big the speech models are (about 2.9 GB, fetched once,
 after the speech server loads) and that the speech server runs as a login
 service; `--dry-run` prints the same line, and `--no-prefetch` leaves the
-download to the first call.
+download to the first call. `--no-prefetch` does not cover the Silero VAD
+model (2.3 MB): install still fetches a missing one, because the keeper
+cannot hear without it.
 
 The speech server is the mlx-audio server on `127.0.0.1:8890`. Install
 uses one that is already running and says it is mlx-audio, and starts
@@ -640,6 +671,15 @@ guests and TV included.**
 - `ears speakers record` and `enrol`, which record a person reading lines to
   learn their voice, and `ears eval`, which cuts clips from files already on
   disk. A person runs each by hand, and typing the command is the consent.
+- `ears services install --listen`, which turns the room's ear on
+  (`ears.json` `"listen": true`) before the keeper loads, so macOS asks for
+  the microphone while you are at the Mac and install checks that the keeper
+  hears. Typing the flag is the consent. Without it, a fresh install leaves
+  the ear off and says so. A re-install with listening already on runs the
+  same check without the flag.
+- `EARS_MIC_CHECK_S=0` turns that check off, for a run where nobody is at the
+  Mac (a scripted re-install, an upgrade). Any other value is the wait in
+  seconds, 60 by default ([troubleshooting][mic-not-heard]).
 - **Call recordings.** The call bot writes them, not this repo. It reads the
   same `record` and `record_days` by the same rules, and two settings of
   its own from the same file: `record_notice` (whether a call states its
@@ -797,3 +837,5 @@ too (`VOICEMODE_MOUTH_<X>` is now `MOUTH_<X>`): see
   sounds, turn mail, waiter and calls, in depth.
 - [The README's Install](../README.md#install): the launch agents, and
   the heard hook for one seat ([The heard hook](#the-heard-hook)).
+
+[mic-not-heard]: troubleshooting.md#install-the-microphone-was-not-heard

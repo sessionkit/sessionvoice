@@ -174,9 +174,11 @@ def test_the_sounds_dir_defaults_beside_the_voices(d):
     assert not (d / "sounds").exists(), "never made by the mouth"
 
 
-def test_play_refuses_a_url_before_anything_is_dropped(d):
-    with pytest.raises(ValueError, match="URL is not played"):
-        mouth.play("https://example.invalid/a.mp3", d=d, spawn=False)
+def test_play_refuses_an_unplayable_scheme_before_anything_is_dropped(d):
+    """A local play takes a path, file://, http:// or https:// (EARS-519); any other
+    scheme is refused, naming it, before anything is dropped."""
+    with pytest.raises(ValueError, match="a ftp:// URL is not played"):
+        mouth.play("ftp://example.invalid/a.mp3", d=d, spawn=False)
     assert list((box.box_dir(d) / "new").iterdir()) == []
 
 

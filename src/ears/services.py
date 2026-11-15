@@ -1,6 +1,6 @@
 """ears services - the launch agents a bare install needs, written and loaded by one verb.
 
-    ears services install [--only stt,speech,mouth,keeper,mail,speakers,sounds,talk] [--apple] [--agent NAME | --no-agent] [--notify ADDR] [--allow-host NAME ...] [--dry-run] [--no-prefetch]
+    ears services install [--only stt,speech,mouth,keeper,mail,speakers,sounds,talk] [--apple] [--agent NAME | --no-agent] [--notify ADDR] [--allow-host NAME ...] [--listen] [--dry-run] [--no-prefetch]
     ears services status
     ears services weights [--json]
     ears services schema [--dry-run]
@@ -29,7 +29,11 @@ talk, which is dev.sessionkit.voice.talk:
          one, it loads a second mlx-audio job, and one of the two crash-loops.
 - mouth  `mouth mail`: the mouth's player - speaks each queued line, one at a time.
 - keeper `keeper/ears-keeper.sh default`: every ear. The room's on the default input
-         (asks for the microphone the first time; macOS prompts, the user says yes), and,
+         (macOS asks for the microphone on behalf of the capture's own python, not a
+         terminal, when the room's ear first opens it: a fresh install leaves the ear off
+         until --listen, or Settings, turns it on. With listening on, install then waits
+         up to EARS_MIC_CHECK_S (60 s; 0 is off) for the capture's first heartbeat with
+         sound, and names the Privacy setting and exits 2 when none comes), and,
          as its child, `keeper/call-ears`: an ear per live Delta call (needs the Delta
          package's bot). The room mic is off while a call is live.
 - mail   `keeper/ears-mail.py --to device`: mails every finished turn To and From
@@ -91,7 +95,8 @@ Before anything is written, install checks what the services need and says so (-
 lists the same checks, changing nothing):
 - the Silero VAD model the keeper's capture runs on: present, linked from VoiceMode's copy,
   or fetched by the pin `ears install` uses once nothing else refuses (a failed fetch
-  REFUSES; a refused run names it as not fetched);
+  REFUSES; a refused run names it as not fetched). --no-prefetch does not skip it, and
+  install says so (silero_not_skipped): the keeper cannot hear without it;
 - for mail: sessionmail's `message` and its carrier, postfix or the mail drop (checked,
   never configured), the nested `heard` box under the store dir
   that carries .tm-store (made when there is exactly one, then vmailbox-gen routes it), and
@@ -205,6 +210,22 @@ up to date with the schemas this install ships, by their bytes: after an upgrade
 service reinstalled and no plist touched. A copy already equal is left alone. The keeper
 runs it with --quiet at its start, so a host that never runs it is brought up to date at
 the keeper's next start.
+
+Service files: `sessionkit service` finds voice's jobs by one file per job in
+~/.sessionkit/voice/services/<name>.json (ears.home.services_dir, beside the settings, never
+in them), <name> being the label after dev.sessionkit.voice. (mlx-audio, ears-keeper, talk).
+Install writes a job's file with "enabled": true once ours has loaded (bootstrap 0, our MARKER
+in the plist); a job that failed to load gets no file, and a dry run writes none. Uninstall
+rewrites each job's file with "enabled": false and keeps it (made if absent: the service is
+still known on this Mac); its dry run says which it would write. When ours does not run, the
+file says so under our own label, "enabled": false with a "note" (_file_not_loaded): a
+hand-made job runs instead, or speech is not installed because another program serves :8890,
+final.url is elsewhere, or its checks were a WARNING. Ours already serving speech is enabled.
+The file is built from this module's own facts (label, --only word, port; ears.service_files)
+and written atomically. A write that fails rolls back no job: the verb finishes its launchd
+work, prints one stderr line naming the file and the reason, and exits 3
+(service_files.EXIT_UNWRITTEN: the job stands, the file is not written). 2 wins over 3: a
+refusal, a job not loaded and a mic NOT HEARD all exit 2.
 """
 from __future__ import annotations
 
@@ -212,12 +233,15 @@ import os
 import plistlib
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import boxes, envnames, heardbox, maildir, speech   # speech: the server on :8890, found or ours
+from . import boxes, envnames, heard, heardbox, maildir, mic_check, speech   # speech: the server on :8890, found or ours
+from . import service_files   # the kit's <name>.json per job: written once ours loads, kept on uninstall
 from .home import SETTINGS as _VOICE_SETTINGS   # <kit root>/voice/settings
 from .home import log_dir
 
@@ -343,9 +367,12 @@ def _speakers_file(name: str) -> Path:
 
 #: what the keeper agent runs, and what must sit beside it, each with who needs it there:
 #: ears-keeper.sh starts call-ears from its own dir, and call-ears imports phone_roots.py
-#: from its own dir (stdlib; where a Delta bot keeps its call sockets)
-KEEPER_FILES = ("ears-keeper.sh", "call-ears", "phone_roots.py")
-_KEEPER_NEEDS = {"call-ears": "ears-keeper.sh runs it", "phone_roots.py": "call-ears imports it"}
+#: from its own dir (stdlib; where a Delta bot keeps its call sockets); its mail_me sends
+#: each notice through ears-mail.py keeper-send, from its own dir too (ears-mail.py imports
+#: phone_roots.py as well)
+KEEPER_FILES = ("ears-keeper.sh", "call-ears", "phone_roots.py", "ears-mail.py")
+_KEEPER_NEEDS = {"call-ears": "ears-keeper.sh runs it", "phone_roots.py": "call-ears imports it",
+                 "ears-mail.py": "ears-keeper.sh sends its notices through it"}
 
 
 def keeper_script() -> Path:
@@ -354,8 +381,9 @@ def keeper_script() -> Path:
     ears/_keeper/ (from the kit, ROOT is <venv>/lib/python3.X, and the plist
     pointed at a <venv>/lib/python3.X/keeper/ears-keeper.sh that no install made). Neither:
     NoKeeper, so install refuses loudly instead of writing a keeper agent that cannot start.
-    Each file KEEPER_FILES names beside it (call-ears, phone_roots.py) must be there too, or
-    the keeper's call ears die on start: any one missing is NoKeeper as well."""
+    Each file KEEPER_FILES names beside it (call-ears, phone_roots.py, ears-mail.py) must be
+    there too, or the keeper's call ears die on start, or its notices can neither go out nor
+    say they failed: any one missing is NoKeeper as well."""
     script, *beside = KEEPER_FILES
     found = _keeper_file(script, NoKeeper)
     for name in beside:
@@ -1044,6 +1072,15 @@ def _speech_sh(argv) -> subprocess.CompletedProcess:
     return subprocess.run([str(a) for a in argv], capture_output=True, text=True, env=env)
 
 
+#: the stt job's port (`ears serve 2023`): EARS_STT_PORT moves it
+STT_PORT = 2023
+
+
+def _stt_port() -> int:
+    """The port the stt job serves: EARS_STT_PORT, else STT_PORT (2023)."""
+    return int(os.environ.get("EARS_STT_PORT") or STT_PORT)
+
+
 def _speech_port() -> int:
     """The speech server's port: EARS_SPEECH_PORT (a stub on an ephemeral port, in a test or the
     verify demo; EARS_STT_PORT's pattern), else speech.PORT, 8890."""
@@ -1275,14 +1312,17 @@ def _speech_decide(names, url, port):
                          url, mouth="mouth" in names)
 
 
-def speech_step(names, dry_run: bool = False, d: speech.Decision | None = None) -> tuple[bool, bool]:
-    """speech.py's steps 1-4 for `install`, before anything is written: (ok, installs).
+def speech_step(names, dry_run: bool = False,
+                d: speech.Decision | None = None) -> tuple[bool, bool, str | None]:
+    """speech.py's steps 1-4 for `install`, before anything is written: (ok, installs, skipped).
     It prints which step it took and why. ``installs`` is True only on step 4 when the checks
     pass (the plist loop writes and loads ours; a dry run prints it). ``ok`` is False when the
     ears would be deaf (they hear through :8890 and nothing there will serve them): install
     exits 2 before any plist, and says what to run. When only the mouth wants :8890, a refusal
     is a WARNING: the mouth falls back to `say`, and the rest installs. D: the decision the
-    preflight already made (so :8890 is probed once per install); None probes here."""
+    preflight already made (so :8890 is probed once per install); None probes here. ``skipped``:
+    why step 4's checks refused, when that refusal is only a WARNING (else None): the speech
+    service file says it."""
     url, port = speech.final_url(), _speech_port()
     here = speech.ears_here(url, port=port)
     if d is None:
@@ -1292,20 +1332,20 @@ def speech_step(names, dry_run: bool = False, d: speech.Decision | None = None) 
         if d.fatal:
             print(f"ears services install: REFUSED: {head}{said}", file=sys.stderr)
             print(no_stt_help(), file=sys.stderr)
-            return False, False
+            return False, False, None
         tail = "; nothing built or written" if dry_run else "; nothing built, written or started"
         print(head + said + tail)
-        return True, False
+        return True, False, None
     print(head + said)
     why = speech_checks(dry_run)
     if why is None:
-        return True, True
+        return True, True, None
     if here:
         print(f"ears services install: REFUSED: speech: {why}", file=sys.stderr)
         print(no_stt_help(), file=sys.stderr)
-        return False, False
+        return False, False, None
     print(f"WARNING: speech SKIPPED: {why}; the mouth falls back to `say` until :8890 serves")
-    return True, False
+    return True, False, why
 
 
 # The install-time prefetch (docs/models.md): the three SPEECH_WEIGHTS fetched once by install, so
@@ -1679,7 +1719,7 @@ def probe_stt(url: str, model: str | None = None, timeout: float = 30.0) -> str 
 
 
 def seed_stt(dry_run: bool = False, no_probe: str | None = None,
-             fell_back: list | None = None) -> str:
+             fell_back: list | None = None, listening: bool = False) -> str:
     """Write ``final`` into ears.json: from EARS_STT_URL/EARS_STT_MODEL when given (they
     replace it), else the default (Parakeet on mlx-audio) only when the file has none. An
     old ``stt`` counts as one (it is ``final``'s old name); a written ``final`` drops it, so
@@ -1697,14 +1737,18 @@ def seed_stt(dry_run: bool = False, no_probe: str | None = None,
     write, writes nothing, records nothing (it still probes). ``fell_back`` (a list): the
     fallback the ears end on, if any, is appended to it (stt_fallback's shape), for install's
     closing line; install calls this, never _seed_stt, so a test's stand-in for it holds.
-    A STRANDED ears.json (``ears.home.stranded``) is not written, nor probed for."""
-    said, fb = _seed_stt(dry_run, no_probe)
+    A STRANDED ears.json (``ears.home.stranded``) is not written, nor probed for.
+    ``listening``: --listen was given, so a fresh file's "listen off" sentence is left out
+    (set_listen's line, which follows, says it is on). The file is still created off, and
+    --listen's own write turns it on."""
+    said, fb = _seed_stt(dry_run, no_probe, listening)
     if fb and fell_back is not None:
         fell_back.append(fb)
     return said
 
 
-def _seed_stt(dry_run: bool = False, no_probe: str | None = None) -> tuple[str, dict | None]:
+def _seed_stt(dry_run: bool = False, no_probe: str | None = None,
+              listening: bool = False) -> tuple[str, dict | None]:
     """seed_stt, and the fallback it ends on (stt_fallback's shape, None when the ears do not
     end on a fallback), for install's closing line."""
     import json
@@ -1814,8 +1858,28 @@ def _seed_stt(dry_run: bool = False, no_probe: str | None = None) -> tuple[str, 
     d["final"] = stt
     write()
     off = (f"\nlisten {would}off: a fresh install hears nothing until the ears are turned on "
-           f"(ears.json \"listen\": true, or Settings)" if fresh else "")
+           f"(ears.json \"listen\": true, or Settings)" if fresh and not listening else "")
     return f"final {'would be set' if dry_run else 'set'}: {stt}{said}{off}", fb
+
+
+#: --listen's line: what typing it did (A NOT set line replaces it when the write is refused)
+LISTEN_ON = ("on (--listen): the room's ear hears from now on; "
+             "Settings or ears.json \"listen\": false turns it off")
+
+
+def set_listen(dry_run: bool = False) -> str:
+    """--listen: write ``"listen": true`` into ears.json, the file seed_stt writes, keeping
+    every other key and the file's mode, atomically (recording.update_conf). Typing the flag
+    is the user's yes. Install calls it before any plist is loaded, so the keeper's first
+    read already hears. A stranded or unreadable file is refused and left as it is: the line
+    says ``listen NOT set``. ``dry_run`` makes the same checks and writes nothing."""
+    from .recording import WriteRefused, update_conf
+    from .listen.stt import conf_path
+    try:
+        update_conf({"listen": True}, conf_path(), who="ears services", dry_run=dry_run)
+    except WriteRefused as e:
+        return f"listen {'would NOT be' if dry_run else 'NOT'} set: {e}"
+    return f"listen {'would be ' if dry_run else ''}{LISTEN_ON}"
 
 
 def spec(name: str, notify: str | None = None, talk_env: dict | None = None) -> dict:
@@ -1841,7 +1905,7 @@ def spec(name: str, notify: str | None = None, talk_env: dict | None = None) -> 
         if os.environ.get("EARS_SILERO_ONNX"):   # the model install checked is the one it reads
             env["EARS_SILERO_ONNX"] = os.environ["EARS_SILERO_ONNX"]
     args = {     # lambdas: only the named one is built, so no keeper script spares the mouth
-        "stt": lambda: [py, "-m", "ears.cli", "serve", os.environ.get("EARS_STT_PORT", "2023")],
+        "stt": lambda: [py, "-m", "ears.cli", "serve", os.environ.get("EARS_STT_PORT", str(STT_PORT))],
         "mouth": lambda: [py, "-m", "mouth", "mail"],
         "keeper": lambda: ["/bin/bash", str(keeper_script()), "default"],
         # what launchd/dev.sessionkit.voice.ears-mail.plist.in runs, on the agents' python (stdlib only)
@@ -1946,6 +2010,16 @@ def _sounds_settings(job: str) -> Path:
 
 def _launchctl(*a: str) -> subprocess.CompletedProcess:
     return subprocess.run(["launchctl", *a], capture_output=True, text=True)
+
+
+NO_LAUNCHD = "macOS only (launchd)"
+LAUNCHD_VERBS = ("install", "uninstall", "status")   # weights and schema never reach launchctl
+
+
+def has_launchd() -> bool:
+    """True on a host with launchctl on PATH (macOS). Without it, every _launchctl call
+    would raise FileNotFoundError, so the verbs that need launchd refuse up front instead."""
+    return shutil.which("launchctl") is not None
 
 
 class OldStillLoaded(RuntimeError):
@@ -2167,13 +2241,25 @@ def _silero_copy() -> Path:
 SILERO_OPENER = None
 
 
-def silero(dry_run: bool = False) -> tuple[bool, str]:
+def silero_not_skipped(off: str) -> str:
+    """The line install prints before it fetches (or, dry run, would fetch) a missing Silero
+    model while OFF (prefetch_off) is set: OFF skips the speech weights, not this model. The
+    keeper cannot hear without it, and nothing fetches it at first use (ears-keeper.sh waits
+    deaf; vad.SileroVAD refuses), so install still fetches it."""
+    from . import vad
+    return (f"silero not skipped by {off}, which skips the speech weights only: install still "
+            f"fetches the Silero VAD model ({_size(vad.SILERO_SIZE)}, pinned, sha256 checked), "
+            "because the keeper cannot hear without it and nothing fetches it at first use")
+
+
+def silero(dry_run: bool = False, off: str | None = None) -> tuple[bool, str]:
     """(ok, line): the Silero VAD model the keeper's capture needs. Present: ok. Missing, and
     VoiceMode's copy is there: link it (dry run: would link). Neither: fetch it by the pin
     `ears install` fetches by (vad.SILERO_URL, SHA-256 checked; dry run: would fetch, and
     fetches nothing), saying where from and to before it starts. A failed fetch is not ok, and
     install REFUSES before any plist is written (without it the capture dies every 4 s);
-    fetch_silero leaves nothing behind."""
+    fetch_silero leaves nothing behind. OFF (prefetch_off) does not skip the fetch: with it
+    set, a fetch (or a dry run's would-fetch) is preceded by silero_not_skipped's line."""
     from . import vad
     want, copy = _silero_want(), _silero_copy()
     if _nonempty(want):
@@ -2187,6 +2273,8 @@ def silero(dry_run: bool = False) -> tuple[bool, str]:
         want.symlink_to(copy)
         return True, f"silero linked {want} -> {copy} (VoiceMode's copy)"
     what = f"Silero VAD {vad.SILERO_TAG} ({_size(vad.SILERO_SIZE)}) from {vad.SILERO_URL} -> {want}"
+    if off:
+        print(silero_not_skipped(off), flush=True)
     if dry_run:
         return True, f"silero would fetch {what}"
     print(f"silero fetching {what}", flush=True)
@@ -2564,6 +2652,12 @@ AGENT_MEANS = ("a Mac where an agent seat should be woken when you speak: NAME i
                "it gets the keeper's notices")
 NO_AGENT_MEANS = ("a phone-only Mac (for example a Delta bot): nobody is woken, and the notices go "
                   "to the log")
+#: --help's exit status paragraph: every code the verbs use, and the one of service files
+EXIT_HELP = ("Exit status: 0 done; 2 a usage error, a refusal, no launchd, a job that did "
+             "not load, or a mic NOT HEARD; 3 install or uninstall did its launchd work but "
+             "could not write a service file (~/.sessionkit/voice/services/<name>.json): the "
+             "job stands, and one stderr line names the file and why. 2 wins over 3.")
+
 PHONE_ONLY = ("A phone-only Mac (for example one that runs a Delta bot, with no agent seat to wake): "
               "install with --no-agent. Nobody is woken when you speak, and the keeper's notices go "
               "to the log. --agent NAME is for a Mac where an agent seat should be woken when you "
@@ -2645,6 +2739,14 @@ def _hand(uid: int, name: str) -> tuple[str, Path] | None:
     when its plist's content says install did not write it (_hand_at), else under a name the
     template carried before (HAND)."""
     return _hand_at(name, uid) or _hand_made(uid, HAND.get(name, ()))
+
+
+def _hand_plist(name: str) -> tuple[str, Path] | None:
+    """(label, plist) of a hand-made NAME under a name the template carried before (HAND), by its
+    plist in AGENTS alone: no launchctl call, so uninstall never asks after a job not its own.
+    One loaded from a plist elsewhere is not seen here (uninstall's file then has no note)."""
+    return next(((label, AGENTS / f"{label}.plist") for label in HAND.get(name, ())
+                 if (AGENTS / f"{label}.plist").exists()), None)
 
 
 def _hand_mailer(uid: int) -> tuple[str, Path] | None:
@@ -2895,7 +2997,7 @@ def _no_probe(names, speech_installs: bool = False) -> str | None:
     if "stt" not in names or not os.environ.get("EARS_STT_URL"):
         return None
     u = urlparse(_stt_url())
-    if u.hostname in ("127.0.0.1", "localhost") and str(u.port) == os.environ.get("EARS_STT_PORT", "2023"):
+    if u.hostname in ("127.0.0.1", "localhost") and str(u.port) == os.environ.get("EARS_STT_PORT", str(STT_PORT)):
         return "it is the stt service this install loads"
     return None
 
@@ -2936,6 +3038,9 @@ def _say_skipped(uid: int, dry_run: bool, name: str, hand: tuple[str, Path]) -> 
 
 
 REFUSED = "ears services install: REFUSED: "
+#: the prefix of each verb's own stderr lines (a service file it could not write)
+INSTALL = "ears services install"
+UNINSTALL = "ears services uninstall"
 
 
 @dataclass
@@ -3082,6 +3187,10 @@ class _InstallLog:
         self.said = True
         return f"{'log':6s} {self.path}"
 
+    def record(self, kind: str, text: str) -> None:
+        """A line for the log alone, never the screen: ``{ts} KIND TEXT``."""
+        self._line(kind, text)
+
     def _lose(self, e: OSError) -> None:
         """Give the log up, once: one warning, then nothing more is held or written."""
         fh, self._fh, self._held = self._fh, None, []
@@ -3214,6 +3323,40 @@ def _logged(run):
     return install
 
 
+def hand_runs(hand: tuple[str, Path]) -> str:
+    """The service file's note for a job ours is skipped for: the hand-made HAND runs instead."""
+    return f"a hand-made {hand[0]} runs instead"
+
+
+#: the speech file's note when final.url names a server elsewhere (step 1, opt-out)
+OPT_OUT_NOTE = "final.url points elsewhere; not managed here"
+
+
+def _file_not_loaded(uid: int, n: str, hand, d: speech.Decision | None,
+                     skipped: str | None) -> tuple[bool, str | None] | None:
+    """(enabled, note) for N's service file when install loads none of ours for it, else None
+    (nothing to say: write nothing). HAND: the hand-made job ours is skipped for. Speech not
+    installed, by D (the step speech.decide took) and SKIPPED (step 4's checks refused, a
+    WARNING): ours already serves or is loaded (D's label is speech.LABEL, and not a hand
+    render there) is enabled; final.url elsewhere, the checks' refusal, or :8890 held by
+    another program is not, with a note saying which. The file's label is always ours."""
+    if hand:
+        return False, hand_runs(hand)
+    if n != "speech" or d is None:
+        return None
+    if skipped:
+        line = skipped.strip().splitlines()[0] if skipped.strip() else skipped
+        return False, f"not installed: {line}"
+    if d.kind == "opt-out":
+        return False, OPT_OUT_NOTE
+    if d.kind == "install":       # refused, so install stopped before this (a dry run writes none)
+        return None
+    if d.label == speech.LABEL:   # ours serves, or is loaded and down: installed, as it stands
+        mine = _hand_at("speech", uid)
+        return (False, hand_runs(mine)) if mine else (True, None)
+    return False, f":{_speech_port()} is served by another program"
+
+
 def _failed_block(failed: list[tuple[str, str]], log: Path | None) -> None:
     """The services that did not load, as ONE block on stderr: each with launchctl's reason,
     then where to look next. Printed once every service has been tried."""
@@ -3225,11 +3368,101 @@ def _failed_block(failed: list[tuple[str, str]], log: Path | None) -> None:
           "`ears services status`", file=sys.stderr)
 
 
+# The microphone check's seams (ears.mic_check): the heard reader, the inputs, the process
+# path, and its own clock and sleep. Tests replace them here, as they do _launchctl; the
+# check's clock is its own because the fence makes time.sleep a no-op.
+_mic_read = heard.read_after
+_mic_inputs = mic_check.inputs
+_mic_comm = mic_check._ps_comm
+_mic_clock = time.monotonic
+_mic_sleep = time.sleep
+
+
+@dataclass
+class _KeeperLoad:
+    """What the load loop saw of OUR keeper: whether it loaded, the heard log's last seq just
+    before its bootstrap, and the check's clock just after it."""
+    loaded: bool = False
+    start: int = 0
+    at: float = 0.0
+
+
+def _mic_record(text: str) -> None:
+    if _RUN_LOG is not None:
+        _RUN_LOG.record("mic", text)
+
+
+def mic_step(names, dry_run: bool, listen: bool, hands: dict, keeper: _KeeperLoad,
+             asked: bool = False) -> bool:
+    """Did the keeper's room capture hear? The cases in order, each ONE line (a row on stdout,
+    or a failure line on stderr); the evidence goes to the install log only. Runs after every
+    service is loaded and before the speech weights' prefetch, so the user is still at the
+    Mac when macOS asks. Returns True when install must exit 2 (NOT HEARD). ASKED: the run
+    named the keeper before a refusal dropped it (a dry run lists on past one)."""
+    mc = mic_check
+    if "keeper" not in names:
+        print(mc.row(mc.NC_NO_KEEPER if asked else mc.NC_ONLY_NO_KEEPER))
+        return False
+    hand = hands.get("keeper")
+    if hand:                  # ours was skipped: whatever ears.json says, install loaded nothing
+        print(mc.row(mc.NC_HAND_MADE.format(label=hand[0])))
+        return False
+    from .listen.stt import conf_path
+    path = Path(conf_path())
+    seconds, note = mc.bound()
+    if dry_run:               # a fresh file would be created off; --listen would turn it on
+        on = listen or (path.exists() and mc.listening(mc.keeper_conf(path)))
+        if not on:
+            print(mc.row(mc.NC_LISTEN_OFF))
+        elif not seconds:
+            print(mc.row(mc.NC_OFF))
+        else:
+            print(mc.row(mc.WOULD_WAIT.format(bound=mc.secs(seconds))))
+        return False
+    if not keeper.loaded:
+        print(mc.row(mc.NC_KEEPER_FAILED))
+        return False
+    conf = mc.keeper_conf(path)
+    if not mc.listening(conf):
+        print(mc.row(mc.NC_LISTEN_OFF))
+        return False
+    if not seconds:
+        print(mc.row(mc.NC_OFF))
+        return False
+    ins = _mic_inputs()
+    if ins == []:
+        print(mc.row(mc.NC_NO_INPUT))
+        _mic_record("no input device")
+        return False
+    gone = mc.pinned_absent(conf, ins)
+    if gone:
+        print(mc.fail(mc.PINNED_LINE.format(name=gone)), file=sys.stderr)
+        _mic_record(f"verdict pinned; input {gone}; inputs {', '.join(ins)}")
+        return True
+    print(mc.waiting(seconds, note), flush=True)
+    v = mc.wait(keeper.start, seconds, read=_mic_read, clock=_mic_clock, sleep=_mic_sleep,
+                directory=mc.heard_dir())
+    if v.kind == mc.HEARD:
+        print(mc.line(v, seconds, after=_mic_clock() - keeper.at))
+        _mic_record(mc.evidence(v, seconds))
+        return False
+    if v.kind == mc.CALL:
+        print(mc.line(v, seconds))
+        _mic_record(mc.evidence(v, seconds))
+        return False
+    name, real = mc.app(v.pid, _py(), comm=_mic_comm)
+    print(mc.line(v, seconds, app_label=name), file=sys.stderr)
+    _mic_record(mc.evidence(v, seconds, app_path=real))
+    return True
+
+
 @_logged
 def install(names, dry_run=False, agent=None, notify=None, no_prefetch=False, agent_why=None,
-            hosts=None) -> int:
-    """HOSTS: --allow-host's names (allow_hosts), or None when it was not given."""
+            hosts=None, listen=False) -> int:
+    """HOSTS: --allow-host's names (allow_hosts), or None when it was not given. LISTEN:
+    --listen, the keeper's: ears.json says "listen": true before the keeper loads."""
     names = jobs(names)       # sounds: its two agents
+    keeper_asked = "keeper" in names   # before a refusal can drop it: the mic check's line
     refused = False
     pre = preflight(names, agent_why)   # before anything is written: every refusal, in one run
     if pre.refused:
@@ -3241,7 +3474,7 @@ def install(names, dry_run=False, agent=None, notify=None, no_prefetch=False, ag
     if "speakers" in names:   # its state as `status` gives it, before anything changes
         print(f"{'speakers':6s} {_speakers_row(_listed(_launchctl('list').stdout.splitlines()))}")
     if "keeper" in names:     # the model, before any plist: a keeper without it loops deaf
-        ok, line = silero(dry_run)
+        ok, line = silero(dry_run, prefetch_off(no_prefetch))
         if not ok:            # the fetch failed (a dry run fetches nothing, so never here):
             print(f"{REFUSED}{line}", file=sys.stderr)   # a block of one; nothing written yet
             return 2
@@ -3255,7 +3488,9 @@ def install(names, dry_run=False, agent=None, notify=None, no_prefetch=False, ag
     hand = None
     stuck = False
     failed: list[tuple[str, str]] = []   # (service, why): did not load, after every one is tried
+    unwritten: list[str] = []            # the jobs whose service file failed: the job stands, exit 3
     talk_loaded = False                  # ours: then the closing lines say how a browser pairs
+    keeper = _KeeperLoad()               # ours, as the load loop saw it: the mic check's start
     if "mail" in names:
         hand = hands["mail"] = _hand_mailer(uid)
         if hand:
@@ -3287,9 +3522,10 @@ def install(names, dry_run=False, agent=None, notify=None, no_prefetch=False, ag
                     return 2                   # before any plist: never a job that cannot start
                 refused = True                 # a dry run goes on listing, and exits 2 as install would
     speech_installs = False
+    speech_skipped = None     # step 4's checks refused, a WARNING: the speech file says why
     fell_back = []
     if "speech" in names:     # steps 1-4: only step 4 builds or writes anything
-        ok, speech_installs = speech_step(names, dry_run, d=pre.decision)
+        ok, speech_installs, speech_skipped = speech_step(names, dry_run, d=pre.decision)
         if not ok:
             if not dry_run:
                 return 2                       # before any plist: the ears would be deaf
@@ -3300,7 +3536,9 @@ def install(names, dry_run=False, agent=None, notify=None, no_prefetch=False, ag
     if "keeper" in names:
         print(_notices_line(to))
         print(seed_stt(dry_run=dry_run, no_probe=_no_probe(names, speech_installs),
-                       fell_back=fell_back))
+                       fell_back=fell_back, listening=listen))
+        if listen:            # the user's yes, written before any plist below is loaded
+            print(set_listen(dry_run))
         if not dry_run:
             print(install_schema())
     # the old labels' first sign (a dry run whose every service refused has none to look up)
@@ -3319,6 +3557,9 @@ def install(names, dry_run=False, agent=None, notify=None, no_prefetch=False, ag
         print(_talk_hosts_line(talk_env, kept))
     for n in names:
         if hands.get(n) or (n == "speech" and not speech_installs):
+            said = None if dry_run else _file_not_loaded(uid, n, hands.get(n), pre.decision, speech_skipped)
+            if said and service_files.save(n, *said, verb=INSTALL) is None:   # ours does not run
+                unwritten.append(n)   # here: the kit's file says so, and why (or one line it cannot)
             continue
         path = AGENTS / f"{_label(n)}.plist"
         data = plistlib.dumps(spec(n, notify=to, talk_env=talk_env))
@@ -3350,8 +3591,12 @@ def install(names, dry_run=False, agent=None, notify=None, no_prefetch=False, ag
             print(line)
         _launchctl("bootout", f"gui/{uid}/{_label(n)}")          # a re-install replaces, never doubles
         path.write_bytes(data)
+        if n == "keeper":     # the heard log's end, just before the new keeper can write to it
+            keeper.start = mic_check.start_seq()
         try:
             r = _bootstrap(uid, n, path, old=[*olds, *legacy])
+            if n == "keeper":
+                keeper.loaded, keeper.at = r.returncode == 0, _mic_clock()
         except OldStillLoaded as e:          # never two of one service: stop loud, load nothing
             print(f"ears services install: {n} FAILED: {e}", file=sys.stderr)
             print(f"{n:6s} FAILED: {e.label} would not go; {_label(n)} NOT loaded  {path}")
@@ -3361,14 +3606,20 @@ def install(names, dry_run=False, agent=None, notify=None, no_prefetch=False, ag
         print(f"{n:6s} {'loaded' if r.returncode == 0 else 'FAILED: ' + r.stderr.strip()}  {path}")
         if r.returncode != 0:                # the next service is still tried: every failure, one run
             failed.append((n, r.stderr.strip() or f"launchctl bootstrap exit {r.returncode}"))
-        elif n == "talk":
+            continue                         # not loaded: no service file says it is
+        if _ours(path) and service_files.save(n, True, verb=INSTALL) is None:   # ours, loaded: the
+            unwritten.append(n)              # kit's file says so; a failed write never rolls it back
+        if n == "talk":
             talk_loaded = True
+    # the microphone, BEFORE the weights: their download can take minutes, and macOS asks while
+    # the user is still here
+    mic_failed = mic_step(names, dry_run, listen, hands, keeper, asked=keeper_asked)
     if speech_installs:       # its weights, so the first call does not wait on them: never fatal
         prefetch(dry_run, prefetch_off(no_prefetch))
     log = _RUN_LOG if _RUN_LOG is not None and _RUN_LOG.armed else None
     if failed:                # after every service was tried: never a proof of a job not loaded
         _failed_block(failed, log and log.path)
-    if "mail" in names and not dry_run and not failed:
+    if "mail" in names and not dry_run and not failed and not mic_failed:   # never a false proof
         print("proof  speak to the agent: it WAKES and answers. A heard line alone proves only the "
               "keeper; the mail is what pages it")
     if talk_loaded:           # nothing pairs a browser for you: the page alone shows its panel
@@ -3377,15 +3628,20 @@ def install(names, dry_run=False, agent=None, notify=None, no_prefetch=False, ag
         print(log.row())
     for fb in fell_back:      # the last line, so it is not missed among the rest: exit unchanged
         print(fallback_said(fb, to))
-    return 2 if refused or stuck or failed else 0
+    if refused or stuck or failed or mic_failed:   # a mic NOT HEARD outranks a service file not written
+        return 2
+    return service_files.EXIT_UNWRITTEN if unwritten else 0
 
 
 def uninstall(names, dry_run: bool = False) -> int:
     """Boot out and delete the plist of every label NAMES' agents may be under. ``dry_run``
     says each label it would boot out and each plist it would delete, and changes
     nothing: no launchctl call at all, no file removed. A temp HOME would not contain a real
-    run: the bootout acts on the user's own launchd domain."""
+    run: the bootout acts on the user's own launchd domain. Exit 0, or
+    ``service_files.EXIT_UNWRITTEN`` (3) when a job was booted out but its service file could
+    not be rewritten (one line on stderr each)."""
     uid = os.getuid()
+    unwritten = False
     names = jobs(names)       # sounds: its two agents
     if "keeper" in names:
         names = list(names) + [o for o in OLD if o not in names]
@@ -3407,9 +3663,17 @@ def uninstall(names, dry_run: bool = False) -> int:
             plist.unlink(missing_ok=True)
         venv = f" ({_label(n)}; its venv stays in {speech_home()})" if n == "speech" else ""
         print(f"{n:6s} {'would be removed' if dry_run else 'removed'}{venv}")
+        if n in OLD:                          # call and room: the keeper's, no file of their own
+            continue
+        if dry_run:                           # the kit's file is kept, its enabled false
+            print(f"{n:6s} would write {service_files.path_for(n)} (enabled: false)")
+        else:                                 # a hand job left in place: the file says it runs
+            left = hand or _hand_plist(n)      # under its old name: never booted out, never asked
+            if service_files.save(n, False, left and hand_runs(left), verb=UNINSTALL) is None:
+                unwritten = True              # booted out all the same: exit 3, never rolled back
     if dry_run:
         print("dry run: nothing booted out, nothing deleted")
-    return 0
+    return service_files.EXIT_UNWRITTEN if unwritten else 0
 
 
 def _state(pid: str | None, label: str) -> str:
@@ -3592,23 +3856,34 @@ def main(argv=None) -> int:
                    help="talk: also answer Host NAME (repeatable), as `talk serve --allow-host`; behind "
                    "`tailscale serve` the tailnet name, or a phone gets a 403. Written to the job as "
                    "TALK_ALLOW_HOSTS; a re-run without it keeps the names the job has")
+    p.add_argument("--listen", action="store_true",
+                   help="install: turn the room's ear on now (ears.json \"listen\": true) and check "
+                   "the microphone while you are here. Typing it is your yes; without it a fresh "
+                   "install leaves the ear off")
     p.add_argument("--json", action="store_true", help="weights: one line of JSON, schema "
                    + WEIGHTS_SCHEMA + " (docs/models.md)")
     p.add_argument("--dry-run", action="store_true", help="print the checks and the plists, change nothing "
                    "(install: also the size of the speech weights and of a missing Silero model it "
                    "would fetch, fetching nothing; "
                    "uninstall: the labels it would boot out and the plists it would delete)")
+    from . import vad
     p.add_argument("--no-prefetch", action="store_true", help="install: do not fetch the speech "
                    f"server's weights (about {_size(speech_weights_total())}) now; the first call fetches them, "
-                   "and waits. "
+                   "and waits. It does not cover the Silero VAD model "
+                   f"({_size(vad.SILERO_SIZE)}, pinned, sha256 checked): install still fetches a "
+                   "missing one, because the keeper cannot hear without it. "
                    f"{PREFETCH_ENV}=1 does the same")
     from .home import STRANDED_HELP, warn_stranded
-    p.epilog = "\n\n".join(textwrap.fill(t, 78) for t in   # two paragraphs, each wrapped
-                           (PHONE_ONLY.format(size=_size(speech_weights_total())), STRANDED_HELP))
+    p.epilog = "\n\n".join(textwrap.fill(t, 78) for t in   # three paragraphs, each wrapped
+                           (PHONE_ONLY.format(size=_size(speech_weights_total())), STRANDED_HELP,
+                            EXIT_HELP))
     args = sys.argv[1:] if argv is None else list(argv)
     if not ("schema" in args and "--quiet" in args):   # the keeper's start says nothing of it
         warn_stranded("ears services")   # once per process: status and install alike
     a = p.parse_args(argv)
+    if a.verb in LAUNCHD_VERBS and not has_launchd():   # Linux: one line, not a traceback
+        print(f"ears services: {NO_LAUNCHD}", file=sys.stderr)
+        return 2
     if a.only:
         names = [n for n in a.only.split(",") if n]
     else:                     # uninstall takes them all, so an stt agent from before goes too
@@ -3628,6 +3903,8 @@ def main(argv=None) -> int:
             hosts = allow_hosts(a.allow_host)
         except ValueError as e:
             p.error(f"--allow-host: {e}")
+    if a.listen and (a.verb != "install" or "keeper" not in names):
+        p.error("--listen is the keeper's: install it with the keeper (a bare install, or --only naming keeper)")
     if a.verb == "schema":
         return schema_verb(a.dry_run, a.quiet)
     if a.verb == "status":
@@ -3642,6 +3919,8 @@ def main(argv=None) -> int:
         kw = {"agent_why": why} if why else {}      # a dry run lists on, and exits 2
         if hosts is not None:                       # --allow-host, given: talk's names
             kw["hosts"] = hosts
+        if a.listen:                                # --listen, given: the keeper's yes
+            kw["listen"] = True
         return install(names, a.dry_run, agent=a.agent, notify=a.notify, no_prefetch=a.no_prefetch, **kw)
     return uninstall(names, a.dry_run)
 

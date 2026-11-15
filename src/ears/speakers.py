@@ -343,6 +343,8 @@ def _restart() -> None:
     The job is under whichever label is loaded, the new one first: a host not yet moved off
     an old label (com.sessionvoice.ears-speakers, com.voicemode.ears-speakers) still runs it
     under that."""
+    if not services.has_launchd():   # no job to restart: refuse in one line, never a traceback
+        raise Refused(f"{services.NO_LAUNCHD}: no job to restart on the new references")
     uid = os.getuid()
     label = services.loaded_label(uid, "speakers")
     if label:

@@ -58,6 +58,15 @@ def _mail_me() -> str:
     return m.group(0)
 
 
+def _helper(home: Path) -> str:
+    """mail_me's sender as the keeper sets it (ears-mail.py keeper-send), run by this
+    python, with its run of failed notices and its ears.json under the fake HOME."""
+    return (f"PY={shlex.quote(sys.executable)}\n"
+            f"MAIL_HELPER={shlex.quote(str(ROOT / 'keeper' / 'ears-mail.py'))}\n"
+            f"MAIL_STATE={shlex.quote(str(home / 'keeper-mail.json'))}\n"
+            f"CONF={shlex.quote(str(home / 'ears.json'))}")
+
+
 def _env(home: Path, **extra) -> dict:
     env = {k: v for k, v in os.environ.items() if k not in VARS}
     env.update(HOME=str(home), **extra)
@@ -164,7 +173,7 @@ def fake_message(tmp_path):
 def _mail(home, fake_message, **extra):
     bindir, _ = fake_message
     env = _env(home, PATH=f"{bindir}:{os.environ['PATH']}", **extra)
-    script = "\n".join(['note() { echo "NOTE $*"; }', _line("NOTIFY="), _mail_me(),
+    script = "\n".join(['note() { echo "NOTE $*"; }', _helper(home), _line("NOTIFY="), _mail_me(),
                         'mail_me "ears: capture restarted on x at 12:00 EOM"'])
     return _bash(script, env)
 
@@ -339,7 +348,7 @@ def test_mail_me_mails_the_operator_when_unset(home, session, fake_message):
     bindir, rec = fake_message
     session(CONFIGURED)
     env = _keeper_env(home, [session.dir, bindir])
-    script = "\n".join(['note() { echo "NOTE $*"; }', f"PY={shlex.quote(sys.executable)}",
+    script = "\n".join(['note() { echo "NOTE $*"; }', _helper(home),
                         _notify_block(), _mail_me(),
                         'mail_me "ears: capture restarted on x at 12:00 EOM"'])
     assert _bash(script, env) == ""
@@ -350,7 +359,7 @@ def test_mail_me_explicit_empty_mails_nobody_and_says_so(home, session, fake_mes
     bindir, rec = fake_message
     session(CONFIGURED)
     env = _keeper_env(home, [session.dir, bindir], EARS_NOTIFY="")
-    script = "\n".join(['note() { echo "NOTE $*"; }', f"PY={shlex.quote(sys.executable)}",
+    script = "\n".join(['note() { echo "NOTE $*"; }', _helper(home),
                         _notify_block(), _mail_me(),
                         'mail_me "ears: capture restarted on x at 12:00 EOM"'])
     assert _bash(script, env).startswith("NOTE not mailed (EARS_NOTIFY empty")

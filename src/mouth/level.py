@@ -40,6 +40,13 @@ Never levelled: a played file (``mouth play``), the ``silence`` backend
 audition compares a raw clip with its raw clone; ``audio.render`` writes the
 raw synthesis). An unmeasured voice plays as today, byte for
 byte. Nothing here raises into the player: a failure is no levelling.
+
+**No ffmpeg**: nothing can be measured, so every unmeasured voice
+plays unlevelled. The mouth says so ONCE per process, on the first line that
+wants levelling and finds no ffmpeg: a ``kind: warn`` row on player.log
+(``NO_FFMPEG``). That line's ``level`` record carries ``"ffmpeg": false``
+beside ``from: unmeasured``, and ``mouth status`` has ``level.ffmpeg``. The
+line still plays, unlevelled, with no delay; with normalize off nothing is said.
 """
 
 from __future__ import annotations
@@ -73,6 +80,12 @@ ATTACK_SAMPLES = 64
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]{0,63}")
 _tried: dict = {}
 _lock = threading.Lock()
+_said_no_ffmpeg = False   # the NO_FFMPEG row went out: once per process
+
+#: the one row a mouth with no ffmpeg writes on player.log
+NO_FFMPEG = {"kind": "warn", "warn": "no-ffmpeg",
+             "detail": "mouth: ffmpeg not found: voice levelling is off (lines play unlevelled); "
+                       "install ffmpeg to level voices"}
 
 
 def voices_dir() -> Path:
@@ -142,6 +155,29 @@ def gain_db(vs: dict, target_lufs: float) -> Optional[tuple]:
 
 
 # -- measuring ----------------------------------------------------------------
+
+def have_ffmpeg() -> bool:
+    """True when ffmpeg is on PATH: the one lookup ``lufs`` makes. Without it no
+    voice can be measured (``lufs`` is None, the same None as too little audio)."""
+    return bool(shutil.which("ffmpeg"))
+
+
+def _say_no_ffmpeg(log=None) -> None:
+    """Write NO_FFMPEG once per process, by LOG (the player's ``_log``), else
+    as one JSON line on stdout, which is player.log. Never raises."""
+    global _said_no_ffmpeg
+    with _lock:
+        if _said_no_ffmpeg:
+            return
+        _said_no_ffmpeg = True
+    try:
+        if log is not None:
+            log(dict(NO_FFMPEG))
+        else:
+            print(json.dumps(NO_FFMPEG), flush=True)
+    except Exception:  # noqa: BLE001 - a warning never stops a line
+        pass
+
 
 def lufs(pcm: bytes, sample_rate: int) -> Optional[float]:
     """Integrated loudness (EBU R128) of 16-bit mono PCM, by ffmpeg; None if it can't."""
@@ -344,9 +380,12 @@ def reset_gain(voice, target_lufs: float, d: Optional[Path] = None) -> dict:
 
 
 def forget_tries() -> None:
-    """Tests: let every voice be measured again at once."""
+    """Tests: let every voice be measured again at once, and let the
+    NO_FFMPEG row be written again."""
+    global _said_no_ffmpeg
     with _lock:
         _tried.clear()
+        _said_no_ffmpeg = False
 
 
 # -- applying -----------------------------------------------------------------
@@ -389,7 +428,7 @@ class Leveler:
 
 
 def for_line(item: dict, backend_name: str, sample_rate: int, d: Optional[Path] = None,
-             root: Optional[Path] = None) -> tuple:
+             root: Optional[Path] = None, log=None) -> tuple:
     """(Leveler or None, the line's ``level`` record or None) for a line about to play.
 
     The record says what levelling did: ``{"on", "on_from", "lufs", "gain_db",
@@ -397,6 +436,10 @@ def for_line(item: dict, backend_name: str, sample_rate: int, d: Optional[Path] 
     'hand' | 'measured' | 'unmeasured' (absent when off); None when the line is
     one the mouth never levels (a played file, the silence backend, a voice
     that names no directory). Never raises.
+
+    An unmeasured line with no ffmpeg also carries ``"ffmpeg": False``, and
+    the first such line in the process writes NO_FFMPEG by LOG (the player's
+    ``_log``). A voice with a gain needs no ffmpeg and says nothing.
 
     A say-again replay (``again_of``) plays its line's kept WAV,
     which is the voice's raw synthesis, kept before levelling. So it is
@@ -425,7 +468,11 @@ def for_line(item: dict, backend_name: str, sample_rate: int, d: Optional[Path] 
         g = gain_db(vs, target)
         if g is None:   # a hand file with no usable gain, or one a hand broke, stays 'hand'
             hand = _hand(vs) or _hand_broke(settings_path(voice, d))
-            return None, {**rec, "gain_db": None, "from": "hand" if hand else "unmeasured"}
+            rec = {**rec, "gain_db": None, "from": "hand" if hand else "unmeasured"}
+            if not hand and not have_ffmpeg():   # it can never be measured: say so
+                rec["ffmpeg"] = False
+                _say_no_ffmpeg(log)
+            return None, rec
         return Leveler(g[0], sample_rate), {**rec, "gain_db": round(g[0], 1), "from": g[1]}
     except Exception:  # noqa: BLE001
         return None, None

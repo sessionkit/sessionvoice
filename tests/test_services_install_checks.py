@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from ears import operator_config, services, wake
+from ears import operator_config, services, vad, wake
 from ears.home import SETTINGS, log_dir
 from test_services_label_move import OURS_ENV, ours_plist, print_out
 from tests import mail_fence, setup_fence
@@ -102,11 +102,50 @@ def fence(monkeypatch, tmp_path, fake_message_on_path):
     def no_network(url, timeout=None):
         raise OSError("network refused by the fence")
     monkeypatch.setattr(services, "SILERO_OPENER", no_network)
+    # ...and a refused fetch is tried again (EARS-524) without the waits: no test really sleeps
+    monkeypatch.setattr(vad, "FETCH_DELAYS", (0.0, 0.0))
     # (HF_HOME, the weakest of huggingface_hub's names: a test that sets another still wins)
     for k in ("HF_HUB_CACHE", "HUGGINGFACE_HUB_CACHE"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf-home"))
-    return {"home": home, "calls": calls, "loaded": loaded, "env": env, "tmp": tmp_path}
+    # ...nor the microphone check (ears.mic_check): its heard reader answers at once with one
+    # room beat with sound, its inputs, process path, clock and sleep are fakes, and a PATH
+    # system_profiler is a tripwire. The fence makes time.sleep a no-op, so the check's own
+    # clock is a fake too: nothing here can spin the poll for the bound
+    monkeypatch.delenv("EARS_MIC_CHECK_S", raising=False)
+    mic = {"polls": [[MIC_HEARD]], "inputs": ["MacBook Pro Microphone"], "comm": "/fake/uv/bin/python3.13",
+           "reads": 0, "t": 0.0, "pids": []}
+
+    def mic_read(seq, hint_file=None, hint_offset=0, directory=None):
+        mic["reads"] += 1
+        rows = mic["polls"].pop(0) if mic["polls"] else []
+        return [dict(r, seq=seq + i + 1) for i, r in enumerate(rows)], None
+
+    def mic_sleep(s):
+        mic["t"] += s
+
+    def mic_comm(pid):
+        mic["pids"].append(pid)
+        return mic["comm"]
+    monkeypatch.setattr(services, "_mic_read", mic_read)
+    monkeypatch.setattr(services, "_mic_inputs", lambda: mic["inputs"])
+    monkeypatch.setattr(services, "_mic_comm", mic_comm)
+    monkeypatch.setattr(services, "_mic_clock", lambda: mic["t"])
+    monkeypatch.setattr(services, "_mic_sleep", mic_sleep)
+    trip = tmp_path / "mic-tripwire"
+    trip.mkdir()
+    sentinel = tmp_path / "REAL-SYSTEM-PROFILER-REACHED"
+    stub = trip / "system_profiler"
+    stub.write_text(f'#!/bin/sh\necho "$@" >> "{sentinel}"\nexit 99\n')
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{trip}{os.pathsep}{os.environ['PATH']}")
+    yield {"home": home, "calls": calls, "loaded": loaded, "env": env, "tmp": tmp_path, "mic": mic}
+    assert not sentinel.exists(), "a real system_profiler ran: the mic check escaped its seam"
+
+
+#: The fence's default heard row: the keeper's room capture, one beat with sound
+MIC_HEARD = {"kind": "event", "event": "heartbeat", "source": "mic", "session": "ears-keeper",
+             "device": "MacBook Pro Microphone", "peak": 1834, "pid": 4242}
 
 
 def _store(home, name="store"):
@@ -213,15 +252,20 @@ def test_no_mailer_anywhere_refuses_and_writes_nothing(fence, monkeypatch, tmp_p
 
 def test_the_keeper_needs_beside_it_what_keeper_files_names():
     """ears-keeper.sh starts call-ears from its own dir; call-ears imports, of the keeper's own
-    .py files, exactly phone_roots. Those are services.KEEPER_FILES after the script."""
+    .py files, exactly phone_roots; and mail_me sends each notice through ears-mail.py from
+    its own dir, which imports only what MAIL_FILES names (all in KEEPER_FILES too). Those
+    are services.KEEPER_FILES after the script."""
     script, *beside = services.KEEPER_FILES
     assert script == "ears-keeper.sh"
-    assert '"$(dirname "$0")" && pwd)/call-ears' in (REPO / "keeper" / script).read_text()
+    keeper = (REPO / "keeper" / script).read_text()
+    assert '"$(dirname "$0")" && pwd)/call-ears' in keeper
+    assert '"$(dirname "$0")" && pwd)/ears-mail.py' in keeper
     src = (REPO / "keeper/call-ears").read_text()
     siblings = {p.stem.replace("-", "_") for p in (REPO / "keeper").glob("*.py")}
     imported = {w for line in src.splitlines() if line.lstrip().startswith(("import ", "from "))
                 for w in line.replace(",", " ").split()[1:]}
-    assert ["call-ears", *sorted(siblings & imported)] == [beside[0], *(Path(n).stem for n in beside[1:])]
+    assert beside == ["call-ears", *(f"{n}.py" for n in sorted(siblings & imported)), "ears-mail.py"]
+    assert set(services.MAIL_FILES) <= set(services.KEEPER_FILES)
 
 
 def test_from_a_wheel_the_keepers_siblings_are_the_shipped_ones(monkeypatch, tmp_path):
@@ -247,7 +291,7 @@ def _keeper_dir(tmp_path, missing, wheel):
 
 
 @pytest.mark.parametrize("wheel", [False, True], ids=["checkout", "wheel"])
-@pytest.mark.parametrize("missing", ["call-ears", "phone_roots.py"])
+@pytest.mark.parametrize("missing", ["call-ears", "phone_roots.py", "ears-mail.py"])
 def test_a_keeper_without_its_siblings_refuses_and_writes_nothing(fence, monkeypatch, tmp_path, capsys,
                                                                   missing, wheel):
     import importlib.resources

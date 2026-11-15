@@ -157,7 +157,12 @@ def _mail_me() -> str:
 def _keeper_mail(home: Path, path: str, tmp_path: Path) -> tuple:
     rec = tmp_path / "calls.jsonl"
     env = {"PATH": path, "HOME": str(home), "EARS_FAKE_MESSAGE_LOG": str(rec)}
-    script = "\n".join(['note() { echo "NOTE $*"; }', "NOTIFY=someone", _mail_me(),
+    # mail_me's sender (ears-mail.py keeper-send) on this python, its run in tmp_path
+    helper = (f"PY={shlex.quote(sys.executable)}\n"
+              f"MAIL_HELPER={shlex.quote(str(ROOT / 'keeper' / 'ears-mail.py'))}\n"
+              f"MAIL_STATE={shlex.quote(str(tmp_path / 'keeper-mail.json'))}\n"
+              f"CONF={shlex.quote(str(tmp_path / 'ears.json'))}")
+    script = "\n".join(['note() { echo "NOTE $*"; }', helper, "NOTIFY=someone", _mail_me(),
                         'mail_me "ears: capture restarted on x at 12:00 EOM"'])
     out = subprocess.run([BASH, "-c", script], env=env, capture_output=True, text=True,
                          timeout=30)

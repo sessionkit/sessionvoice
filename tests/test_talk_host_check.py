@@ -22,7 +22,9 @@ from unittest import mock
 import pytest
 
 from talk import cli, server, token_store
+from tests import fake_tools
 from tests._anchor import ANCHOR
+from tests.talk_helpers import HANG_CEILING, recv_until
 
 SECRET = "the words the microphone heard"
 AVATAR = b"\xff\xd8\xff fake jpeg"
@@ -38,7 +40,9 @@ def room(tmp_path, monkeypatch):
     logs.mkdir(parents=True)
     (logs / f"heard_{date.today():%Y-%m-%d}.jsonl").write_text(
         json.dumps({"ts": f"{ANCHOR:%Y-%m-%dT%H:%M:%S}", "seq": 1, "kind": "turn", "text": SECRET}) + "\n")
-    face = tmp_path / "home" / ".session" / "agents" / "ivy"
+    # The face where an upgraded host keeps it, served through a fake tools (the runner's
+    # own sessiontools, or none, never decides it): tests/fake_tools.py.
+    face = fake_tools.with_kit_tools(tmp_path, monkeypatch, tmp_path / "home") / "ivy"
     face.mkdir(parents=True)
     (face / "avatar.jpg").write_bytes(AVATAR)
     token_store.load_or_create()            # the fenced install's token: raw() sends it as the cookie
@@ -78,26 +82,23 @@ def raw(port, path="/", host=None, headers=(), version="HTTP/1.1", until=None, c
     lines += [f"{k}: {v}" for k, v in headers]
     if cookie:
         lines.append(f"Cookie: {server.COOKIE}={token_store.load()}")
-    with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+
+    def complete(data):
+        if until and until in data:
+            return True
+        head, sep, body = data.partition(b"\r\n\r\n")
+        length = [ln.split(b":", 1)[1] for ln in head.split(b"\r\n")
+                  if ln.lower().startswith(b"content-length:")]
+        if sep and length and len(body) >= int(length[0]):
+            return True                 # a keep-alive 200: the whole body is here
+        # no body, and no Content-Length (RFC 9110 8.6): the head is all
+        return bool(sep) and head.split(b" ", 2)[1:2] in ([b"204"], [b"304"])
+
+    # Waits for the response itself (EOF, a whole body, or `until`), never a quiet spell:
+    # the deadline is a hang ceiling over the whole read (tests/talk_helpers.py).
+    with socket.create_connection(("127.0.0.1", port), timeout=HANG_CEILING) as s:
         s.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
-        data = b""
-        while True:
-            try:
-                chunk = s.recv(65536)
-            except socket.timeout:
-                break
-            if not chunk:
-                break
-            data += chunk
-            if until and until in data:
-                break
-            head, sep, body = data.partition(b"\r\n\r\n")
-            length = [ln.split(b":", 1)[1] for ln in head.split(b"\r\n")
-                      if ln.lower().startswith(b"content-length:")]
-            if sep and length and len(body) >= int(length[0]):
-                break                   # a keep-alive 200: the whole body is here
-            if sep and head.split(b" ", 2)[1:2] in ([b"204"], [b"304"]):
-                break                   # no body, and no Content-Length (RFC 9110 8.6): the head is all
+        data, _ = recv_until(s, complete)
     head, _, body = data.partition(b"\r\n\r\n")
     status_line, *hdrs = head.decode("latin-1").split("\r\n")
     hd = {}
@@ -389,12 +390,10 @@ def test_good_origin_does_not_rescue_a_foreign_host(talk):
 def test_refusal_closes_the_connection(talk):
     """Keep-alive is on for HTTP/1.1, but a refused client gets no second request."""
     port = talk()
-    with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+    with socket.create_connection(("127.0.0.1", port), timeout=HANG_CEILING) as s:
         req = f"GET / HTTP/1.1\r\nHost: attacker.example:{port}\r\n\r\n".encode()
         s.sendall(req + f"GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode())
-        data = b""
-        while chunk := s.recv(65536):
-            data += chunk
+        data, _ = recv_until(s)         # to EOF: a server that kept it open reds at the ceiling
     assert data.count(b"HTTP/1.") == 1 and data.startswith(b"HTTP/1.1 403")
 
 

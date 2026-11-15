@@ -11,8 +11,9 @@ lead the said record showed ``(9, 0.68)`` and ``(1, 0.93)`` of
 ``underruns``/``underrun_s``. fix-001 held a clone line's first frame for a
 2.5 s lead; fix-002 made the lead a setting, default 0. So these say each
 line with ``lead_s=2.5`` (``mouth say --lead
-2.5``), and they pass. The last test is the default, no lead: the bug is
-still there without it, so these tests can still see it.
+2.5``), and they pass. EARS-529 made a clone line's DEFAULT lead 3 s: the
+default tests say nothing and pass too. The lead-0 test asks for no lead:
+the bug is still there without it, so these tests can still see it.
 
 EARS-374: the ``bed`` case needs ffmpeg. Its bed is a file, and the mouth decodes
 every file with ffmpeg (``backends.FileSound``). On a host without ffmpeg that bed
@@ -83,10 +84,23 @@ def test_a_one_second_stall_in_a_clone_line_does_not_underrun(tmp_path):
     assert r["held_s"] == pytest.approx(3.28, abs=0.2), r
 
 
+@pytest.mark.parametrize("scenario, held", [("loaded-1.25", 3.375), ("stall-1s", 3.565)])
+def test_at_the_default_a_slow_clone_line_does_not_underrun(tmp_path, scenario, held):
+    """EARS-529: no lead asked anywhere (no flag, no cascade, no host file), so
+    the clone's built-in 3 s holds. A 3 s line is held whole: its last chunk
+    lands at 3.75 s (rtf 1.25) or 3.85 s (rtf 0.95 plus the 1 s stall), each
+    one chunk after the first. Lead 0 dries out on both (repro-001)."""
+    r = run_line(SCENARIOS[scenario], "null", tmp_path)
+    assert r["reason"] == "done" and r["played_s"] == pytest.approx(3.0, abs=0.06)
+    assert r["lead_from"] == "builtin", r
+    assert no_dry_out(r), r
+    assert r["held_s"] == pytest.approx(held, abs=0.25), r
+
+
 def test_without_the_lead_the_slow_clone_line_still_underruns(tmp_path):
-    """The default, no lead asked: repro-001's numbers come back, so the
-    tests above are not passing by accident."""
-    r = run_line(SCENARIOS["loaded-1.25"], "null", tmp_path)
+    """Lead 0 asked (the default before EARS-529): repro-001's numbers come
+    back, so the tests above are not passing by accident."""
+    r = run_line(SCENARIOS["loaded-1.25"], "null", tmp_path, lead_s=0)
     assert r["held_s"] is None
     assert r["underruns"] >= 5 and r["underrun_s"] == pytest.approx(0.68, abs=0.15), r
     assert not no_dry_out(r), r   # JITTER_S never lets the bug itself through (EARS-374)

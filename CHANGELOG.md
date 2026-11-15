@@ -10,6 +10,315 @@ All notable changes to sessionvoice are documented here. The format is
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-16
+
+### Added: Talk has its own icon
+
+- Talk serves its own icon, so a browser tab shows it and a phone's "Add to
+  Home Screen" uses it: a favicon, an SVG, an Apple touch icon, and manifest
+  icons at 192 and 512 px (one of them maskable). The icon files are served
+  without pairing, like the page itself; no other file beside Talk's server
+  can be fetched that way.
+
+### Added: `mouth play --find` plays a song you name
+
+- `mouth play --find WORDS` finds a song by name and plays it, in place of
+  SOURCE (one or the other). The mouth asks the programs set in the new
+  `play_finders` key of the host's `mouth.json`, in order: each a `name`
+  and an `argv`, the words added as separate arguments, no shell. The first
+  finder that finds anything wins. A finder prints one match per line,
+  tab-separated, its last field a `file:///` or `http(s)://` URL, and exits
+  0 (found), 1 (none) or anything else (failed). With no finder set,
+  `--find` is refused and names the file to set it in.
+- `--finder NAME` asks one finder only. `play_finder_timeout_s` (10 by
+  default) stops a finder that runs too long, with everything it started.
+  Both finder keys are read from the host file alone.
+- Which match plays: `--matches first|list|all`, or `--pick N`, else the new
+  `play_find_matches` key (`first` by default). `list` prints the matches,
+  numbered, plays none and exits 3; `all` queues every match as one run.
+  Not found exits 1; no finder, a failed finder, or a bad `--pick` or
+  `--finder` exits 2. Nothing is queued before the match is chosen.
+- Where a `mouth play` goes in the queue: `--now`, `--next`, or the new
+  `--last`, else the new `play_queue` key (`last` by default). `now` stops
+  the song playing on that device only and plays at once. A host
+  `play_queue` of `now` makes every `mouth play` stop the song on its
+  device. `play_find_matches` and `play_queue` are answered by the session,
+  seat and agent layers, and can be locked in the host file.
+- `docs/mouth.md` has a new "Find a song" section.
+
+### Changed: `mouth play --now` stops only the song on its device
+
+- `mouth play --now` no longer cuts a spoken line: it stops only the song
+  playing on that device, and plays at once. `mouth say --now` is not
+  changed.
+### Fixed: the keeper's notices say so when they fail
+
+- The keeper's own notices (mic changes, DEAF, a device gone or back, an
+  engine change) now fail as loudly as turn mail: at 3 failed notices in a
+  row the keeper says so once, out loud (`mouth say --alert`), and writes
+  one `ears-keeper: ERROR: mail alert:` line, then stays quiet until a
+  notice goes through, which it says once (`ears-keeper: mail recovered:`).
+  No `message` found counts as a failure. The same `mail_alert` and
+  `mail_alert_after` settings apply, and the keeper keeps its own count, in
+  `keeper-mail.json` in its run folder.
+- Each notice's send is now bounded at 30 seconds, so a `message` that hangs
+  no longer stalls the keeper. A failed send's log line now names why:
+  `mail FAILED (exit N): ...` or `mail FAILED (timed out after 30 s): ...`.
+- The keeper sends its notices through the `ears-mail.py` beside it, so
+  `ears services install keeper` now refuses a keeper with no `ears-mail.py`
+  beside it, as it does one with no `call-ears`.
+### Added: install checks the microphone while you are there
+
+- `ears services install --listen` turns the room's ear on
+  (`ears.json` `"listen": true`) before the keeper loads. Typing the flag is
+  the consent; without it a fresh install still leaves the ear off. It
+  belongs to the keeper: with no keeper in the run it is a usage error.
+- With listening on, install waits up to 60 s for the keeper's room capture
+  to hear something, after the last service loads and before the speech
+  weights download, so macOS asks for the microphone while you are at the
+  Mac. Heard: one `mic` row, exit unchanged. Only silence, no sound or a
+  failed capture: one line naming System Settings > Privacy & Security >
+  Microphone and the app macOS asks about, and exit 2. A shut lid, or an
+  `ears.json` input that is not connected, gets its own line and exit 2.
+  Each case it cannot check gets one `mic    not checked:` row. The
+  evidence goes to the install log.
+- `EARS_MIC_CHECK_S` sets the wait in seconds; `0` turns the check off for
+  a run where nobody is at the Mac.
+### Added: service files for `sessionkit service`
+
+- `ears services install` writes one file per service it loads,
+  `~/.sessionkit/voice/services/<name>.json` (beside `settings/`), with
+  `"enabled": true`, so `sessionkit service` finds voice's jobs by
+  convention. `ears services uninstall` rewrites it with `"enabled": false`
+  and keeps it. Each file names the job's label, its install and uninstall
+  commands, and its port, health URL and call hazard where they apply. The
+  write is atomic. A write that fails rolls back no job: the verb finishes
+  its launchd work, prints one line on stderr naming the file and the
+  reason, and exits 3 (the job stands, the service file is not written). A
+  refusal or a job that did not load still exits 2. `--help` lists every
+  exit code.
+- When ours does not run, its service file says so with `"enabled": false`
+  and a short `note`: a hand-made job runs instead, another program serves
+  the speech port, `final.url` points elsewhere, or the speech server's
+  checks failed. The file's label is always voice's own.
+
+### Fixed: the turn mailer finds `message` again after it moves
+
+- When the `message` the turn mailer found at start is removed or moved,
+  the send that fails (exit 126) now looks for it once more, so the next
+  send uses the new one with no restart. That failed mail is not sent
+  again, and its log line ends with what the lookup found.
+
+### Added: the turn mailer says so when turn mail fails
+
+- When sending your turns as mail fails 3 times in a row, the turn mailer
+  (`keeper/ears-mail.py`) says so once, out loud, through the mouth
+  (`mouth say --alert`, which needs no mail), and writes one
+  `ears-mail: ERROR: mail alert:` line. It stays quiet while sends go on
+  failing, and says once that mail works again when a send goes through.
+  Each failed send still writes its own ERROR line, and nothing exits.
+- `ears.json` gains `mail_alert` (`speak`, the default, or `off`) and
+  `mail_alert_after` (default 3); `EARS_MAIL_ALERT` and
+  `EARS_MAIL_ALERT_AFTER` win over them.
+- The run of failures is kept in the turn mailer's `--state`, so a restart
+  in the middle of an outage says nothing twice.
+- An alert line is no seat's: no turn answers it, a "say again" never
+  replays it, and no cut notice is mailed about it.
+
+### Added: the mouth says so when its notices fail
+
+- When the notices the mouth mails about cut or dropped lines fail 3 times
+  in a row, the mouth says so once, out loud (an alert line in its own
+  queue, which needs no mail), and writes one `mouth: ERROR: notice alert:`
+  line. It stays quiet while notices go on failing, and says once that they
+  go out again when one does. Each failed notice still writes its own ERROR
+  line, and nothing exits.
+- `mouth.json` gains `notice_alert` (`speak`, the default, or `off`) and
+  `notice_alert_after` (default 3); `MOUTH_NOTICE_ALERT` and
+  `MOUTH_NOTICE_ALERT_AFTER` win over them.
+- The run of failures is kept in `notice-alert.json` in the mouth's folder,
+  so it spans the player, `mouth retract` and `mouth again`, and a player
+  that exits idle. A fenced send and a spent budget count nothing.
+- docs/troubleshooting.md gains "Mail: you hear that it is failing".
+
+### Added: `mouth say --alert`, the host's own line
+
+- `mouth say --alert TEXT` (and `mouth.say(text, alert=True)`) queues a
+  line that is no caller's: for a part of sessionvoice to say that its mail
+  is failing. Whoever runs it, no seat is named on it or told of it, and no
+  caller's settings cascade is read. Its interest is `zero`, it goes to the
+  front of the queue unless a priority is given, and it is never refused
+  for length.
+- Its `saying` and `said` rows carry `alert: true`, and so does the rest
+  that a barge-in's replay queues of it. No other line's rows change.
+- No drop notice is ever mailed about an alert line: its `said` row's
+  `notice` is `none: an alert line, never mailed`.
+### Fixed: a keeper restart no longer leaves the room capture on old code
+
+- The room capture is its own process, so a keeper restart (a deploy's or
+  an upgrade's) adopted it still running the code it started with, and
+  capture-side fixes such as the listen watchdog were not live until it was
+  restarted by hand. Every heartbeat now carries the capture's code stamp,
+  `code` (`python -m ears.codestamp`: the version and a hash of the
+  package's source). A restarted keeper compares it with the stamp of the
+  code it would start, and restarts a capture on other code, or with no
+  stamp, once, through its stop file, with one note naming both stamps.
+  Never twice in one keeper start: a capture still on other code after that
+  is kept, with a loud note. After a deploy or an upgrade, confirm the room
+  capture's start (`ps -o lstart= -p PID`) is later than it
+  ([dependencies](docs/dependencies.md#upgrade)).
+
+### Added: `mouth play` takes a URL
+
+- `mouth play SOURCE` (and `mouth.play()`) takes a `file://`, `http://` or
+  `https://` URL wherever it took a file path. Before, any URL was refused.
+  A `file://` URL plays the file it names, percent-decoded, in place: never
+  fetched or copied. An `http://` or `https://` URL is fetched first, into
+  a play cache kept forever by default (`<mouth dir>/play-cache/`), and the
+  local copy is queued; a second play of the URL makes no request. The
+  decoder still reads only local files. Any other scheme, a `file://` URL
+  naming another host, a failed fetch, and a cache that cannot be written
+  are refused plainly (exit 2), with nothing queued.
+- Four new `mouth.json` keys: `play_remote` and `play_cache` (both on;
+  answered by the session, seat and agent layers, and lockable in the host
+  file with `_locked`), and `play_cache_dir` and `play_cache_max_age_s`
+  (host file only). `play_remote` off refuses remote URLs; `play_cache` off
+  fetches for one play only. No new `mouth play` flags.
+- A file played by URL (`file://` or `http(s)://`) gets its instrumental and
+  stems in `<mouth dir>/url-sidecars/<sha256 of its bytes>/`, never beside
+  it: nothing is written into another tool's folder or the play cache. Every
+  reader and `mouth split` on that file use it; two files with the same bytes
+  share it. A file never played by URL keeps `.<name>.d/` beside it.
+### Changed: `mouth say` refuses a line over 300 characters unless `--long`
+
+- Spoken answers are kept short. `mouth say` now refuses a line of more
+  than 300 characters, counted as given: it prints one line,
+  `mouth: over 300 characters: split it, or mail it (or --long)`, speaks
+  nothing, queues nothing and exits 2. `mouth say --long` speaks it anyway,
+  and a line of 300 or fewer is unchanged. The cap is the new
+  `say_max_chars` setting (mouth.json or the caller's settings cascade);
+  `0` or `"off"` turns it off. Mail to the mouth and `mouth.say()` callers
+  are not capped.
+
+### Fixed: a line held for the end of your turn waits at most 12 s
+
+- A turn-end hold (`mouth say --hold turn-end`, or a room line held by
+  `room_hold`) now has a ceiling, `hold_max_s` (12 s), counted from when the
+  line was queued. Before, a busy room where one turn ran for minutes held a
+  line for all of it: one line waited 168 s and the seat seemed mute. Past
+  the ceiling the line plays at the next gap in your words (no new partial
+  for 1.5 s), or 3 s later if no gap comes. A turn shorter than the ceiling
+  still releases at its end, and a held opener queued before your turn began
+  is still dropped as stale. Set `"hold_max_s"` in mouth.json or
+  `$MOUTH_HOLD_MAX_S` (which wins); `0`, or `off` in the env, is no ceiling.
+  A resume, the rest of a line your words cut, is not capped: it waits for
+  the end of your turn, so on headphones a line the ceiling released is not
+  cut twice and lost.
+### Changed: a clone line buffers 3 s before it plays, by default
+
+- A line a cloned voice speaks now waits for 3 s of its audio before its
+  first frame, so a clone rendering below real time no longer runs dry and
+  crackles. Every other voice (Kokoro, Apple, silence) still plays as it
+  streams. The price is up to about 3 s more before a clone line starts. A
+  `lead_s` set anywhere, `0` included, still wins: `mouth say --lead S`,
+  `mouth.say(lead_s=S)`, a mail's `X-Mouth-Lead`, the caller's settings
+  cascade, the host's mouth.json. `saying` logs the default as
+  `lead_from: builtin`.
+### Fixed: one transient 503 no longer fails the Silero VAD fetch
+
+- `ears install` and `ears services install` try the Silero VAD download
+  again on a server error (5xx) or a connection error, after 2 s and then
+  5 s: three tries in all, each from an empty temp file. A 4xx, a checksum
+  mismatch or a disk error still fails at once. When the last try fails, the
+  error is the same one line as before, nothing is written at the model path,
+  and `ears install` exits non-zero. Before, one HTTP 503 from the host
+  stopped the whole install.
+
+### Fixed: `--no-prefetch` says it does not skip the Silero VAD model
+
+- `ears services install --no-prefetch` (or `EARS_NO_PREFETCH=1`) skips the
+  speech server's weights only. A missing Silero VAD model (2.3 MB, pinned,
+  SHA-256 checked) is still fetched, because the keeper cannot hear without
+  it and nothing fetches it at first use. Install now says so on its own
+  line before the fetch, and a `--dry-run` says it before its would-fetch
+  line. `--help` and the docs (`docs/models.md`, `docs/speech-server.md`,
+  `docs/ears.md`, `docs/dependencies.md` and the README) say it too. Before,
+  the flag read as "no network fetch at install", and the Silero fetch
+  looked like a slip. A model already present, or linked from VoiceMode's
+  copy, prints nothing new.
+### Fixed
+
+- `ears services status`, `install` and `uninstall` on a host with no
+  launchctl (Linux) now print one line, `ears services: macOS only
+  (launchd)`, and exit 2, instead of a `FileNotFoundError: 'launchctl'`
+  traceback. `ears speakers name` refuses the same way where it would restart
+  the job. `ears services weights` and `schema` never needed launchd and work
+  as before.
+### Fixed: `mouth say` and `mouth play` are From whoever ran them
+
+- A said or played line is From its sender, read from the environment the way
+  sessionmail's `message send` reads it, with no `--from`. From a seat, that
+  is the seat's declared plus address (`EMAIL`, `TM_AGENT_ADDRESS`), else its
+  seat or session variable. From a plain shell, it is your login name. Before
+  this, every line was From the voice-agent name, else `mouth`: the seats on
+  a host were one sender, and a person's `mouth play` was the mouth mailing
+  itself. The domain is still this host's, so the mouth admits these lines
+  exactly as before, and an unknown sender is still refused.
+  `VOICEMODE_AGENT` names a voice only. An agentless line now carries
+  `X-Mouth-Agent: mouth`, so it reads back as it did. An amend, a resumed
+  rest and a `mouth again` replay keep the line's own From
+  (`src/mouth/sender.py`, `docs/mouth.md`).
+### Fixed
+
+- talk no longer drops a turn when a browser connects. `/events` sent the
+  recent rows, then started the live stream at the log's end as it stood a
+  moment later, so a row written in between was sent in neither and never
+  showed. The live stream now starts at the byte the recent rows were read
+  up to. A line still being written when the page connects is sent once,
+  whole, when it is finished.
+- talk no longer drops the last rows of the day at midnight. When the day
+  turned, the live stream moved to the new day's log without a last read of
+  the old one, so a row written just before midnight never showed. It now
+  reads yesterday's log to its end and sends those rows first. A line left
+  unfinished in yesterday's log is not sent, because its writer has moved on
+  to the new day.
+### Fixed: a missing ffmpeg now says that voice levelling is off
+
+- With no ffmpeg on PATH no voice can be measured, so every unmeasured voice
+  played unlevelled and nothing said why. The mouth now writes one
+  `kind: warn` row on player.log per process (`warn: no-ffmpeg`), on the
+  first line that wants levelling; that line's `level` record carries
+  `"ffmpeg": false` beside `from: unmeasured`; and `mouth status` has
+  `level.ffmpeg`. The line still plays, unlevelled, with no delay. With
+  normalize off, or a voice that already has a gain, nothing is said.
+### Fixed
+
+- The mouth's Kokoro request now carries `lang_code`, the voice's first
+  letter, when Kokoro knows it (`a b e f h i p j z`). Before, it sent none, so
+  the server's American default phonemised every voice: `bf_lily` spoke with
+  a US accent. Any other voice name sends the request it always did; a clone
+  still sends `lang_code: auto`.
+
+### Fixed: the PyPI page's links into the repo work
+
+- `make publish` now builds through a new `make pypi-dist`, not `make build`.
+  The README's links into this repo are relative, and PyPI renders the README
+  with no repo beside it, so each one was a 404 on the package page. pypi-dist
+  builds from the release tag `v<version>` (`git archive`, never the
+  checkout), rewrites the README's relative links to absolute URLs pinned to
+  that tag on the public repo, builds the wheel and sdist into `dist/`, and
+  checks that neither has a relative link left. The rewriter is sessionkit's
+  `scripts/pypi_readme.py`, the one copy every kit repo uses: set
+  `SESSIONKIT_DIR` to a sessionkit checkout (unset, pypi-dist refuses and says
+  so). The tag must already be on the public repo (`PUBLIC_REMOTE`), or it
+  refuses.
+- `make pypi-dist` now refuses unless the release tag is the same commit here
+  and on the public repo (`PUBLIC_REMOTE`). Before, it checked only that a tag
+  of that name existed there, so a tag moved here after it was pushed would
+  build a package whose links point at a different tree. The check is
+  sessionkit's `scripts/pypi_readme.py tag-check`, and its refusal names both
+  commits.
+
 ## [0.3.3] - 2026-11-08
 
 ### Changed: the mail root is sessionmail's, never spelled here (SM 0.3.3)
@@ -207,6 +516,19 @@ All notable changes to sessionvoice are documented here. The format is
 
 ### Fixed
 
+- talk serves an agent's face again on a host upgraded from before
+  sessiontools 4.2. With sessiontools installed, `GET /avatar/<name>` read
+  only tools' `agent/config/<name>/`, so a face in the pre-4.2
+  `~/.session/agents/<name>/` returned 404 (0.3.2 served it). talk now also
+  asks `sessiontools.paths.agent_report` for the folder the launcher finds
+  for the agent, after tools' config folder. A sessiontools too old to
+  answer that has the pre-4.2 folder read directly instead.
+- Three talk tests (`test_every_page_link_reaches_its_route_under_the_prefix`,
+  `test_avatar_and_404_served_when_paired`,
+  `test_the_same_routes_are_served_to_loopback`) no longer fail in a venv
+  without sessiontools on a host whose `session` command answers: they ask a
+  fake tools (`tests/fake_tools.py`) for the face, so the runner's own
+  sessiontools, or none, never decides the result.
 - `ears services status` no longer warns that the heard log is split when
   two roots' `logs/conversations` are one folder (a folder link between
   them, made by hand): that is one log.

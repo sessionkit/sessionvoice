@@ -64,7 +64,9 @@ A SEAT's home (its heard-first ``heard.state``) is :func:`seat_home` (design.md 
 (0.3.2's shared home, read only); else voice's own ``<root>/seats/<seat>/`` (the root with the
 root overrides left out), which ears-arm makes. A fresh host makes no ``~/.ears``. Tools'
 old folders are read only when tools cannot be asked at all (:data:`TOOLS_OLD`).
-``seat_names()`` lists the seats with a ``heard.state``, and ``avatar()`` finds a face.
+``seat_names()`` lists the seats with a ``heard.state``, and ``avatar()`` finds a face: in
+tools' config folder for the agent, else in the folder tools' launcher finds for it
+(``sessiontools.paths.agent_report``), which keeps a face in the pre-4.2 agents folder served.
 
 Shell and peers ask: ``python -m ears.home state-dir [ITEM] [--json]`` (also run as a file,
 ``python src/ears/home.py``, and as ``ears home state-dir``). ``--json`` prints the contract
@@ -126,6 +128,10 @@ audio, caches and venvs. Before 0.3.2 the logs went to ``~/Library/Logs/ears`` (
 render's to ``~/Library/Logs/failmode``, :data:`LEGACY_LOGS`). Nothing moves or deletes
 them. ``ears services status`` says in one line where the logs are now while an old folder
 still holds a file (:func:`log_status_lines`).
+
+The SERVICE FILES sit beside the settings too: ``~/.sessionkit/voice/services/``
+(:data:`SERVICES`, :func:`services_dir`), one ``<name>.json`` per launch agent ``ears services
+install`` loads, for ``sessionkit service`` to find. ``ears.service_files`` writes them.
 """
 from __future__ import annotations
 
@@ -158,6 +164,10 @@ SETTINGS = ".sessionkit/voice/settings"
 LOG = ".sessionkit/voice/log"
 #: The variable that moves the log folder.
 LOG_ENV = "EARS_LOG_DIR"
+#: The package's service files, under $HOME: one ``<name>.json`` per launch agent
+#: ``ears services install`` loads, which ``sessionkit service`` reads. Beside
+#: :data:`SETTINGS`, never inside it. The ONE place this repo names it (:func:`services_dir`).
+SERVICES = ".sessionkit/voice/services"
 #: Where the logs went before 0.3.2, under $HOME. Only ever LOOKED at, for the pointer in
 #: ``ears services status``: nothing here writes, moves or deletes a file in them.
 LEGACY_LOGS = ("Library/Logs/ears", "Library/Logs/failmode")
@@ -215,6 +225,13 @@ def settings_dir(home=None) -> Path:
     """``~/.sessionkit/voice/settings``: the folder every voice settings file sits in.
     ``home`` defaults to the user's home (``$HOME``, read on every call)."""
     return _home(home) / SETTINGS
+
+
+def services_dir(home=None) -> Path:
+    """``~/.sessionkit/voice/services``: the folder the service files sit in, one
+    ``<name>.json`` per service (``ears.service_files``). ``home`` defaults to the user's
+    home (``$HOME``, read on every call). Nothing is made: the writer makes it."""
+    return _home(home) / SERVICES
 
 
 def log_dir(environ: Optional[Mapping[str, str]] = None, home=None) -> Path:
@@ -636,10 +653,15 @@ def status_lines(environ: Optional[Mapping[str, str]] = None, home=None) -> list
 #       keeps a host on old tools unchanged; it only checks whether a folder exists, so it
 #       creates nothing. Accepted by the kit's super; it is deleted once every host's
 #       tools has `session path`.
+# A face (avatar.jpg) at rung (a) is asked twice: settings.agent_config (tools' config
+# folder), then paths.agent_report (the folder the launcher finds, which on an upgraded host
+# may still be the pre-4.2 agents folder). Only a tools too old to answer agent_report has
+# that pre-4.2 folder read directly (Tools.avatars, _report_faces).
 
 #: Tools' OLD folders, under $HOME: the ONE place voice names them (the scan in
-#: tests/test_seat_home.py holds every other literal out of voice's code). Read ONLY at rung
-#: (c), when tools cannot be asked at all; never written. They go
+#: tests/test_seat_home.py holds every other literal out of voice's code). Read only at rung
+#: (c), when tools cannot be asked at all, and for a face (``agents``) when tools is too old
+#: to answer ``paths.agent_report``; never written. They go
 #: once every host's tools has `session path`.
 TOOLS_OLD = {
     "agent": ".session/agent",          # tools' agent folder: home/<seat>/, config/<name>/
@@ -678,15 +700,53 @@ class Tools(NamedTuple):
         return [d / seat for d in self.homes]
 
     def avatars(self, name: str) -> list[Path]:
-        """NAME's face candidates (``avatar.jpg``), in order (each may not exist): tools'
-        config folder for the agent, and at rung (c) the pre-4.2 ``agents/<name>/``."""
+        """NAME's face candidates (``avatar.jpg``), in order (each may not exist; no repeats).
+
+        At rung (a), two asks of tools: ``settings.agent_config`` (the agent's folder under
+        tools' ``agent/config/``), then ``paths.agent_report`` (the agent's folder as the
+        launcher finds it, then ``<the launcher's agents folder>/<name>/``). The second is
+        what finds a face in the pre-4.2 ``agents/<name>/`` while tools' launcher still
+        reads that folder. A tools too old to answer ``agent_report`` (it has none, or it
+        raises) gets the pre-4.2 folder read directly instead (:func:`_report_faces`).
+        At rung (b), tools' config folder; at rung (c), the old ``agent/config/<name>/``,
+        then the pre-4.2 ``agents/<name>/``."""
         if self.mod is not None and hasattr(self.mod, "agent_config"):
-            md = Path(self.mod.agent_config(name, env=self.env))
-            return [md.parent / "avatar.jpg"] if md.parent.name == name else []
+            out = []
+            try:
+                md = Path(self.mod.agent_config(name, env=self.env))
+                if md.parent.name == name:      # a flat <name>.md has no folder, so no face
+                    out.append(md.parent / "avatar.jpg")
+            except Exception:       # tools' own refusal for this name: the next ask
+                pass
+            out += _report_faces(name, self.env)
+            return list(dict.fromkeys(out))
         if self.how == "old":       # agent/config/<name>/, then the pre-4.2 agents/<name>/
             agent, agents = (d.parent for d in self.homes)
             return [agent / "config" / name / "avatar.jpg", agents / name / "avatar.jpg"]
         return [d.parent / "config" / name / "avatar.jpg" for d in self.homes]
+
+
+def _report_faces(name: str, env: Optional[Mapping[str, str]]) -> list[Path]:
+    """Rung (a)'s second ask: NAME's face candidates from ``sessiontools.paths.agent_report``
+    (``session path agent NAME --json``). ``items.config.path`` is the agent's folder as
+    the launcher resolves it ("" for a flat agent, the built-in seat, or a name the
+    launcher refuses, so it is tested before ``avatar.jpg`` is joined to it), then
+    ``items.agents.path``/NAME, the folder the launcher looks in (a face beside no
+    ``<name>.md``, which the launcher refuses, is still found there).
+
+    When tools cannot answer this (an older tools with no ``paths.agent_report``, or the
+    call raises, or the report is not the contract), the pre-4.2 folder under $HOME,
+    ``TOOLS_OLD["agents"]/<name>/``, is the one candidate: it is where tools before
+    ``agent_report`` kept faces. Read only, never created."""
+    try:
+        from sessiontools import paths
+        items = paths.agent_report(name, env=env)["items"]
+        config = items["config"].get("path") or ""
+        agents = items["agents"].get("path") or ""
+    except Exception:       # no agent_report, or its refusal: tools' pre-4.2 folder
+        return [tools_old("agents", (env or {}).get("HOME") or None) / name / "avatar.jpg"]
+    out = [Path(config) / "avatar.jpg"] if config else []
+    return out + ([Path(agents) / name / "avatar.jpg"] if agents else [])
 
 
 def _tools_env(environ, home) -> dict:
@@ -823,8 +883,9 @@ def seat_names(environ: Optional[Mapping[str, str]] = None, home=None,
 
 def avatar(name: str, environ: Optional[Mapping[str, str]] = None, home=None,
            tools: Optional[Tools] = None) -> Optional[Path]:
-    """NAME's face (``avatar.jpg``) where tools keeps it, asked of tools; None when it has
-    none. A look, never a write."""
+    """NAME's face (``avatar.jpg``) where tools keeps it, asked of tools
+    (:meth:`Tools.avatars`); None when it has none, or NAME is not a seat name. A look,
+    never a write, and never an exception."""
     if not SEAT_NAME.match(name or ""):
         return None
     tools = tools_agent(environ, home) if tools is None else tools

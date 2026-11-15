@@ -89,6 +89,75 @@
       "type": "boolean",
       "default": true
     },
+    "play_remote": {
+      "title": "Play URLs from the network",
+      "description": "On: `mouth play` takes an http:// or https:// URL, fetches it and plays the file. Off: it refuses one plainly and plays nothing, while a file:// URL and a path still play. No flag or environment variable changes this. Lock it in this file (`_locked`) and no session, seat or agent layer can turn it back on. Precedence: this file, when it locks play_remote > the play_remote cascade (session > seat > agent > settings) > built-in on.",
+      "type": "boolean",
+      "default": true
+    },
+    "play_cache": {
+      "title": "Keep fetched URLs",
+      "description": "On: a URL that `mouth play` fetches is kept in the play cache, so a second play of it starts at once with no download. Off: it is fetched for that one play and removed after it has played, and nothing is left in the cache. Precedence: this file, when it locks play_cache > the play_cache cascade (session > seat > agent > settings) > built-in on.",
+      "type": "boolean",
+      "default": true
+    },
+    "play_cache_dir": {
+      "title": "Play cache folder",
+      "description": "Where kept URL plays are stored: an absolute path, or one starting with ~/. Unset, or not absolute: play-cache in the mouth's own folder. Read from this file only, so every caller on this machine shares one cache.",
+      "type": "string",
+      "minLength": 1
+    },
+    "play_cache_max_age_s": {
+      "title": "Keep fetched URLs for (seconds)",
+      "description": "How long a kept URL play stays fresh, in seconds. An older one is fetched again on its next play. Unset or null: kept forever. A value that is not a number over 0 is ignored, so the file is kept forever; to keep nothing, turn play_cache off. Read from this file only.",
+      "type": ["number", "null"],
+      "exclusiveMinimum": 0,
+      "default": null
+    },
+    "play_queue": {
+      "title": "Where mouth play puts a song",
+      "description": "Where a `mouth play` goes when it names no place. last: the end of the queue, after everything already waiting. next: the front of the queue, so it plays as soon as the song on its device ends. now: the song playing on its device (that device only) is stopped and this plays at once. Spoken lines are never cut and mix over a song in every mode. Set it to now and every `mouth play`, a short sound included, stops the song on its device. A per-call --now, --next or --last beats this. Precedence: per-call --now/--next/--last > this file, when it locks play_queue > the play_queue cascade (session > seat > agent > settings) > built-in last.",
+      "type": "string",
+      "enum": ["now", "next", "last"],
+      "default": "last"
+    },
+    "play_find_matches": {
+      "title": "Which match mouth play --find plays",
+      "description": "Which of the songs `mouth play --find` found it plays. first: the first match only. list: none; the matches are printed, numbered, and the command exits 3, so the next call can pick one with --pick N. all: every match, in the order the finder printed them, queued as one run. A per-call --matches, or --pick N, beats this. Precedence: per-call --matches or --pick > this file, when it locks play_find_matches > the play_find_matches cascade (session > seat > agent > settings) > built-in first.",
+      "type": "string",
+      "enum": ["first", "list", "all"],
+      "default": "first"
+    },
+    "play_finders": {
+      "title": "Finders for mouth play --find",
+      "description": "The programs `mouth play --find` asks for a song, in order: each one a name and the command to run, as a list of words. The words you search for are added to the end as separate arguments, and no shell ever runs. The first finder that finds anything wins and the rest are not asked; `mouth play --find --finder NAME` asks that one only. A finder prints one match per line, its fields separated by tabs, the last field a URL (file:/// with an absolute path, or http:// or https://); it exits 0 when it found something, 1 when it found nothing, and anything else is a failure. Read from this file only, so no session, seat or agent layer can choose which program runs. Empty or unset: `mouth play --find` is refused and says where to set one.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "argv"],
+        "properties": {
+          "name": {
+            "description": "What the finder is called in a refusal and in `--finder NAME`. A second entry with the same name is skipped.",
+            "type": "string",
+            "minLength": 1
+          },
+          "argv": {
+            "description": "The command and its fixed arguments, one word each, for example [\"music\", \"find\", \"--url\"].",
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "minItems": 1
+          }
+        }
+      },
+      "default": []
+    },
+    "play_finder_timeout_s": {
+      "title": "Finder time limit (seconds)",
+      "description": "How long `mouth play --find` waits for one finder, in seconds. A finder still running then is stopped, with everything it started, and nothing plays. A value that is not a number over 0 is ignored, so the limit is 10. Read from this file only.",
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 10
+    },
     "barge_in": {
       "title": "Who may barge in",
       "description": "Whose words cut a line while it plays. Anyone: any words that are not the line's own (the television too). Names: only words the speaker side-car names as one of them; other voices, the television, silence and mixed voices never cut. A line still unnamed 2 s after its words cuts as if this were Anyone, so a stopped side-car never takes barge-in away; so do words the side-car hears but cannot score (unheard: too little audio, a quiet voice), at once. Today the side-car names the room mic only, so on a call a list acts as Anyone. When `session operator` names an operator, the default is that operator's mailbox in the room (calls stay anyone), read as a speaker name: enroll under your mailbox name. Set this key, to anyone or to names, and it wins.",
@@ -154,12 +223,42 @@
       "type": "boolean",
       "default": true
     },
+    "hold_max_s": {
+      "title": "Longest a line waits for the end of your turn (seconds)",
+      "description": "A line that waits for the end of your turn (mouth say --hold turn-end, or a room line held by room_hold) waits no longer than this from when it was queued. Past it, the line plays at the next pause in your words, or about 3 s later if no pause comes. A turn shorter than this still gets its line at the end, as before. 0 is no ceiling: the line waits for the whole turn. $MOUTH_HOLD_MAX_S beats this (off, 0, no or false is no ceiling).",
+      "type": "number",
+      "minimum": 0,
+      "default": 12
+    },
+    "notice_alert": {
+      "title": "Say it when the mouth's notices fail",
+      "description": "speak (the default): when the notices the mouth mails about cut or dropped lines fail several times in a row (notice_alert_after), the mouth says so once, out loud, and once more when they go out again. off: it only writes each failure to its log. $MOUTH_NOTICE_ALERT wins over this. A value that is not speak or off is ignored, and the default is used. Read at each notice, with no restart.",
+      "type": "string",
+      "enum": ["speak", "off"],
+      "default": "speak"
+    },
+    "notice_alert_after": {
+      "title": "Failed notices before it is said",
+      "description": "How many notices in a row must fail before the mouth says so, a whole number of 1 or more. $MOUTH_NOTICE_ALERT_AFTER wins over this. A value that is not a whole number of 1 or more is ignored, and the default is used. Read at each notice, with no restart.",
+      "type": "integer",
+      "minimum": 1,
+      "default": 3
+    },
     "lead_s": {
       "title": "Lead buffer (seconds)",
-      "description": "Seconds of a line's audio the mouth buffers before it starts to play it, so a voice that renders slower than real time cannot chop. 0 plays a line as it streams. A clone voice renders at only 0.93-0.96x real time even on an idle Mac, so 2.5 stops it chopping, for about 2.3 s more wait before a clone line starts. Kokoro and Apple voices render well ahead and fill any lead almost at once. A line's own mouth say --lead wins.",
+      "description": "Seconds of a line's audio the mouth buffers before it starts to play it, so a voice that renders slower than real time cannot chop. 0 plays a line as it streams. Unset, a clone voice line takes 3 and every other line 0: a clone renders at only 0.93-0.96x real time even on an idle Mac, so it needs the lead, for about 3 s more wait before a clone line starts. Kokoro and Apple voices render well ahead and fill any lead almost at once. A value here, 0 included, applies to every voice. A line's own mouth say --lead wins.",
       "type": "number",
       "minimum": 0,
       "default": 0
+    },
+    "say_max_chars": {
+      "title": "Longest line mouth say speaks (characters)",
+      "description": "mouth say refuses a line longer than this many characters, counted as given: it says why in one line (over 300 characters: split it, or mail it), speaks nothing and exits non-zero. Spoken answers are kept short. A line's own mouth say --long speaks it anyway. 0 or \"off\" is no cap. An invalid value is skipped and the next layer answers.",
+      "anyOf": [
+        {"type": "integer", "minimum": 0},
+        {"const": "off"}
+      ],
+      "default": 300
     },
     "barge_ignore_words": {
       "title": "Barge ignored words",

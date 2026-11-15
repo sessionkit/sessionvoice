@@ -84,10 +84,31 @@ MTA, so a Mac with no postfix delivers through sessionmail's mail drop
 (SESSIONMAIL_SENDMAIL=drop). There is no fallback. $EARS_MAIL_MESSAGE names the
 command (tests and rigs point it at a fake), else `message` on PATH, resolved
 once at start; while it is missing it is looked for again at each send, so a
-`message` installed later is found with no restart. The send runs as the seat (SENDER, or SENDER+ROOM), display
+`message` installed later is found with no restart. A send that could not start
+(the one found is gone, moved or not runnable: exit 126) looks for it once more,
+for the next send; that send is not tried again. The send runs as the seat (SENDER, or SENDER+ROOM), display
 name Ears, with every inherited CLAUDE_SESSION_* and must-sign dropped: unsigned
 until a plus seat can hold a key; $EARS_MAIL_SIGNER_SOCK and _PUB, both set, sign.
 The send mints the Message-ID, and the fire log keeps the one it returned.
+
+A failed send is loud: one `ears-mail: ERROR: send to ...` line each. At the Nth
+send in a row that fails (ears.json's mail_alert_after, else $EARS_MAIL_ALERT_AFTER
+over it, default 3) the keeper also says it ONCE, out loud, by `MOUTH say --alert`
+(--mouth, 5 s), which needs no `message`, plus one `ears-mail: ERROR: mail alert:`
+line. Then it is quiet, however many fail, until a send goes through: it then says
+once that turn mail works again (`ears-mail: mail recovered:`), and a later run of
+failures alerts again. ears.json's mail_alert (`speak` or `off`, $EARS_MAIL_ALERT
+over it) turns it off. Every real send counts (a room turn, a call turn, a cut
+notice, a --to seats mail); --dry-run sends nothing, so it never counts. The run is
+kept in --state (mail_alert), so a restart mid-outage says nothing twice. Nothing
+exits over it. An alert line is the mouth's own: its said row carries alert, and no
+turn answers it, asks for it again or is lit by it, and no cut notice is mailed about it.
+
+`ears-mail.py keeper-send` is the keeper's own sender: ears-keeper.sh's mail_me runs it
+once per device or capture notice. It sends the notice (bounded, SEND_TIMEOUT_S) and puts
+the outcome through the same machine and settings, over a run of its own (--state, in the
+keeper's run folder): at the Nth failed notice in a row one `ears-keeper: ERROR: mail
+alert:` line and one spoken alert, and one `ears-keeper: mail recovered:` after it.
 
 A seat's rules (defaults, then its own entry in the rules file). NAMES is the
 seat's `names` (else its key, literally) and, for a key of two words or more, the
@@ -121,6 +142,8 @@ rule as heard-first and the mouth's barge guard (hold.py is_echo).
 
   ears-mail.py [--rules FILE] [--seats alice,bob] [--dry-run] [--from-start]
                [--once] [--state FILE] [--fire-log FILE] [--kodi URL] [--mouth CMD]
+  ears-mail.py keeper-send --state FILE [--message CMD] [--conf FILE] [--mouth CMD]
+               TO SUBJECT
 
 --dry-run prints each mail it would send as one JSON line and sends nothing; the
 `mouth again` it would run goes to stderr, and is not run.
@@ -551,7 +574,10 @@ class Room:
                 except (TypeError, ValueError):
                     played = None
                 known[5:8] = (played, rec.get("device") or known[6], rec.get("text_played_est"))
-            if end is not None and agent:
+            # an alert line (mouth say --alert: the host's own, saying that mail fails) is
+            # no line a turn answers, asks again for, or lights a seat by: its lines entry,
+            # meta and spoken are noted above, so its echo is trimmed and it is not in flight
+            if end is not None and agent and rec.get("alert") is not True:
                 self.said[agent] = end
                 self.finished.append((end, agent, utt, interest))
                 del self.finished[:-50]
@@ -1038,6 +1064,221 @@ def run_again(argv, timeout=None):
     return True, {"mouth": said}
 
 
+# -- loud mail failures: one spoken alert per run of failed sends --------------
+# Every send that fails already writes its own ERROR line. At the Nth failed send in a
+# row the keeper also says so ONCE, through the mouth (`mouth say --alert`), which needs
+# no `message`; then it is quiet until a send goes through, and says once that mail
+# works again. The alert line names no seat and is never mailed about, so it cannot feed
+# the count it reports. The machine is held equal to the mouth's own copy for its
+# notices (src/mouth/notice.py) by one scenario table.
+
+#: ears.json's two keys, the variables that win over them, and their defaults.
+ALERT_KEY, ALERT_AFTER_KEY = "mail_alert", "mail_alert_after"
+ALERT_VAR, ALERT_AFTER_VAR = "EARS_MAIL_ALERT", "EARS_MAIL_ALERT_AFTER"
+ALERT_CHANNELS = ("speak", "off")
+ALERT_DEFAULT, ALERT_AFTER_DEFAULT = "speak", 3
+
+#: What the mouth says. {n}: the sends that failed in a row.
+ALERT_TEXT = ("Turn mail is failing: {n} in a row did not go out, so agents are not getting "
+              "your turns. The ears-mail log says why.")
+RECOVERED_TEXT = ("Turn mail is working again. What you said while it failed was not sent, "
+                  "so say it once more if it matters.")
+
+
+def ears_conf_path(environ=None):
+    """ears.json: $EARS_CONF when set and not empty, else ~/VOICE_SETTINGS/ears.json
+    (the rule ears.heard.ears_conf_path keeps; keeper/ imports nothing from src/)."""
+    env = os.environ if environ is None else environ
+    return Path(env.get("EARS_CONF") or
+                os.path.join(os.path.expanduser("~"), VOICE_SETTINGS, "ears.json"))
+
+
+def _channel(v, env):
+    """speak or off, else None (the next layer answers). ENV: a variable's value, any
+    case, trimmed; a file's value is one of the two strings exactly."""
+    if env:
+        v = v.strip().lower() if isinstance(v, str) else None
+    return v if isinstance(v, str) and v in ALERT_CHANNELS else None
+
+
+def _after(v, env):
+    """A whole number of 1 or more, else None. ENV: digits only, trimmed; a file's value
+    is a JSON integer (a JSON true is not one)."""
+    if env:
+        v = v.strip() if isinstance(v, str) else ""
+        v = int(v) if v.isascii() and v.isdigit() else None
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 1 else None
+
+
+def alert_setting(environ=None, conf=None):
+    """(channel, after): each from its variable, else ears.json, else the default. A
+    value that is not valid counts as unset, and an empty variable is unset. Read at
+    each counted send, so a change applies at the next send with no restart."""
+    env = os.environ if environ is None else environ
+    try:
+        with open(conf or ears_conf_path(env), "rb") as f:
+            data = json.loads(f.read(256 * 1024))
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    channel = (_channel(env.get(ALERT_VAR), True) or _channel(data.get(ALERT_KEY), False)
+               or ALERT_DEFAULT)
+    after = (_after(env.get(ALERT_AFTER_VAR), True) or _after(data.get(ALERT_AFTER_KEY), False)
+             or ALERT_AFTER_DEFAULT)
+    return channel, after
+
+
+class MailAlert:
+    """The run of failed sends: FAILED in a row, and whether this run has ALERTED.
+    observe() answers 'alert' once, at the Nth failure in a row; 'recovered' once, at
+    the first send that goes through after an alert; else None. `off` clears the run."""
+
+    def __init__(self, saved=None):
+        """SAVED: --state's mail_alert; one that is missing or malformed starts a fresh run."""
+        self.failed, self.alerted = 0, False
+        if isinstance(saved, dict):
+            failed, alerted = saved.get("failed"), saved.get("alerted")
+            if (isinstance(failed, int) and not isinstance(failed, bool) and failed >= 0
+                    and isinstance(alerted, bool)):
+                self.failed, self.alerted = failed, alerted
+
+    def observe(self, ok, channel, after):
+        """'alert', 'recovered' or None for one counted send."""
+        if channel == "off":
+            self.failed, self.alerted = 0, False
+            return None
+        if not ok:
+            self.failed += 1
+            if not self.alerted and self.failed >= after:
+                self.alerted = True
+                return "alert"
+            return None
+        was = self.alerted
+        self.failed, self.alerted = 0, False
+        return "recovered" if was else None
+
+    def state(self):
+        return {"failed": self.failed, "alerted": self.alerted}
+
+
+def run_alert(mouth, text, timeout=None):
+    """(ok, utt or why) for one `MOUTH say --alert TEXT`: no stdin, output captured,
+    bounded by MOUTH_TIMEOUT_S, as run_again. Only exit 0 is ok, and the utt is the last
+    line of stdout. WHY names what failed: exit N with stderr's tail, a timeout, or a
+    mouth that would not run (an older mouth without --alert exits 2 on the flag)."""
+    timeout = MOUTH_TIMEOUT_S if timeout is None else timeout
+    try:
+        argv = shlex.split(mouth) + ["say", "--alert", text]
+        p = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                           timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, f"mouth say timed out after {timeout:g} s"
+    except (OSError, ValueError) as e:
+        return False, f"mouth say not run: {' '.join(str(e).split())[-300:]}"
+    if p.returncode:
+        tail = " ".join((p.stderr or "").split())[-300:]
+        return False, f"mouth say exit {p.returncode}" + (f": {tail}" if tail else "")
+    out = (p.stdout or "").strip().splitlines()
+    return True, (out[-1].strip() if out else "") or "none"
+
+
+# -- the keeper's own notices: the same machine, a run of their own ------------------
+# ears-keeper.sh's mail_me (device and capture notices) is a sender of its own. It runs
+# `ears-mail.py keeper-send` once per notice: the send, bounded at SEND_TIMEOUT_S, then the
+# same alert_setting, MailAlert and run_alert as turn mail. The run is kept in the keeper's
+# own --state, never in ears-mail's: notices and turns are different senders.
+
+#: What the mouth says for the keeper's notices. {n}: the notices that failed in a row.
+KEEPER_ALERT_TEXT = ("The ears' notices are failing: {n} in a row did not go out, so agents are "
+                     "not told when the microphone or the capture changes. The ears keeper log "
+                     "says why.")
+KEEPER_RECOVERED_TEXT = ("The ears' notices are going out again. A change while they failed "
+                         "was not sent.")
+
+
+def _keeper_saved(path):
+    """The keeper's saved run (mail_alert in PATH), or None: missing or malformed starts a
+    fresh run, as --state does for turn mail."""
+    try:
+        with open(path) as f:
+            st = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return st.get("mail_alert") if isinstance(st, dict) else None
+
+
+def _keeper_save(path, alert):
+    """'' once the run is saved in PATH, else why not (it is said, never fatal)."""
+    tmp = f"{path}.tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump({"mail_alert": alert.state()}, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        return f"run not saved in {path}: {' '.join(str(e).split())[-300:]}"
+    return ""
+
+
+def keeper_notice_send(message, to, subject, timeout=None):
+    """'' when one notice went, else why it did not: `MESSAGE send TO -s SUBJECT --no-body`,
+    as mail_me always sent it (no stdin, stdout dropped, stderr to the keeper log), bounded
+    at SEND_TIMEOUT_S. An empty MESSAGE is mail_me's "no message binary": a failure."""
+    if not message:
+        return "no message binary"
+    timeout = SEND_TIMEOUT_S if timeout is None else timeout
+    try:
+        p = subprocess.run([message, "send", to, "-s", subject, "--no-body"],
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return f"timed out after {timeout:g} s"
+    except (OSError, ValueError) as e:
+        return f"not run: {' '.join(str(e).split())[-300:]}"
+    return f"exit {p.returncode}" if p.returncode else ""
+
+
+def keeper_send(argv=None, say=None):
+    """`ears-mail.py keeper-send`: ONE notice of the keeper's mail_me, sent and counted.
+    Each line it has to say goes to SAY (default stdout; mail_me notes each in the keeper
+    log): `mail FAILED (<why>): SUBJECT` for a send that did not go (mail_me says the "no
+    message binary" one itself), and at the Nth failure in a row one `ears-keeper: ERROR:
+    mail alert:` line with one spoken alert, then nothing until a notice goes through, which
+    says `ears-keeper: mail recovered:` once. The run is saved before the mouth is asked, so
+    a kill cannot say it twice. Exit 0 whatever the send did: hearing never stops over mail."""
+    say = say if say is not None else (lambda line: print(line, flush=True))
+    ap = argparse.ArgumentParser(prog="ears-mail.py keeper-send",
+                                 description="send one keeper notice, bounded, and count it")
+    ap.add_argument("--state", required=True, help="the keeper's own run of failed notices")
+    ap.add_argument("--message", default="", metavar="CMD",
+                    help="the message binary mail_me found; empty: none was found (a failure)")
+    ap.add_argument("--conf", default=None, help="ears.json (default: $EARS_CONF, else the "
+                    "settings folder's)")
+    ap.add_argument("--mouth", default=default_mouth(), metavar="CMD",
+                    help="the alert runs CMD say --alert TEXT, bounded at 5 s")
+    ap.add_argument("to")
+    ap.add_argument("subject")
+    a = ap.parse_args(argv)
+    why = keeper_notice_send(a.message, a.to, a.subject)
+    if why and a.message:
+        say(f"mail FAILED ({why}): {a.subject}")
+    alert = MailAlert(_keeper_saved(a.state))
+    before = alert.failed
+    what = alert.observe(not why, *alert_setting(conf=a.conf or None))
+    unsaved = _keeper_save(a.state, alert)
+    if unsaved:
+        say(f"ears-keeper: ERROR: mail alert: {unsaved}")
+    if what is None:
+        return 0
+    n = alert.failed if what == "alert" else before
+    said, got = run_alert(a.mouth, KEEPER_ALERT_TEXT.format(n=n) if what == "alert"
+                          else KEEPER_RECOVERED_TEXT)
+    how = f"queued for the mouth (utt {got})" if said else f"not said: {got}"
+    say(f"ears-keeper: ERROR: mail alert: {n} notices in a row failed; {how}"
+        if what == "alert" else
+        f"ears-keeper: mail recovered: a notice went through after {n} in a row failed; {how}")
+    return 0
+
+
 def device_slug(name):
     """The plus part of a device's address, heard+<slug>@<host> (the Cc a
     room turn carries while --device-copy is on), or None for a device the
@@ -1370,7 +1611,8 @@ def resolve_message(environ=None):
 
 
 _MESSAGE = None          # (cmd, why): resolved once (main), or at the first send; a
-                         # missing one is looked for again at each send
+                         # missing one is looked for again at each send, and a found one
+                         # that could not start is looked for once more after that send
 
 
 def _answer(stdout):
@@ -1404,7 +1646,11 @@ def send(m, sender, domain):
     except subprocess.TimeoutExpired:
         return 124, None, f"message send timed out after {SEND_TIMEOUT_S:g}s"
     except OSError as e:
-        return 126, None, f"message send: {type(e).__name__}: {e}"
+        # Could not start: the `message` found before is gone, moved or not runnable.
+        # Look for it ONCE, for the next send (never a loop); this mail is not tried again.
+        _MESSAGE = resolve_message()
+        found = (f"sends by {' '.join(_MESSAGE[0])}" if _MESSAGE[0] else _MESSAGE[1])
+        return 126, None, f"message send: {type(e).__name__}: {e}; looked again: {found}"
     got = _answer(p.stdout)
     if p.returncode == 0 and got.get("sent", "yes") == "yes":
         return 0, got.get("id"), ""
@@ -1624,6 +1870,9 @@ def call_mail(rec, bot, n, frm):
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["keeper-send"]:     # one notice of ears-keeper.sh's mail_me
+        return keeper_send(argv[1:])
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--rules", default=os.path.expanduser(f"~/{VOICE_SETTINGS}/wake.json"))
     ap.add_argument("--to", choices=("device", "seats"), default="device",
@@ -1667,7 +1916,8 @@ def main(argv=None):
     ap.add_argument("--mouth", default=default_mouth(), metavar="CMD",
                     help="the mouth CLI an again verdict runs as CMD again UTT (default "
                          "$EARS_MOUTH, else this python's -m mouth). It has 5 s; if it fails the "
-                         "turn is a call instead. Under --dry-run it is printed, never run")
+                         "turn is a call instead. Under --dry-run it is printed, never run. "
+                         "The mail alert runs CMD say --alert TEXT, also bounded at 5 s")
     ap.add_argument("--calls", choices=("on", "off"), default="on",
                     help="--to device: each finished turn of a Delta call (device call:N) To its "
                          "call box, calls+<bot>-<N>@DOMAIN, the bot named by the call's own "
@@ -1699,13 +1949,15 @@ def main(argv=None):
 
     offsets, room, twins = {}, Room(), Twins()
     kodi = Kodi(a.kodi) if a.kodi else None
-    saved, saved_bots = {}, {}
+    saved, saved_bots, saved_alert = {}, {}, None
     if a.state and os.path.exists(a.state):
         try:
             st = json.load(open(a.state))
             saved, saved_bots = st.get("offsets", {}), st.get("call_bots") or {}
+            saved_alert = st.get("mail_alert")     # this run of failed sends, across restarts
         except (ValueError, AttributeError):
-            saved, saved_bots = {}, {}
+            saved, saved_bots, saved_alert = {}, {}, None
+    alert = MailAlert(saved_alert)
     calls = CallBots(saved_bots) if a.to == "device" and a.calls == "on" else None
     for p in files():
         size = os.path.getsize(p)
@@ -1726,8 +1978,29 @@ def main(argv=None):
             tmp = a.state + ".tmp"
             with open(tmp, "w") as f:
                 json.dump({"offsets": offsets,
-                           **({"call_bots": calls.state()} if calls is not None else {})}, f)
+                           **({"call_bots": calls.state()} if calls is not None else {}),
+                           "mail_alert": alert.state()}, f)
             os.replace(tmp, a.state)
+
+    def counted(ok):
+        """One send's outcome through the run of failed sends (MailAlert). At the Nth
+        failure in a row: one ERROR line and one spoken alert; at the first send through
+        after it: one line and one spoken recovery. Saved at once, so a kill just after
+        cannot say it twice. A line the mouth could not take is still the alert: the
+        ERROR line says so, and nothing tries again in that run."""
+        before = alert.failed
+        what = alert.observe(ok, *alert_setting())
+        if what is None:
+            return
+        n = alert.failed if what == "alert" else before
+        said, got = run_alert(a.mouth, ALERT_TEXT.format(n=n) if what == "alert"
+                              else RECOVERED_TEXT)
+        how = f"queued for the mouth (utt {got})" if said else f"not said: {got}"
+        print(f"ears-mail: ERROR: mail alert: {n} sends in a row failed; {how}"
+              if what == "alert" else
+              f"ears-mail: mail recovered: a send went through after {n} in a row failed; {how}",
+              file=sys.stderr, flush=True)
+        save()
 
     def deliver(m, rec):
         """ONE send per recipient: `message send` refuses a whole mail
@@ -1754,6 +2027,7 @@ def main(argv=None):
                     said = " ".join(str(err or "").split())[-300:]
                     print(f"ears-mail: ERROR: send to {to} failed, exit {code}"
                           f"{': ' + said if said else ''}", file=sys.stderr, flush=True)
+                counted(code == 0)  # --dry-run sends nothing, so it never counts
             line = json.dumps(out)
             print(line, flush=True)
             if a.fire_log:
@@ -1819,7 +2093,10 @@ def main(argv=None):
                     calls.saw(n, kind == "event" and rec.get("event") == "listen-started")
                 # the mouth tells a cut line's sender itself: stand down only
                 # for a notice that reached it, so a failed: or none: row is still told
+                # never about an alert line (mouth say --alert): it is no seat's, and says
+                # that mail is failing
                 if kind == "said" and rec.get("cut") and rec.get("agent") in mailto \
+                        and rec.get("alert") is not True \
                         and not str(rec.get("notice") or "").startswith(("sent ", "waiter")):
                     deliver(mail_for(rec, [rec["agent"]], {rec["agent"]: "cut"}, kind="cut"), rec)
                     continue

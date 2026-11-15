@@ -66,7 +66,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from . import separator, sidecar
+from . import separator, sidecar, sourcekey
 from .instrumental import probe_duration
 from ears.home import log_dir
 
@@ -390,12 +390,13 @@ def _outputs(line: dict, tmp: Path) -> dict:
 
 # ---- the sidecar -------------------------------------------------------------------------------
 
-def current(path: Path) -> Optional[dict]:
+def current(path: Path, d: Optional[Path] = None) -> Optional[dict]:
     """The canonical sidecar's manifest when its outputs are current: the manifest fits the
-    source (:func:`mouth.sidecar.is_stale`) and every output it names is there. Else None."""
-    folder = sidecar.canonical_dir(path)
+    source (:func:`mouth.sidecar.outputs_stale`) and every output it names is there. Else
+    None."""
+    folder = sidecar.canonical_dir(path, d)
     m = sidecar.read_manifest(folder)
-    if not m or sidecar.is_stale(m, path, probe_duration):
+    if not m or sidecar.outputs_stale(m, path, probe_duration, d):
         return None
     outputs = m.get("outputs")
     if not isinstance(outputs, dict) or set(OUTPUT_NAMES) - set(outputs):
@@ -406,9 +407,12 @@ def current(path: Path) -> Optional[dict]:
     return m
 
 
-def _writable(path: Path) -> None:
-    folder = sidecar.canonical_dir(path)
-    where = folder if folder.exists() else path.parent
+def _writable(path: Path, d: Optional[Path] = None) -> None:
+    """The sidecar folder, or its nearest existing ancestor, must be writable. For a URL
+    source that is under the mouth dir, never the source's own folder."""
+    where = sidecar.canonical_dir(path, d)
+    while not where.exists() and where.parent != where:
+        where = where.parent
     if not os.access(where, os.W_OK | os.X_OK):
         raise Refused(f"cannot write the sidecar: {where} is not writable")
 
@@ -477,8 +481,9 @@ def split_file(source, force: bool = False, d: Optional[Path] = None) -> tuple[i
         return EXIT_REFUSED, {"file": raw, "state": "refused",
                               "detail": "a URL is never split: name a file"}
     path = Path(os.path.expanduser(raw)).resolve()
-    folder = sidecar.canonical_dir(path)
+    folder = sidecar.canonical_dir(path, d)
     line = {"file": str(path), "sidecar": str(folder)}
+    sha = None
     me = os.getpid()
     rec_base: dict = {"source": str(path), "pid": me}
 
@@ -499,6 +504,14 @@ def split_file(source, force: bool = False, d: Optional[Path] = None) -> tuple[i
         if not os.access(path, os.R_OK):
             raise Refused(f"cannot read {path}")
         rec_base.update(_source_stat(path))      # every record names the bytes it is about
+        if sourcekey.lookup(path, d) is not None:
+            # a URL source: never trust a stale entry; its folder is its bytes'
+            try:
+                sha = sourcekey.register(path, d)
+            except ValueError as e:
+                raise Refused(str(e).removeprefix("mouth: ")) from None
+            folder = sourcekey.folder(sha, d)
+            line["sidecar"] = str(folder)
     except (Refused, OSError) as e:
         return EXIT_REFUSED, {**line, "state": "refused", "detail": str(e)}
     if not separator_present():
@@ -506,7 +519,7 @@ def split_file(source, force: bool = False, d: Optional[Path] = None) -> tuple[i
         finish(FAILED, own_only=True, detail=detail)
         return EXIT_REFUSED, {**line, "state": "refused", "detail": detail}
     try:
-        _writable(path)
+        _writable(path, d)
     except Refused as e:
         finish(FAILED, own_only=False, detail=str(e))
         return EXIT_REFUSED, {**line, "state": "refused", "detail": str(e)}
@@ -514,7 +527,7 @@ def split_file(source, force: bool = False, d: Optional[Path] = None) -> tuple[i
     with _flock(_split_lock_path(path, d)):
         if folder.is_dir():
             _clear_leftovers(folder)
-        made = None if force else current(path)
+        made = None if force else current(path, d)
         if made is not None:
             finish(DONE, own_only=True, verdict=sidecar.manifest_verdict(made))
             return EXIT_OK, {**line, "state": "present",
@@ -567,7 +580,8 @@ def split_file(source, force: bool = False, d: Optional[Path] = None) -> tuple[i
                     "split_s": split_s,
                     "made_t": round(time.time(), 3),
                     "source": {"name": path.name, "size": rec_base["size"],
-                               "mtime_ns": rec_base["mtime_ns"], "duration_s": duration},
+                               "mtime_ns": rec_base["mtime_ns"], "duration_s": duration,
+                               **({"sha256": sha} if sha else {})},
                     "outputs": outputs,
                     "levels_db": levels,
                     "peak_scaled_db": report.get("peak_scaled_db"),

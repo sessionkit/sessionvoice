@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import NoAudio, again, amend, play, retract, say, status, stop
+from . import FIND_MATCHES, NoAudio, again, amend, play, play_many, retract, say, status, stop
 
 #: The verbs that write a drop notice in their own process, so mark it as the mouth
 #: service: the player (``serve``, a CLI say's; ``mail``, the launch
@@ -52,6 +52,115 @@ def _can_play(device) -> bool:
     return True
 
 
+def _pick(v: str) -> int:
+    """``mouth play --pick N``: a whole number, 1 or more (1 is the first match)."""
+    try:
+        n = int(v)
+    except ValueError:
+        n = 0
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"{v!r} is not a match number (1 is the first)")
+    return n
+
+
+def _play_kw(a) -> dict:
+    """The play options a ``mouth play`` passes on, whichever way it named its source."""
+    return dict(start=a.start, end=a.end, device=a.device, pan=a.channel or a.pan,
+                log_dir=a.log_dir, queue=a.queue, volume=a.volume, duck=a.duck,
+                duck_level=a.duck_level, instrumental=a.instrumental, stem=a.stem)
+
+
+def _play_one(a, source: str, cascaded=None) -> int:
+    """Play SOURCE (a path or URL) with every option ``a`` carries; print the utt, or
+    with ``--wait`` the said row. Exit 0, 1 (waited and not done) or 2 (refused).
+    ``cascaded``: the caller's cascade already read (``--find``), else ``play`` reads it."""
+    try:
+        r = play(source, wait=a.wait, cascaded=cascaded, **_play_kw(a))
+    except (ValueError, TimeoutError) as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    print(json.dumps(r) if a.wait else r["utt"])
+    if a.wait and r.get("cut"):
+        from . import notice, sound_label
+
+        # the file asked for: its instrumental, when one played, is named by source_file
+        asked = r.get("source_file") or r.get("file") or source
+        print(notice.cli_line(sound_label(asked, r.get("start"), r.get("end")), r),
+              file=sys.stderr)
+    return 0 if not a.wait or r.get("reason") == "done" else 1
+
+
+def _play_find(a) -> int:
+    """``mouth play --find WORDS``: ask the host's finders (``mouth.finder``), then play
+    by the match mode: ``--pick N``, else ``--matches``, else ``play_find_matches``.
+
+    Exit 0: played (one match, or a run under ``all``, one utt per line). 1: not
+    found. 2: refused, or a finder failed, or nothing in a run could be queued. 3:
+    ``list``, which prints the numbered matches and plays none, even for one. Every
+    refusal comes before anything is queued; nothing plays on a guess.
+
+    ONE ``session settings`` run, before any finder runs, serves the match mode, the
+    queue mode and the line (``voices.play_keys``): it is handed to the play."""
+    from ears import heard
+
+    from . import find_matches, finder, voices
+
+    if a.source is not None:
+        print("mouth play: SOURCE or --find, not both", file=sys.stderr)
+        return 2
+    cascaded = voices.cascade(heard.caller_session(), voices.play_keys(
+        queue=a.queue is None, matches=a.pick is None and a.matches is None))
+    try:   # resolved before the finder runs, so a refusal below precedes it
+        mode = "pick" if a.pick is not None else find_matches(a.matches, cascaded=cascaded)[0]
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    if a.wait and mode == "all":
+        print("mouth play: --wait plays one: use --pick N or --matches first", file=sys.stderr)
+        return 2
+    if mode != "list" and not a.wait and not _can_play(a.device):   # a list plays nothing
+        return 1
+    try:
+        found = finder.find(a.find, name=a.finder)
+    except finder.NotFound as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    except ValueError as e:   # no finder set, a finder failed, no words, an unknown name
+        print(str(e), file=sys.stderr)
+        return 2
+    matches = found.matches
+    if mode == "list":
+        for i, m in enumerate(matches, 1):
+            print(f"{i}  {m.label}")
+        return 3
+    if mode == "pick":
+        if a.pick > len(matches):
+            n = len(matches)
+            print(f"mouth play: --pick {a.pick}: only {n} match{'' if n == 1 else 'es'}",
+                  file=sys.stderr)
+            return 2
+        return _play_one(a, matches[a.pick - 1].url, cascaded)
+    if mode == "first" or len(matches) == 1:
+        return _play_one(a, matches[0].url, cascaded)
+    labels = {}
+    for m in matches:
+        labels.setdefault(m.url, m.label)
+
+    def skip(src, e):   # one line, and the run goes on
+        why = str(e)
+        why = why[len("mouth: "):] if why.startswith("mouth: ") else why
+        print(f"mouth play: skipped {labels.get(src, src)}: {why}", file=sys.stderr)
+
+    try:
+        rs = play_many([m.url for m in matches], skip=skip, cascaded=cascaded, **_play_kw(a))
+    except (ValueError, TimeoutError) as e:
+        print(str(e), file=sys.stderr)
+        return 2
+    for r in rs:
+        print(r["utt"])
+    return 0
+
+
 def main(argv=None) -> int:
     from ears.home import STRANDED_HELP, warn_stranded
     warn_stranded("mouth")   # a 0.1.0 settings file not moved yet: one line each, once per process
@@ -59,8 +168,15 @@ def main(argv=None) -> int:
                                  epilog=STRANDED_HELP)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("say", help="queue TEXT ('-' reads stdin); prints the utterance id")
+    s = sub.add_parser("say", help="queue TEXT ('-' reads stdin); prints the utterance id; "
+                       "300 characters at most, unless --long",
+                       description="Queue TEXT ('-' reads stdin) and print the utterance id. A line "
+                       "over 300 characters (else the say_max_chars setting; 0 or off: no cap) is "
+                       "refused, unspoken, with exit 2: split it, or mail it, or pass --long.")
     s.add_argument("text", nargs="+")
+    s.add_argument("--long", action="store_true",
+                   help="speak a line over the cap (300 characters, else the say_max_chars "
+                        "setting; 0 or off: no cap)")
     s.add_argument("--voice", help="a clone (alice, bob) or a kokoro voice (af_sky); else the "
                    "caller's session/seat/agent settings, $MOUTH_VOICE, the settings file's voice, af_sky (`mouth voices`)")
     s.add_argument("--speed", type=float)
@@ -81,8 +197,8 @@ def main(argv=None) -> int:
     snorm.add_argument("--no-normalize", dest="normalize", action="store_const", const=False,
                        help="play the voice at its own loudness")
     s.add_argument("--lead", metavar="S", help="buffer S seconds of this line's audio before it "
-                   "plays (2.5: no chop from a clone rendering below real time); else "
-                   "mouth.lead_s in the settings cascade, 0")
+                   "plays (0: play as it streams); else mouth.lead_s in the settings "
+                   "cascade, else 3 for a clone voice and 0 for any other")
     sbarge = s.add_mutually_exclusive_group()
     sbarge.add_argument("--barge-words", metavar="N|off",
                         help="how many of the user's words cut this line (off: none; speech still "
@@ -112,9 +228,33 @@ def main(argv=None) -> int:
                      help="interrupt the line playing now, then speak")
     pri.add_argument("--priority", dest="priority", metavar="N",
                      help="a place in the playlist: lower plays sooner; next is 0, none is 50")
+    s.add_argument("--alert", action="store_true",
+                   help="the host's own line, not yours: for a part of sessionvoice to say that "
+                        "its mail is failing. No seat is named on it or told of it, and it is "
+                        "never mailed about. Interest zero, the front of the queue unless "
+                        "--priority, and no length cap")
 
-    pl = sub.add_parser("play", help="queue a sound file, or a section of it")
-    pl.add_argument("source")
+    pl = sub.add_parser("play", help="queue a sound file or URL, or a section of it, "
+                         "or find a song by name (--find)")
+    pl.add_argument("source", nargs="?",
+                    help="a file path, or a file://, http:// or https:// URL: "
+                    "file:// plays the file in place; http(s) is fetched to the play cache "
+                    "first (mouth.play_cache), unless mouth.play_remote is off. "
+                    "Give SOURCE or --find, not both")
+    pl.add_argument("--find", metavar="WORDS",
+                    help="find a song by WORDS (\"walk of life\") instead of naming SOURCE: "
+                    "asks the finders set in play_finders in the host's mouth.json, in order, "
+                    "and plays what the first one finds; with none set it is refused. "
+                    "Exit 1: not found; 2: refused or a finder failed; 3: --matches list")
+    pl.add_argument("--finder", metavar="NAME", help="with --find: ask this finder only")
+    pmatch = pl.add_mutually_exclusive_group()
+    pmatch.add_argument("--matches", choices=list(FIND_MATCHES),
+                        help="with --find: first plays the first match, list prints them "
+                        "numbered and plays none (exit 3), all plays every one in order "
+                        "(the default: mouth.play_find_matches, else first)")
+    pmatch.add_argument("--pick", metavar="N", type=_pick,
+                        help="with --find: play the Nth match (1 is the first), whatever "
+                        "mouth.play_find_matches says; see them first with --matches list")
     pl.add_argument("--start", type=float, help="seconds into the file")
     pl.add_argument("--end", type=float, help="seconds into the file")
     pl.add_argument("--device")
@@ -142,10 +282,17 @@ def main(argv=None) -> int:
     pinst.add_argument("--stem", metavar="NAME[,NAME]",
                        help="play one stem from the file's sidecar, or a comma list mixed: "
                        "vocals, drums, bass, other (made by `mouth split FILE`)")
-    pl.add_argument("--wait", action="store_true")
+    pl.add_argument("--wait", action="store_true",
+                    help="block until it has played; print the result as JSON "
+                    "(one play only: refused with --matches all)")
     ppri = pl.add_mutually_exclusive_group()
-    ppri.add_argument("--next", dest="priority", action="store_const", const="next")
-    ppri.add_argument("--now", dest="priority", action="store_const", const="now")
+    ppri.add_argument("--now", dest="queue", action="store_const", const="now",
+                      help="stop the song playing on this device (that device only; "
+                      "speech is never cut) and play this at once")
+    ppri.add_argument("--next", dest="queue", action="store_const", const="next",
+                      help="the front of the queue: plays when the song on its device ends")
+    ppri.add_argument("--last", dest="queue", action="store_const", const="last",
+                      help="the end of the queue (the default: mouth.play_queue, else last)")
 
     m = sub.add_parser("amend", help="rewrite a queued line in place (before it is spoken)")
     m.add_argument("utt")
@@ -290,7 +437,7 @@ def main(argv=None) -> int:
                     pan=pan, log_dir=a.log_dir, wait=a.wait, priority=a.priority,
                     hold=a.hold, expires_s=a.expires, interest=a.interest,
                     in_reply_to=a.in_reply_to, volume=a.volume, normalize=a.normalize,
-                    lead_s=a.lead, barge_words=a.barge_words)
+                    lead_s=a.lead, barge_words=a.barge_words, cap=not a.long, alert=a.alert)
         except (ValueError, TimeoutError) as e:
             print(str(e), file=sys.stderr)
             return 2
@@ -301,25 +448,17 @@ def main(argv=None) -> int:
             print(notice.cli_line(text.strip(), r), file=sys.stderr)
         return 0 if not a.wait or r.get("reason") == "done" else 1
     if a.cmd == "play":
+        if a.find is not None:
+            return _play_find(a)
+        if a.source is None:
+            print("mouth play: name a SOURCE, or --find WORDS", file=sys.stderr)
+            return 2
+        if a.finder is not None or a.matches is not None or a.pick is not None:
+            print("mouth play: --finder, --matches and --pick go with --find", file=sys.stderr)
+            return 2
         if not a.wait and not _can_play(a.device):
             return 1
-        try:
-            r = play(a.source, start=a.start, end=a.end, device=a.device, pan=a.channel or a.pan,
-                     log_dir=a.log_dir, wait=a.wait, priority=a.priority, volume=a.volume,
-                     duck=a.duck, duck_level=a.duck_level, instrumental=a.instrumental,
-                     stem=a.stem)
-        except (ValueError, TimeoutError) as e:
-            print(str(e), file=sys.stderr)
-            return 2
-        print(json.dumps(r) if a.wait else r["utt"])
-        if a.wait and r.get("cut"):
-            from . import notice, sound_label
-
-            # the file asked for: its instrumental, when one played, is named by source_file
-            asked = r.get("source_file") or r.get("file") or a.source
-            print(notice.cli_line(sound_label(asked, r.get("start"), r.get("end")), r),
-                  file=sys.stderr)
-        return 0 if not a.wait or r.get("reason") == "done" else 1
+        return _play_one(a, a.source)
     if a.cmd in ("amend", "retract"):
         try:
             r = amend(a.utt, " ".join(a.text)) if a.cmd == "amend" else retract(a.utt)

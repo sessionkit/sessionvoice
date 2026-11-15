@@ -245,27 +245,50 @@ def voices(d: Optional[Path] = None, sid: Optional[str] = None) -> dict:
 #: The keys a line reads from the cascade: one ``session settings`` run for all.
 LINE_KEYS = ("voice", "volume", "play_volume", "music_duck", "music_duck_level",
              "music_duck_restore_s", "normalize", "normalize_lufs", "lead_s",
-             "music_instrumental")
+             "music_instrumental", "say_max_chars")
 
 BUILTIN_VOLUME = 100
 BUILTIN_DUCK = {"music_duck": True, "music_duck_level": 20, "music_duck_restore_s": 1.0}
 #: voices levelled to one loudness (``level.py``), on unless turned off.
 BUILTIN_NORMALIZE = {"normalize": True, "normalize_lufs": -16.0}
 #: seconds of a line's AUDIO the player buffers before its first
-#: frame. 0 (the default, for every backend) plays a line as it streams. A
-#: clone (Qwen3-TTS via mlx-audio) renders at only 0.93-0.96x of the time it
-#: plays for on the Air, even idle (measured), so a
-#: clone line started on its first 0.3 s chunk chops on any stall. A 2-3 s
-#: lead covers every stall measured but one 90 s starve: a seat that wants
-#: no chop sets ``lead_s`` to 2.5 (``mouth say --lead 2.5`` for one line).
+#: frame, when no layer above the built-in sets ``lead_s``. 0 (every backend
+#: but the clone) plays a line as it streams. A clone (Qwen3-TTS via
+#: mlx-audio) renders at only 0.93-0.96x of the time it plays for on the Air,
+#: even idle (measured), so a clone line started on its first 0.3 s chunk
+#: chops on any stall: its built-in is ``BUILTIN_LEAD_BY_BACKEND['clone']``.
+#: Any layer's ``lead_s``, 0 included, wins over both.
 BUILTIN_LEAD_S = 0.0
+#: the built-in lead for a backend (``Backend.name``) that is not 0. 3 s for a
+#: clone: ``bench/clone_underrun.py`` names 2.5 as its cure, and a 3 s line
+#: heard on the Air under load still ran dry once (0.04 s of 11.4 s), so 2.5
+#: would sit past the edge. An adaptive lead, sized from the stream's own rate,
+#: is a follow-up, not this.
+BUILTIN_LEAD_BY_BACKEND = {"clone": 3.0}
 #: a played file plays its instrumental (a song without its vocals), on unless
 #: turned off. Which plays get one, and how, is the player's (design section 3).
 BUILTIN_INSTRUMENTAL = {"music_instrumental": True}
+#: the most characters ``mouth say`` speaks in one line unless ``--long``,
+#: so spoken answers stay short. ``say_max_chars`` moves it; 0 or "off" lifts it.
+BUILTIN_SAY_MAX_CHARS = 300
 #: the caller's own switch for it, read at call time, as $MOUTH_ROOM_HOLD is
 INSTRUMENTAL_ENV = "MOUTH_MUSIC_INSTRUMENTAL"
 #: the words that turn a boolean variable off (``hold._OFF``)
 _OFF = ("off", "0", "no", "false")
+#: ``mouth play URL``'s two switches, on unless turned off, read for a remote SOURCE
+#: only: whether a remote URL may play at all, and whether its fetched file is kept.
+#: Neither has an env var or a flag, so a host ``_locked`` cannot be beaten from below.
+BUILTIN_PLAY = {"play_remote": True, "play_cache": True}
+#: ``mouth play``'s queue modes, in the words of the setting and the flags:
+#: ``now`` (stop the song on that device, play at once), ``next`` (the front of
+#: the queue), ``last`` (the end: today's plain play).
+QUEUE_MODES = ("now", "next", "last")
+#: which of a ``mouth play --find``'s matches it plays: ``first`` (the first one),
+#: ``list`` (none: the numbered list is printed), ``all`` (every one, as one run).
+FIND_MATCHES = ("first", "list", "all")
+#: the modes a ``mouth play`` takes when no flag answers: the end of the queue, and
+#: the first match a ``--find`` found.
+BUILTIN_PLAY_MODE = {"play_queue": "last", "play_find_matches": "first"}
 
 
 def _pct(v) -> Optional[int]:
@@ -312,10 +335,35 @@ def _lufs(v) -> Optional[float]:
     return float(v) if -40.0 <= v <= -5.0 else None
 
 
+def _max_chars(v) -> Optional[int]:
+    """A line's character cap: an integer 0 or more (a whole float counts), or
+    ``"off"``, which is 0: no cap. Anything else is None (the next layer answers)."""
+    if isinstance(v, str):
+        return 0 if v.strip().lower() == "off" else None
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        return None
+    if v != int(v) or v < 0:
+        return None
+    return int(v)
+
+
+def _choice(choices: tuple):
+    """A checker for a setting that is one of CHOICES: the word as given (case and
+    spaces aside), else None (the next layer answers)."""
+    def check(v) -> Optional[str]:
+        if not isinstance(v, str):
+            return None
+        v = v.strip().lower()
+        return v if v in choices else None
+    return check
+
+
 _CHECK = {"volume": _pct, "play_volume": _pct, "music_duck": _flag,
           "music_duck_level": _pct, "music_duck_restore_s": _secs,
           "normalize": _flag, "normalize_lufs": _lufs, "lead_s": _secs,
-          "music_instrumental": _flag}
+          "music_instrumental": _flag, "say_max_chars": _max_chars,
+          "play_remote": _flag, "play_cache": _flag,
+          "play_queue": _choice(QUEUE_MODES), "play_find_matches": _choice(FIND_MATCHES)}
 
 
 def _resolve(key: str, cascaded: dict, host: dict) -> tuple[object, str]:
@@ -337,9 +385,26 @@ def _resolve(key: str, cascaded: dict, host: dict) -> tuple[object, str]:
         return BUILTIN_NORMALIZE[key], "builtin"
     if key in BUILTIN_INSTRUMENTAL:
         return BUILTIN_INSTRUMENTAL[key], "builtin"
+    if key in BUILTIN_PLAY:
+        return BUILTIN_PLAY[key], "builtin"
+    if key in BUILTIN_PLAY_MODE:
+        return BUILTIN_PLAY_MODE[key], "builtin"
     if key == "lead_s":
         return BUILTIN_LEAD_S, "builtin"
+    if key == "say_max_chars":
+        return BUILTIN_SAY_MAX_CHARS, "builtin"
     return None, "unset"
+
+
+def say_max_chars_setting(*, cascaded: Optional[dict] = None,
+                          d: Optional[Path] = None) -> tuple[int, str]:
+    """(cap, from) for ``mouth say``: the most characters a line may hold
+    unless ``--long``. ``say_max_chars`` in the caller's cascade (session,
+    seat, agent), the host file, then ``BUILTIN_SAY_MAX_CHARS`` (300). 0 (or
+    ``"off"`` at any layer) is no cap. A bad value is skipped and the next
+    layer answers."""
+    v, src = _resolve("say_max_chars", cascaded or {}, settings(d))
+    return int(v), src
 
 
 def volume_setting(*, file: bool, flag: Optional[int] = None, cascaded: Optional[dict] = None,
@@ -459,6 +524,147 @@ def instrumental_setting(*, flag: Optional[bool] = None, cascaded: Optional[dict
     return bool(v), src
 
 
+#: The keys a ``mouth play`` of a remote URL reads from the cascade, in one
+#: ``cascade(sid, PLAY_URL_KEYS)`` run of its own: a path or a ``file://`` play reads
+#: none of them, so they are not ``LINE_KEYS``.
+PLAY_URL_KEYS = ("play_remote", "play_cache")
+
+
+def _resolve_locked(key: str, cascaded: dict, host: dict) -> tuple[object, str]:
+    """:func:`_resolve`, except that a host lock on ``key`` skips the caller's layers:
+    the host file's own ``_locked`` (:func:`host_locks`), or the lock the cascade
+    reports (``HOST_LOCKS``). Then the host file's value answers, or the built-in
+    when it has no good one, and no session, seat or agent layer can beat it."""
+    pinned = cascaded.get(HOST_LOCKS)
+    pinned = pinned[0] if isinstance(pinned, tuple) and pinned and isinstance(pinned[0], tuple) else ()
+    if key in host_locks(host) or key in pinned:
+        cascaded = {}
+    return _resolve(key, cascaded, host)
+
+
+def _cache_dir(v) -> Optional[Path]:
+    """``play_cache_dir``: an absolute path, or one under ``~/`` (``$HOME``, read now).
+    Anything else (relative, empty, not a string) is None: the default answers."""
+    if not isinstance(v, str) or not v.strip():
+        return None
+    p = Path(v).expanduser() if v == "~" or v.startswith("~/") else Path(v)
+    return p if p.is_absolute() else None
+
+
+def _max_age(v) -> Optional[float]:
+    """``play_cache_max_age_s``: a finite number of seconds over 0, else None (kept
+    forever). 0 is not "always re-fetch": ``play_cache: false`` is that."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+        return None
+    return float(v)
+
+
+def play_url_settings(*, cascaded: Optional[dict] = None, d: Optional[Path] = None) -> dict:
+    """What a ``mouth play`` of a remote URL may do, as plain values for ``mouth.fetch``.
+
+    ``{"remote": (on, from), "cache": (on, from), "dir": Path, "max_age_s": float | None}``
+
+    - ``play_remote`` and ``play_cache``: the caller's cascade (``cascaded``, a
+      ``cascade(sid, PLAY_URL_KEYS)`` answer: session, seat, agent), then the host
+      file, then on. A host lock on either key makes the host file answer over the
+      layers (:func:`_resolve_locked`). ``from`` is 'session' | 'seat' | 'agent' |
+      'settings' | 'builtin'. No env var and no flag answer for either.
+    - ``play_cache_dir`` and ``play_cache_max_age_s``: the host file alone, since
+      every caller on the host shares the one cache. A bad dir gives
+      ``<d or mouth dir>/play-cache``; a bad or absent age gives None, kept forever.
+
+    A bad value anywhere is skipped and the next layer answers; nothing raises."""
+    from .fetch import cache_dir
+
+    cascaded = cascaded or {}
+    host = settings(d)
+    out = {}
+    for key, name in (("play_remote", "remote"), ("play_cache", "cache")):
+        v, src = _resolve_locked(key, cascaded, host)
+        out[name] = (bool(v), src)
+    out["dir"] = _cache_dir(host.get("play_cache_dir")) or cache_dir(d or mouth_dir())
+    out["max_age_s"] = _max_age(host.get("play_cache_max_age_s"))
+    return out
+
+
+#: The keys that choose how a ``mouth play`` is placed, read only when no flag
+#: answers, in the play's ONE cascade run, beside its line's keys (:func:`play_keys`).
+PLAY_MODE_KEYS = ("play_queue", "play_find_matches")
+
+
+def play_keys(*, queue: bool = False, matches: bool = False) -> tuple:
+    """The keys a ``mouth play`` asks the cascade for, in ONE ``session settings`` run:
+    :data:`LINE_KEYS`, plus ``play_queue`` when ``queue`` (no flag places the play) and
+    ``play_find_matches`` when ``matches`` (a ``--find`` with no ``--matches`` or
+    ``--pick``). A mode a flag answers is not asked for."""
+    return (LINE_KEYS + (("play_queue",) if queue else ())
+            + (("play_find_matches",) if matches else ()))
+
+
+def play_mode_settings(cascaded: Optional[dict] = None, d: Optional[Path] = None) -> dict:
+    """How a ``mouth play`` is placed when no flag answers: ``{key: (value, from)}``
+    for each of :data:`PLAY_MODE_KEYS`.
+
+    - ``play_queue``: ``now``, ``next`` or ``last`` (:data:`QUEUE_MODES`).
+    - ``play_find_matches``: ``first``, ``list`` or ``all`` (:data:`FIND_MATCHES`).
+
+    The caller's cascade (``cascaded``, a ``cascade()`` answer that asked for the key,
+    :func:`play_keys`: session, seat, agent), then the host file, then the built-in (``last``, ``first``). A host
+    lock on a key makes the host file answer over the layers (:func:`_resolve_locked`).
+    ``from`` is 'session' | 'seat' | 'agent' | 'settings' | 'builtin'. A bad value
+    anywhere is skipped and the next layer answers; nothing raises."""
+    cascaded = cascaded or {}
+    host = settings(d)
+    return {key: _resolve_locked(key, cascaded, host) for key in PLAY_MODE_KEYS}
+
+
+#: ``play_finder_timeout_s`` when the host file sets no good one.
+BUILTIN_FINDER_TIMEOUT_S = 10.0
+
+
+def _finders(v) -> list[tuple[str, list[str]]]:
+    """``play_finders``: the well-formed ``{"name", "argv"}`` entries, in order.
+
+    An entry is kept when its ``name`` is a non-empty string not taken by an earlier
+    entry (the first one with a name wins) and its ``argv`` is a non-empty list of
+    non-empty strings. Anything else is skipped; a value that is not a list is []."""
+    out: list[tuple[str, list[str]]] = []
+    if not isinstance(v, list):
+        return out
+    seen = set()
+    for entry in v:
+        if not isinstance(entry, dict):
+            continue
+        name, argv = entry.get("name"), entry.get("argv")
+        if not isinstance(name, str) or not name.strip() or name in seen:
+            continue
+        if (not isinstance(argv, list) or not argv
+                or not all(isinstance(a, str) and a for a in argv)):
+            continue
+        seen.add(name)
+        out.append((name, list(argv)))
+    return out
+
+
+def finder_settings(d: Optional[Path] = None) -> dict:
+    """What ``mouth play --find`` runs, from the HOST FILE ALONE.
+
+    ``{"finders": [(name, argv)], "timeout_s": float, "path": Path}``
+
+    - ``play_finders``: an ordered list of ``{"name", "argv"}``, the well-formed
+      entries only (:func:`_finders`). [] means no finder is set.
+    - ``play_finder_timeout_s``: a finite number of seconds over 0, else 10.
+    - ``path``: the host file these came from (:func:`settings_path`), so a refusal
+      can say where to set one.
+
+    Never read through :func:`cascade`: a session, seat or agent layer must never
+    choose which program the mouth runs. Nothing raises."""
+    host = settings(d)
+    return {"finders": _finders(host.get("play_finders")),
+            "timeout_s": _max_age(host.get("play_finder_timeout_s")) or BUILTIN_FINDER_TIMEOUT_S,
+            "path": settings_path(d)}
+
+
 def secs(v, what: str) -> Optional[float]:
     """A line's own seconds (``--lead``): None stays None; else a finite number
     0 or more (a numeric string counts), or ValueError before anything is written."""
@@ -494,12 +700,19 @@ def lead_setting(*, item: Optional[dict] = None, cascaded: Optional[dict] = None
     """(lead seconds, from) for a line: the line's own (``mouth say
     --lead``, ``mouth.say(lead_s=)``, a mail's ``X-Mouth-Lead``), its caller's
     cascade (both ride on the item as ``lead_s``/``lead_s_from``), the host
-    file, ``BUILTIN_LEAD_S`` (0). A played file never holds: ``(0, 'file')``.
-    A say-again replay is a line, not a played file (:func:`played_file`)."""
+    file, then the built-in for the line's backend: 3 s for a clone
+    (``BUILTIN_LEAD_BY_BACKEND``), else ``BUILTIN_LEAD_S`` (0), from
+    'builtin'. The player asks once the backend is resolved, so an ``auto``
+    line that a clone speaks carries ``backend: clone`` by then. An explicit 0
+    at any layer above the built-in is 0, for a clone too. A played file never
+    holds: ``(0, 'file')``. A say-again replay is a line, not a played file
+    (:func:`played_file`)."""
     if item and played_file(item):
         return 0.0, "file"
     c = {**(cascaded or {}), **(_carried(item, "lead_s") if item else {})}
     v, src = _resolve("lead_s", c, settings(d))
+    if src == "builtin" and item:
+        v = BUILTIN_LEAD_BY_BACKEND.get(item.get("backend"), v)
     return float(v), src
 
 

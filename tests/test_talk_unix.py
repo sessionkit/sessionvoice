@@ -18,6 +18,7 @@ import pytest
 
 from talk import cli, server, token_store
 from tests._anchor import ANCHOR
+from tests.talk_helpers import HANG_CEILING, recv_until
 
 SECRET = "the words the microphone heard"
 SOCK = "t.sock"
@@ -67,30 +68,25 @@ def over(path, request, until=None):
     """Send raw bytes over the unix socket; read to EOF, or until `until` appears.
     A refused peer is answered and closed before its request is read, so the send can
     meet a closed socket (EPIPE); the 403 is already in the receive buffer (EARS-373)."""
+    def complete(data):
+        if until and until in data:
+            return True
+        head, sep, body = data.partition(b"\r\n\r\n")
+        length = [ln.split(b":", 1)[1] for ln in head.split(b"\r\n") if ln.lower().startswith(b"content-length:")]
+        if sep and length and len(body) >= int(length[0]):
+            return True
+        return bool(sep) and head.split(b" ", 2)[1:2] == [b"204"]
+
+    # Waits for the response itself (EOF, a whole body, or `until`), never a quiet spell:
+    # the deadline is a hang ceiling over the whole read (tests/talk_helpers.py).
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-        s.settimeout(5)
+        s.settimeout(HANG_CEILING)
         s.connect(path)
         try:
             s.sendall(request)
         except (BrokenPipeError, ConnectionResetError):
             pass
-        data = b""
-        while True:
-            try:
-                chunk = s.recv(65536)
-            except socket.timeout:
-                break
-            if not chunk:
-                break
-            data += chunk
-            if until and until in data:
-                break
-            head, sep, body = data.partition(b"\r\n\r\n")
-            length = [ln.split(b":", 1)[1] for ln in head.split(b"\r\n") if ln.lower().startswith(b"content-length:")]
-            if sep and length and len(body) >= int(length[0]):
-                break
-            if sep and head.split(b" ", 2)[1:2] == [b"204"]:
-                break
+        data, _ = recv_until(s, complete)
     head, _, body = data.partition(b"\r\n\r\n")
     status, *hdrs = head.decode("latin-1").split("\r\n")
     hd = {}
@@ -165,11 +161,9 @@ def test_the_tcp_listener_still_refuses_localhost_pairing(room):
     threading.Thread(target=srv.serve_forever, args=(0.05,), daemon=True).start()
     try:
         port = srv.server_address[1]
-        with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+        with socket.create_connection(("127.0.0.1", port), timeout=HANG_CEILING) as s:
             s.sendall(f"POST /pair HTTP/1.1\r\nHost: localhost:{port}\r\nX-Talk-Token: {room}\r\n\r\n".encode())
-            data = b""
-            while chunk := s.recv(65536):
-                data += chunk
+            data, _ = recv_until(s)     # to EOF: a server that kept it open reds at the ceiling
         assert data.startswith(b"HTTP/1.1 403") and b"cannot pair at localhost" in data
         assert b"set-cookie" not in data.lower()
     finally:

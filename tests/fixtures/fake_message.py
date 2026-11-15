@@ -14,7 +14,11 @@ one object, as the real one does:
   ``address``, exit 3, as one dead box refuses the real send;
 - a subject the real one refuses (not ASCII, or a backtick, ``$(`` or a line
   break, or past 69 characters): kind ``subject``, exit 2;
-- no seat in the env (``TM_AGENT_ADDRESS``): kind ``identity``, exit 2.
+- no seat in the env (``TM_AGENT_ADDRESS``): kind ``identity``, exit 2;
+- ``$EARS_FAKE_MESSAGE_PLAN``, one character per call: ``f`` fails (``sent: no``,
+  kind ``mta``, exit 75), ``.`` goes on as above, and every call past its end goes
+  on too. A call's index is the number of lines already in the log, so the plan
+  is deterministic, with no clock (the mail alert's tests).
 
 With no ``$EARS_FAKE_MESSAGE_LOG`` it writes nothing and exits 75 (EX_TEMPFAIL),
 so a fake started outside a test is harmless.
@@ -41,9 +45,17 @@ if not log:
 argv = sys.argv[1:]
 env = {k: os.environ[k] for k in os.environ if k in SEEN or k.startswith("CLAUDE_SESSION_")}
 mid = f"<{time.time_ns()}.{os.getpid()}.fake@{argv[1].rpartition('@')[2] if len(argv) > 1 else ''}>"
+try:
+    with open(log, "rb") as f:
+        index = sum(1 for _ in f)
+except FileNotFoundError:
+    index = 0
 with open(log, "a") as f:
     f.write(json.dumps({"argv": argv, "env": env, "body": body.decode("utf-8"), "id": mid}) + "\n")
 
+plan = os.environ.get("EARS_FAKE_MESSAGE_PLAN", "")
+if index < len(plan) and plan[index] == "f":
+    answer({"sent": "no", "kind": "mta", "message": f"planned failure, call {index}"}, 75)
 if argv[:1] != ["send"] or len(argv) < 2:
     answer({"sent": "no", "kind": "usage", "message": f"not a send: {argv!r}"}, 2)
 to = argv[1]

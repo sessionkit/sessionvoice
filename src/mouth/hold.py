@@ -31,6 +31,12 @@ skips it. Lines queued behind a held one are never blocked.
 the user's turn ENDS, not when the line was queued (an opener queued 30 s into a
 90 s turn must not die before the user stops).
 
+**The ceiling** (`hold_max_s`, :data:`HOLD_MAX_S`): a held line waits no longer
+than that from when it was queued. Past it, the line plays at the next gap in
+the user's words, or after :data:`HOLD_GAP_WINDOW_S` more if none comes
+(`past_hold_max`). A turn shorter than the ceiling still releases at its end.
+A resume (``resume_of``) is not capped: it waits for the end of the turn.
+
 **Stale**: a held line queued
 before the user's current turn BEGAN is old news once they start talking again.
 It is kept (filed P) and never spoken, its
@@ -335,15 +341,22 @@ def check(item: dict, now: Optional[float] = None, directory: Optional[Path] = N
         # start_t is when the user BEGAN by audio time (`_scan`): a stale burst does not
         # make a line queued before it, but after the user's last real turn, ``stale``.
         _, start_t, end_t, _, _ = _look_floor(directory, now, sources=ears)
-        if floor(directory, now, sources=ears) == "speaking":
+        speaking = floor(directory, now, sources=ears) == "speaking"
+        if speaking:
             asked = item.get("requested_t")
             # an opener its sender held is old news once the user starts again; a line
             # held only by the room default (ROOM_HOLD) is not an opener, so it waits
             if asked is not None and start_t is not None and float(asked) < start_t \
                     and item.get("hold_from") != ROOM:
                 return "stale"
-            return "wait"
-        if exp_s is not None:
+            # a resume is not capped: on a barge device the ongoing turn cut the line
+            # once already, a ceiling release would cut it again, and a replay is never
+            # replayed (player NEVER_TWICE), so the line would be lost; it waits for the end
+            if item.get("resume_of") or not past_hold_max(asked, now, directory, ears):
+                return "wait"
+            # past the ceiling: the line goes on as if the floor were free, but the
+            # turn has not ended, so its expiry clock (from the end) has not started
+        if exp_s is not None and not speaking:
             base = max(float(item.get("requested_t") or now), end_t or 0.0)
             if now >= base + float(exp_s):
                 return "expire"
@@ -429,6 +442,75 @@ def room_hold(settings: Optional[dict] = None) -> tuple:
     if isinstance(v, bool):
         return v, "settings"
     return ROOM_HOLD, "default"
+
+
+#: The ceiling on a turn-end hold, in seconds from when the line was queued
+#: (``requested_t``). One "turn" can run for minutes when two people talk in the
+#: room with no pause the turn stage counts as an end (one measured turn ran
+#: 193 s, and held a line 168 s), so the seat seemed mute. Past the ceiling the
+#: line plays at the next gap in the user's words (:data:`HOLD_GAP_S`), or once
+#: :data:`HOLD_GAP_WINDOW_S` more has passed with no gap. 12 s sits above
+#: most real turns (a short turn still releases at its end, as before) and
+#: well inside the 10-15 s a person waits before asking where the voice went.
+#: ``hold_max_s`` in the mouth's settings, $MOUTH_HOLD_MAX_S (`hold_max_s`).
+HOLD_MAX_S = 12.0
+#: Past the ceiling, a gap in the user's words: the newest worded mic partial
+#: is at least this old, by audio time (as `floor` ages it). While words flow
+#: the STT writes a partial about every 1 s (Apple, measured; `ears.turns`), and
+#: a partial lands up to about 0.5 s after its audio (healthy lag 0.05-1.2 s),
+#: so 1.5 s with no new partial is a missed beat, a breath, not the cadence.
+HOLD_GAP_S = 1.5
+#: Past the ceiling, how long to wait for a gap before the line plays anyway:
+#: about the 3.39 s p99 spacing of partials inside a turn (module doc), so a
+#: room with any pause at all is caught, and a line waits at most
+#: ``hold_max_s + HOLD_GAP_WINDOW_S`` (15 s at the defaults).
+HOLD_GAP_WINDOW_S = 3.0
+
+
+def hold_max_s(settings: Optional[dict] = None) -> tuple:
+    """The ceiling on a turn-end hold, and the layer that set it:
+    ``(seconds, "env"|"settings"|"default")``; ``math.inf`` is no ceiling.
+
+    The order is `room_hold`'s, its sibling: $MOUTH_HOLD_MAX_S (seconds, 0 or
+    more; ``off``, ``0``, ``no`` or ``false`` is no ceiling), else
+    ``hold_max_s`` in the mouth's settings (a number, 0 or more; 0 is no
+    ceiling), else :data:`HOLD_MAX_S`. An empty or unreadable env, or a
+    setting that is not a number of 0 or more, is as if unset."""
+    env = envnames.get("MOUTH_HOLD_MAX_S")
+    if env is not None and env.strip():
+        word = env.strip().lower()
+        if word in _OFF:
+            return math.inf, "env"
+        try:
+            n = float(word)
+        except ValueError:
+            n = None
+        if n is not None and n >= 0:          # NaN fails this too
+            return (n or math.inf), "env"
+    v = _setting_num(settings, "hold_max_s", 0)
+    if v is not None:
+        return (float(v) or math.inf), "settings"
+    return HOLD_MAX_S, "default"
+
+
+def past_hold_max(requested_t, now: float, directory: Optional[Path] = None,
+                  sources: tuple = MIC, settings: Optional[dict] = None) -> bool:
+    """Whether a line held while the user speaks has waited past the ceiling
+    (`hold_max_s`) and may play: its age (``now - requested_t``) is past the
+    ceiling and the user's words have a gap (the newest worded partial is
+    :data:`HOLD_GAP_S` old, by audio time), or its age is past the ceiling plus
+    :data:`HOLD_GAP_WINDOW_S`. A line with no ``requested_t`` has no age, and
+    waits as before."""
+    if requested_t is None:
+        return False
+    ceiling, _ = hold_max_s(settings)
+    age = now - float(requested_t)
+    if not age >= ceiling:
+        return False
+    if age >= ceiling + HOLD_GAP_WINDOW_S:
+        return True
+    _, _, _, said_t, now = _look_floor(directory, now, sources=sources)
+    return said_t is not None and now - said_t >= HOLD_GAP_S
 
 
 def resume_answer_question(settings: Optional[dict] = None) -> bool:

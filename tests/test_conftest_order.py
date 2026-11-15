@@ -44,7 +44,7 @@ def test_a_mouth_file_after_a_root_file_is_still_fenced(order, tmp_path):
     assert not (home / ".voicemode").exists(), "a mouth test reached the unfenced HOME"
 
 
-FENCE = {"heard_box", "fresh_voices", "barge_traced", "mouth_fenced"}
+FENCE = {"heard_box", "fresh_voices", "barge_traced", "mouth_fenced", "threads_settled"}
 _PLANNED = re.compile(r"^\s+(tests/\S+?) \(fixtures used: ([^)]*)\)$", re.M)
 
 

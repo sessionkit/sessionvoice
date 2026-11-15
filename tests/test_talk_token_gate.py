@@ -9,7 +9,7 @@ of a rotation.
 Every server binds a FREE port picked by the kernel, never 8780, on 127.0.0.1.
 HOME and VOICEMODE_BASE_DIR are a tmp dir; the state poll never starts.
 """
-import json, os, socket, threading, time
+import itertools, json, os, socket, threading
 from datetime import date
 from unittest import mock
 
@@ -17,6 +17,8 @@ import pytest
 
 from talk import cli, server, token_store
 from tests._anchor import ANCHOR
+from tests import fake_tools
+from tests.talk_helpers import HANG_CEILING, log_until, recv_until, requests_logged
 from tests.test_talk_host_check import raw
 
 SECRET = "the words the microphone heard"
@@ -36,7 +38,9 @@ def room(tmp_path, monkeypatch):
     logs.mkdir(parents=True)
     (logs / f"heard_{date.today():%Y-%m-%d}.jsonl").write_text(
         json.dumps({"ts": f"{ANCHOR:%Y-%m-%dT%H:%M:%S}", "seq": 1, "kind": "turn", "text": SECRET}) + "\n")
-    face = tmp_path / "home" / ".session" / "agents" / "ivy"
+    # The face where an upgraded host keeps it, served through a fake tools (the runner's
+    # own sessiontools, or none, never decides it): tests/fake_tools.py.
+    face = fake_tools.with_kit_tools(tmp_path, monkeypatch, tmp_path / "home") / "ivy"
     face.mkdir(parents=True)
     (face / "avatar.jpg").write_bytes(AVATAR)
     return token_store.load_or_create()
@@ -229,8 +233,7 @@ def test_the_token_never_reaches_stderr(talk, capsys):
     req(port, f"/talk/nope?TALK_TOKEN={token}")
     req(port, "/events?n=1", cookie=f"talk_token={token}x")
     req(port, "/nope", headers=[("X-Talk-Token", token)])
-    time.sleep(0.2)                                       # the /events handlers log from their threads
-    err = capsys.readouterr().err
+    err = log_until(capsys, requests_logged(8))           # the handlers log from their threads
     assert token not in err and token[:20] not in err
     assert "<redacted>" in err                            # the query token was logged blanked, not raw
     assert err.count("403 refused: this browser is not paired") >= 4
@@ -239,43 +242,59 @@ def test_the_token_never_reaches_stderr(talk, capsys):
 # -- rotation ends an open stream within one keep-alive --------------------------
 
 def open_stream(port, token):
-    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    """Open /events and read until its backfill: a wait on the stream's own event, under a
+    hang ceiling over the whole read (tests/talk_helpers.py), never a quiet spell."""
+    s = socket.create_connection(("127.0.0.1", port), timeout=HANG_CEILING)
     s.sendall((f"GET /events?n=1 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
                f"Cookie: talk_token={token}\r\n\r\n").encode())
-    data = b""
-    while b"event: backfill" not in data:
-        data += s.recv(65536)
+    data, closed = recv_until(s, lambda d: b"event: backfill" in d)
+    assert not closed, f"the stream ended before its backfill: {data[-200:]!r}"
     return s, data
 
 
-def read_until_closed(s, limit):
-    """Read until EOF; returns (data, seconds taken) or raises if the stream is still open at `limit`."""
-    s.settimeout(0.2)
-    data, t0 = b"", time.monotonic()
-    while time.monotonic() - t0 < limit:
-        try:
-            chunk = s.recv(65536)
-        except socket.timeout:
-            continue
-        if not chunk:
-            return data, time.monotonic() - t0
-        data += chunk
-    raise AssertionError(f"the stream was still open after {limit}s: {data[-200:]!r}")
+def pings(n):
+    """done() for recv_until: n keep-alives have arrived."""
+    return lambda data: data.count(b": ping") >= n
 
 
-def test_rotation_ends_an_open_stream_within_one_keepalive(talk, monkeypatch):
+@pytest.fixture
+def keepalive_checks(monkeypatch):
+    """Every Handler.paired() call, in the order each one STARTED: [(ticket, result)].
+    stamp() takes a ticket too, so a check whose ticket is above a stamp began after it.
+    The open stream calls paired() once per keep-alive, so this counts keep-alives in
+    the server's own terms, whatever the wall clock does on a loaded host."""
+    calls, tickets = [], itertools.count()
+    real = server.Handler.paired
+
+    def paired(self):
+        n = next(tickets)
+        ok = real(self)
+        calls.append((n, ok))
+        return ok
+
+    monkeypatch.setattr(server.Handler, "paired", paired)
+    return calls, lambda: next(tickets)
+
+
+def test_rotation_ends_an_open_stream_within_one_keepalive(talk, monkeypatch, keepalive_checks):
     port, token = talk
+    checks, stamp = keepalive_checks
     monkeypatch.setattr(server, "KEEPALIVE", 0.3)
     s, head = open_stream(port, token)
     try:
         assert head.startswith(b"HTTP/1.1 200") and b"event: config" in head
-        s.settimeout(3)
-        got = b""
-        while got.count(b": ping") < 2:                  # still paired: keep-alives keep coming
-            got += s.recv(65536)
+        got, closed = recv_until(s, pings(2))             # still paired: keep-alives keep coming
+        assert not closed
+        # the gate's check, then one before every keep-alive the server sent
+        assert sum(ok for _, ok in checks) >= 1 + got.count(b": ping")
         token_store.rotate()
-        data, took = read_until_closed(s, limit=3)
-        assert took < 0.3 + 0.25 + 1.0                    # one keep-alive, one poll tick, and slack
+        rotated = stamp()
+        _, closed = recv_until(s)                         # the server hangs up (else red at the ceiling)
+        assert closed
+        # Within one keep-alive: the first check that began after the rotation ended the
+        # stream, and there was no other. A check already under way may still see the old
+        # token; it began before the stamp, so it is not counted.
+        assert [ok for n, ok in checks if n > rotated] == [False]
     finally:
         s.close()
 
@@ -285,12 +304,8 @@ def test_a_stream_stays_open_while_the_token_is_unchanged(talk, monkeypatch):
     monkeypatch.setattr(server, "KEEPALIVE", 0.2)
     s, _ = open_stream(port, token)
     try:
-        s.settimeout(3)
-        got = b""
-        while got.count(b": ping") < 4:
-            chunk = s.recv(65536)
-            assert chunk, "the stream ended with the token unchanged"
-            got += chunk
+        got, closed = recv_until(s, pings(4))
+        assert not closed, "the stream ended with the token unchanged"
     finally:
         s.close()
 
@@ -306,6 +321,8 @@ def test_keepalive_is_a_module_constant():
     ("/", "page"), ("/index.html", "page"), ("/talk/", "page"), ("/talk/index.html", "page"),
     ("/manifest.json", "manifest"), ("/talk/manifest.json", "manifest"),
     ("/avatar/ivy", "avatar"), ("/talk/avatar/ivy", "avatar"), ("/avatar/pair", "avatar"),
+    ("/icon.svg", "icon"), ("/talk/favicon.ico", "icon"), ("/talk/apple-touch-icon.png", "icon"),
+    ("/avatar/icon.svg", "avatar"), ("/icon.png", "404"), ("/server.py", "404"),
     ("/pair", "pair"), ("/talk/pair", "pair"),
     ("/nope", "404"), ("/talk", "404"), ("", "404"), ("/pair/", "page"), ("/events/x", "404"),
 ])
@@ -313,8 +330,8 @@ def test_route(path, name):
     assert server.route(path) == name
 
 
-def test_only_the_page_and_manifest_are_open():
-    assert server.OPEN_ROUTES == {"page", "manifest"}
+def test_only_the_page_the_manifest_and_the_icons_are_open():
+    assert server.OPEN_ROUTES == {"page", "manifest", "icon"}
 
 
 def test_cookie_values():

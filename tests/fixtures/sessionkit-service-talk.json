@@ -1,0 +1,5 @@
+{"service": 1, "name": "talk", "label": "dev.sessionkit.voice.talk",
+ "enabled": true, "install": "ears services install --only talk",
+ "uninstall": "ears services uninstall --only talk",
+ "description": "the live view in a browser",
+ "port": 8780, "bind": "127.0.0.1"}

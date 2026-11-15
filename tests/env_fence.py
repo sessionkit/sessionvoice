@@ -54,6 +54,12 @@ FENCE: dict = {
     "MOUTH_SENDMAIL": " ".join(shlex.quote(x) for x in (
         sys.executable, os.path.join(_HERE, "fixtures", "refuse_sendmail.py"))),
     "MOUTH_NOTICE": None,
+    # ...nor speak a notice alert: outside tests/mouth every notice fails (the refusing
+    # command above), so with the alert on by default the third failed notice would queue
+    # an alert line in the mouth's queue. Off for every test, and no runner's count; the
+    # alert's own tests (tests/mouth/test_mouth_notice_alert.py) set them where they mean to.
+    "MOUTH_NOTICE_ALERT": "off",
+    "MOUTH_NOTICE_ALERT_AFTER": None,
     # ...nor sign with a runner's mouth key (EARS-381): set, every notice a test sends
     # would carry it and must sign. The child env's own tests set fakes.
     "MOUTH_SIGNER_SOCK": None,
@@ -64,6 +70,13 @@ FENCE: dict = {
     # at tests/fixtures/fake_message.py.
     "EARS_MAIL_MESSAGE": " ".join(shlex.quote(x) for x in (
         sys.executable, os.path.join(_HERE, "fixtures", "refuse_sendmail.py"))),
+    # ...nor speak a mail alert: in tests every ears-mail send fails (the refusing fixture
+    # above), so with the alert on by default the third failed send would run a real
+    # `mouth say --alert` and queue a line (test_say_again_e2e asserts the queue holds one
+    # replay). Off for every test, and no runner's count; the alert's own tests
+    # (tests/test_ears_mail_alert.py) set them where they mean to.
+    "EARS_MAIL_ALERT": "off",
+    "EARS_MAIL_ALERT_AFTER": None,
     # ...nor sign with a runner's keeper key (EARS-381), as MOUTH_SIGNER_* above.
     "EARS_MAIL_SIGNER_SOCK": None,
     "EARS_MAIL_SIGNER_PUB": None,
@@ -91,6 +104,11 @@ FENCE: dict = {
     # 2.9 GB when it installs the speech server. Off for every test; the prefetch's own tests
     # (tests/test_services_prefetch.py) unset it and fake the fetch seam.
     "EARS_NO_PREFETCH": "1",
+    # ...nor wait on the room's microphone: `ears services install` with listening on waits
+    # up to the bound for the keeper's first beat, reading the heard log, the audio devices
+    # file and system_profiler. Off for every test; test_services_install_checks' fence
+    # unsets it and fakes every seam of the check.
+    "EARS_MIC_CHECK_S": "0",
     # ...nor the runner's speech cache cap (EARS-478): install writes $MLX_AUDIO_CACHE_LIMIT
     # into the speech plist, so a runner that exports one (a hand-capped Mac does) would
     # change every plist a test writes. tests/test_services_speech_cache.py sets it.
@@ -99,6 +117,10 @@ FENCE: dict = {
     # room line at once, so a test of the default would pass or fail on the runner's shell.
     # tests/mouth/test_mouth_room_hold.py sets it where it means to.
     "MOUTH_ROOM_HOLD": None,
+    # ...nor the runner's hold ceiling (EARS-531): $MOUTH_HOLD_MAX_S beats the settings
+    # file, so a runner that exports one would release (or never release) every held line
+    # a test waits on. tests/mouth/test_mouth_hold_max.py sets it where it means to.
+    "MOUTH_HOLD_MAX_S": None,
     # ...nor the runner's instrumental switch: $MOUTH_MUSIC_INSTRUMENTAL beats every
     # settings layer, so a runner that exports it would decide every test of the
     # default. tests/mouth/test_mouth_instrumental_setting.py sets it where it means to.

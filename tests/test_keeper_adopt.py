@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parents[1]
 KEEPER = ROOT / "keeper" / "ears-keeper.sh"
 
 ROOM, ROOM_SESSION, CALL_SESSION = 4242, "room-s", "call-ears-3"
+# The code stamps (ears.codestamp): what this keeper would start, and an older capture's.
+CODE, OLD_CODE = "0.3.3+aaaaaaaaaaaa", "0.3.2+bbbbbbbbbbbb"
 
 
 def _region(name: str) -> str:
@@ -44,12 +46,14 @@ HEARD=heard_stub; exec 3>&1
 capture_arg() { case "$1" in --session) echo "$ROOM_SESSION" ;; --device) echo "MacBook" ;;
   --stop-file) echo "/r/STOP-capture-keeper-174406" ;; esac; }
 stop_capture() { echo "STOP"; }
+code_stamp() { echo "$KEEPER_CODE"; }
 '''
 
 
 def _bash(script: str, heard_dir: Path, **env) -> str:
     out = subprocess.run(["bash", "-c", "set -uo pipefail\n" + _adopt_regions() + STUBS + script],
-                         env=dict(os.environ, EARS_HEARD_DIR=str(heard_dir), ROOM_SESSION=ROOM_SESSION, **env),
+                         env=dict(os.environ, EARS_HEARD_DIR=str(heard_dir), ROOM_SESSION=ROOM_SESSION,
+                                  KEEPER_CODE=CODE) | env,
                          capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     return out.stdout
@@ -59,11 +63,15 @@ def _ts(ago_s: float) -> str:
     return (datetime.now().astimezone() - timedelta(seconds=ago_s)).isoformat(timespec="milliseconds")
 
 
-def beat(ago_s, pid=ROOM, session=ROOM_SESSION, source="mic", device="AirPods Pro") -> dict:
+def beat(ago_s, pid=ROOM, session=ROOM_SESSION, source="mic", device="AirPods Pro", code=CODE) -> dict:
+    """A heartbeat row; by default from a capture on this keeper's code (``code=None``: a capture
+    from before beats carried a code stamp)."""
     row = {"ts": _ts(ago_s), "seq": 1, "v": 1, "kind": "event", "event": "heartbeat", "source": source,
            "device": device, "session": session, "period": 15.0, "peak": 37}
     if pid is not None:
         row["pid"] = pid
+    if code is not None:
+        row["code"] = code
     return row
 
 
@@ -85,11 +93,142 @@ def _stops(out: str) -> int:
 # -- adopt only a capture that still beats ---------------------------------------------------
 
 def test_a_fresh_beat_is_adopted_with_no_mail(tmp_path):
-    _write(tmp_path, beat(400), beat(10))
+    """A capture that beats, on the code this keeper would start (the same stamp)."""
+    _write(tmp_path, beat(400, code=OLD_CODE), beat(10, code=CODE))
     out = _bash(f"proc_age() {{ echo 99999; }}; adopt_capture {ROOM}; echo rc=$? pid=$beat_pid", tmp_path)
     assert "rc=0" in out and f"pid={ROOM}" in out
     assert "MAIL" not in out and _stops(out) == 0
     assert f"NOTE adopting running capture {ROOM}: device 'AirPods Pro'" in out
+
+
+# -- the code it runs: a capture on other code is restarted, once --------------------------------
+
+def _notes(out: str) -> list[str]:
+    return [l[5:] for l in out.splitlines() if l.startswith("NOTE ")]
+
+
+def test_a_capture_on_other_code_is_restarted_once_with_one_note_naming_both(tmp_path):
+    """A deploy moved the code, then restarted the keeper: the capture still beats, but on the
+    code it started with. Not adopted: one stop through its stop file, one note, no mail."""
+    _write(tmp_path, beat(10, code=OLD_CODE))
+    out = _bash(f"proc_age() {{ echo 99999; }}; adopt_capture {ROOM}; echo rc=$? pid=$beat_pid", tmp_path)
+    assert "rc=1" in out and "pid=" in out.split("rc=1")[1] and f"pid={ROOM}" not in out
+    assert _stops(out) == 1 and "MAIL" not in out and "adopting" not in out
+    named = [n for n in _notes(out) if OLD_CODE in n and CODE in n]
+    assert named == [f"capture {ROOM} runs other code: {OLD_CODE}, this keeper starts {CODE}: restarting it once"]
+    assert "DEAF" not in out and "wedged" not in out   # a code restart is not a wedge
+
+
+def test_a_capture_with_no_stamp_is_older_code_and_restarted_once(tmp_path):
+    """A beat with no code stamp comes from code older than the stamp itself."""
+    _write(tmp_path, beat(10, code=None))
+    out = _bash(f"proc_age() {{ echo 99999; }}; adopt_capture {ROOM}; echo rc=$?", tmp_path)
+    assert "rc=1" in out and _stops(out) == 1 and "MAIL" not in out
+    assert [n for n in _notes(out) if "other code" in n] == [
+        f"capture {ROOM} runs other code: no stamp (older code), this keeper starts {CODE}: restarting it once"]
+
+
+def test_a_restarted_capture_still_on_other_code_is_kept_loudly_never_a_second_stop(tmp_path):
+    """Never a loop: hearing stops for about a second at each restart, so one per keeper start.
+    The fresh capture's first beat (read through the heard log, as the loop reads it) still
+    differs: a loud note, no second stop, and it is tracked as the room capture."""
+    _write(tmp_path, beat(10, code=OLD_CODE))
+    out = _bash(f"proc_age() {{ echo 99999; }}; adopt_capture {ROOM}; echo rc=$?; heard_start; echo NEW; "
+                f"beat_track 5151; printf '%s\\n' \"$ROW\" >>\"$EARS_HEARD_DIR/heard_$(date +%Y-%m-%d).jsonl\"; "
+                f"heard_watch; echo pid=$beat_pid; beat_seen 5151 {ROOM_SESSION} mic 37 x {OLD_CODE}",
+                tmp_path, ROW=json.dumps(beat(0, pid=5151, code=OLD_CODE)))
+    before, after = out.split("NEW")
+    assert "rc=1" in before and _stops(before) == 1
+    assert _stops(after) == 0 and "pid=5151" in after and "MAIL" not in after
+    loud = [n for n in _notes(after) if "STILL RUNS OTHER CODE" in n]
+    assert loud == [f"capture 5151 STILL RUNS OTHER CODE after its restart: {OLD_CODE}, not {CODE}; "
+                    f"keeping it, no second restart"]          # once: its later beats are not checked again
+
+
+def test_a_second_adoption_in_the_same_keeper_run_is_never_a_second_stop(tmp_path):
+    _write(tmp_path, beat(10, code=OLD_CODE))
+    out = _bash(f"proc_age() {{ echo 99999; }}; adopt_capture {ROOM}; echo rc=$?; echo AGAIN; "
+                f"adopt_capture {ROOM}; echo rc=$?", tmp_path)
+    first, again = out.split("AGAIN")
+    assert "rc=1" in first and _stops(first) == 1
+    assert "rc=0" in again and _stops(again) == 0 and "STILL RUNS OTHER CODE" in again
+    assert f"NOTE adopting running capture {ROOM}" in again
+
+
+def test_the_fresh_capture_on_the_keepers_code_is_quiet(tmp_path):
+    _write(tmp_path, beat(10, code=OLD_CODE))
+    out = _bash(f"proc_age() {{ echo 99999; }}; adopt_capture {ROOM}; echo NEW; beat_track 5151; "
+                f"beat_seen 5151 {ROOM_SESSION} mic 37 x {CODE}; echo pid=$beat_pid", tmp_path)
+    after = out.split("NEW")[1]
+    assert _stops(after) == 0 and "pid=5151" in after and "other code" not in after.lower()
+
+
+# A stamp longer than the 40 characters the beat's code is cut to on read (a long local version).
+LONG_CODE = "0.3.3.dev20261115+local.build.cccccccccccc"
+
+
+def test_a_stamp_over_40_chars_is_compared_cut_the_same_on_both_sides(tmp_path):
+    """The beat's code is cut to 40 on read; the keeper's own stamp is cut the same way, or a
+    long stamp would never match and every keeper start would restart a capture on its own code."""
+    assert len(LONG_CODE) > 40
+    _write(tmp_path, beat(10, code=LONG_CODE))
+    out = _bash(f"proc_age() {{ echo 99999; }}; adopt_capture {ROOM}; echo rc=$? pid=$beat_pid; "
+                f"heard_start; echo NEW; beat_track 5151; code_pid=5151; "
+                f"printf '%s\\n' \"$ROW\" >>\"$EARS_HEARD_DIR/heard_$(date +%Y-%m-%d).jsonl\"; "
+                f"heard_watch; echo pid=$beat_pid",
+                tmp_path, KEEPER_CODE=LONG_CODE, ROW=json.dumps(beat(0, pid=5151, code=LONG_CODE)))
+    adopted, first_beat = out.split("NEW")
+    assert "rc=0" in adopted and f"pid={ROOM}" in adopted and _stops(adopted) == 0
+    assert f"NOTE adopting running capture {ROOM}" in adopted
+    assert _stops(first_beat) == 0 and "pid=5151" in first_beat
+    assert "other code" not in out.lower()
+
+
+def test_a_long_stamp_that_differs_within_40_chars_still_restarts(tmp_path):
+    """The cut only drops what the beat cannot carry; a real difference is still seen."""
+    _write(tmp_path, beat(10, code="0.3.2" + LONG_CODE[5:]))
+    out = _bash(f"proc_age() {{ echo 99999; }}; adopt_capture {ROOM}; echo rc=$?", tmp_path,
+                KEEPER_CODE=LONG_CODE)
+    assert "rc=1" in out and _stops(out) == 1
+    assert [n for n in _notes(out) if "other code" in n] == [
+        f"capture {ROOM} runs other code: {('0.3.2' + LONG_CODE[5:])[:40]}, "
+        f"this keeper starts {LONG_CODE[:40]}: restarting it once"]
+
+
+def test_a_young_capture_with_no_beat_is_adopted_and_judged_by_its_first_beat(tmp_path):
+    """No beat to read the code from at adoption: adopted as before, and its first beat decides."""
+    old = _bash(f"proc_age() {{ echo 30; }}; adopt_capture {ROOM}; echo rc=$?; echo BEAT; "
+                f"beat_seen {ROOM} {ROOM_SESSION} mic 37 x {OLD_CODE}; echo pid=$beat_pid; "
+                f"beat_seen {ROOM} {ROOM_SESSION} mic 37 x {OLD_CODE}", tmp_path)
+    at_adopt, first = old.split("BEAT")
+    assert "rc=0" in at_adopt and _stops(at_adopt) == 0
+    assert _stops(first) == 1 and "pid=\n" in first + "\n" and "restarting it once" in first
+    same = _bash(f"proc_age() {{ echo 30; }}; adopt_capture {ROOM}; "
+                 f"beat_seen {ROOM} {ROOM_SESSION} mic 37 x {CODE}; echo pid=$beat_pid", tmp_path)
+    assert _stops(same) == 0 and f"pid={ROOM}" in same and "other code" not in same
+
+
+def test_no_stamp_from_the_keepers_python_adopts_unchecked_and_says_so(tmp_path):
+    _write(tmp_path, beat(10, code=OLD_CODE))
+    out = _bash(f"proc_age() {{ echo 99999; }}; adopt_capture {ROOM}; echo rc=$?", tmp_path, KEEPER_CODE="")
+    assert "rc=0" in out and _stops(out) == 0
+    assert f"NOTE capture {ROOM}: no code stamp from " in out and "its code is not checked" in out
+
+
+def test_a_capture_that_will_not_stop_for_its_code_is_kept_not_retried(tmp_path):
+    _write(tmp_path, beat(10, code=OLD_CODE))
+    out = _bash(f"stop_capture() {{ echo STOP; return 1; }}; proc_age() {{ echo 99999; }}; "
+                f"adopt_capture {ROOM}; echo rc=$?; adopt_capture {ROOM}; echo rc=$?", tmp_path)
+    assert out.count("rc=0") == 2 and _stops(out) == 1
+    assert f"NOTE capture {ROOM} did not stop: keeping it, on {OLD_CODE}" in out
+
+
+def test_a_wedged_capture_on_other_code_takes_the_wedge_path_alone(tmp_path):
+    """The wedge path is as it was: one DEAF mail, one hard stop; no code note, no second stop."""
+    _write(tmp_path, beat(280 * 60, code=OLD_CODE))
+    out = _bash(f"proc_age() {{ echo 99999; }}; adopt_capture {ROOM}; echo rc=$?", tmp_path)
+    assert "rc=1" in out and _stops(out) == 1 and len(_mails(out)) == 1
+    assert "other code" not in out
 
 
 def test_a_wedged_capture_is_not_adopted_one_mail_and_a_hard_stop(tmp_path):
@@ -132,6 +271,11 @@ def test_a_fresh_beat_with_no_pid_and_the_room_session_is_adopted(tmp_path):
     _write(tmp_path, beat(10, pid=None))
     out = _bash(f"proc_age() {{ echo 99999; }}; adopt_capture {ROOM}; echo rc=$?", tmp_path)
     assert "rc=0" in out and "MAIL" not in out and _stops(out) == 0
+    # such a capture predates the code stamp too: its beat is still the room's (no DEAF mail),
+    # and it is restarted once for its code
+    _write(tmp_path, beat(5, pid=None, code=None))
+    old = _bash(f"proc_age() {{ echo 99999; }}; adopt_capture {ROOM}; echo rc=$?", tmp_path)
+    assert "rc=1" in old and "MAIL" not in old and _stops(old) == 1 and "older code" in old
 
 
 @pytest.mark.parametrize("row", [
@@ -177,8 +321,10 @@ def test_last_beat_reads_only_the_tail_and_skips_a_cut_line(tmp_path):
     rows = [beat(5000 - i, device=f"old{i}") for i in range(50)] + [beat(30, device="newest")]
     _write(tmp_path, *rows)
     out = _bash(f"last_beat {ROOM} {ROOM_SESSION}", tmp_path, EARS_BEAT_TAIL="700").strip()
-    epoch, dev = out.split("\t")
-    assert dev == "newest" and abs(int(epoch) - (time.time() - 30)) < 5
+    epoch, dev, code = out.split("\t")
+    assert dev == "newest" and code == CODE and abs(int(epoch) - (time.time() - 30)) < 5
+    _write(tmp_path, beat(20, device="nostamp", code=None))
+    assert _bash(f"last_beat {ROOM} {ROOM_SESSION}", tmp_path).strip().split("\t")[1:] == ["nostamp", "?"]
     none = _bash(f"last_beat 999 nobody", tmp_path).strip()
     assert none == ""
 

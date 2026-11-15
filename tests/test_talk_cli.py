@@ -5,13 +5,14 @@ Every server here binds a FREE port picked by the kernel, never 8780 (the live
 talk-web), and the state poll is replaced by a no-op, so nothing runs
 `session list` or reads a seat's heard.state.
 """
-import http.client, json, os, socket, subprocess, sys, threading
+import http.client, json, os, socket, subprocess, sys, threading, tomllib
 from importlib import resources
 from unittest import mock
 
 import pytest
 
 from talk import cli, server, token_store
+from tests.talk_helpers import HANG_CEILING
 
 
 def free_port():
@@ -220,7 +221,7 @@ def running(tmp_path, monkeypatch):
 
 def get(port, path, cookie=False):
     """cookie=True sends the fenced install's pairing cookie (EARS-338)."""
-    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=HANG_CEILING)   # a hang ceiling
     try:
         c.request("GET", path, headers={"Cookie": f"{server.COOKIE}={token_store.load()}"} if cookie else {})
         r = c.getresponse()
@@ -244,6 +245,24 @@ def test_serve_returns_the_page_and_manifest(running):
     assert json.loads(body)["short_name"] == "Talk"
     assert get(port, "/nope", cookie=True)[0] == 404      # paired: an unknown path is a 404
     assert get(port, "/nope")[0] == 403                   # unpaired: the gate answers first (EARS-338)
+
+
+def test_every_icon_ships_and_is_served_unpaired(running):
+    """Each icon file is beside server.py, is named in the package data, and answers an
+    unpaired request with its type: a browser fetches an icon without the pairing cookie.
+    The icon names are the whole list: no other file beside server.py is reachable."""
+    _, port = running
+    pkg = resources.files("talk")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(root, "pyproject.toml"), "rb") as f:
+        shipped = tomllib.load(f)["tool"]["setuptools"]["package-data"]["talk"]
+    assert sorted(shipped) == sorted(["index.html", "manifest.json", *server.ICONS])
+    for name, ctype in server.ICONS.items():
+        status, got, body = get(port, "/" + name)
+        assert (status, got) == (200, ctype) and body == (pkg / name).read_bytes(), name
+    for name in ("server.py", "token_store.py", "icon.png"):
+        assert get(port, "/" + name)[0] == 403                # unpaired: the gate answers first
+        assert get(port, "/" + name, cookie=True)[0] == 404   # paired: not a file Talk serves
 
 
 def test_module_entry_point_help():
@@ -427,7 +446,7 @@ def test_rotate_takes_effect_on_a_running_server_with_no_restart(running, capsys
     new = token_store.load()
 
     def probe(token):
-        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=HANG_CEILING)   # a hang ceiling
         try:
             c.request("GET", "/pair", headers={"Cookie": f"{server.COOKIE}={token}"})
             return c.getresponse().status

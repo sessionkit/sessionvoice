@@ -83,7 +83,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from .. import heard, lag, recording
+from .. import codestamp, heard, lag, recording
 from ..vad import MIN_SILENCE, MIN_SPEECH
 from .chunker import Chunk, Chunker
 from .detector import SilenceTurnDetector, TurnDetector
@@ -285,6 +285,9 @@ class _Capture:
         self._turn_t0: Optional[float] = None
         self._stt_failures = 0
         self._level = _Level()
+        # the code this capture runs, taken at its start (ears.codestamp): every heartbeat
+        # carries it as `code`, so a restarted keeper can tell a capture on older code
+        self._code = codestamp.stamp()
         # silero's max speech probability per heartbeat period. A classifier
         # with no probability (webrtc, energy) has no take_prob_max: the field is omitted.
         self._prob_max = getattr(getattr(detector, "classifier", None), "take_prob_max", None)
@@ -842,9 +845,11 @@ class _Capture:
                 if self.heartbeat > 0 and self.t >= next_hb - 1e-9:
                     next_hb += self.heartbeat
                     stamp, backlog = self._stamp(self.t), self._backlog_fields()
-                    # pid: the keeper tells its room capture's beats from a call leg's
+                    # pid: the keeper tells its room capture's beats from a call leg's;
+                    # code: the keeper tells a capture on older code from one on its own
                     self.event(heard.EV_HEARTBEAT, period=self._period, stream_s=_r(self.t), pid=os.getpid(),
-                               **self._beat_fields(), **stamp, **backlog)
+                               **self._beat_fields(), **stamp, **backlog,
+                               **({"code": self._code} if self._code else {}))
                     self._level.reset()
                     if stamp:
                         self._lag_said(self._lag_alarm.heartbeat(

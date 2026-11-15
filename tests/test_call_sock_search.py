@@ -6,6 +6,10 @@ alone; else BOTH ~/.sessionkit/phone/state (new) and ~/.sessionphone (old), dedu
 realpath (the old becomes a symlink to the new for one release). $DC_ROOT is honoured
 when set. The rule is written twice, keeper/phone_roots.py (stdlib; call-ears and
 ears-mail.py) and ears.listen.sources (the ears and the mouth): this file holds them equal.
+
+EARS-527: bots outside those places are reached through ~/.sessionkit/phone/run, where
+sessionphone publishes run/<bot>[.<profile>]/<name> as symlinks to the bound socket
+(PHONE-296), and, until every bot's phone publishes, the fallback ~/.<agent>/phone[/<profile>].
 """
 import importlib.machinery
 import importlib.util
@@ -22,6 +26,7 @@ from tests import env_fence
 
 KEEPER = Path(__file__).resolve().parent.parent / "keeper"
 NEW = (".sessionkit", "phone", "state")
+RUN = (".sessionkit", "phone", "run")
 
 
 def _touch(p):
@@ -183,6 +188,92 @@ def test_the_agent_bot_glob_is_kept_beside_the_new_root(home):
     assert _all_ears() == sorted([phone, agent])
 
 
+# ---- phone's published run/ dir and the ~/.<agent>/phone guess (EARS-527) ---------------
+
+def _link(target, link):
+    """LINK -> TARGET, a symlink like the ones sessionphone publishes under run/."""
+    os.makedirs(os.path.dirname(link), exist_ok=True)
+    os.symlink(target, link)
+    return link
+
+
+def test_a_bot_published_under_run_is_found_wherever_its_socket_is(tmp_path, home):
+    """A bot rooted in none of the searched places (a phone.json root, say) is reached
+    through the symlink phone publishes under ~/.sessionkit/phone/run."""
+    ear = _touch(str(tmp_path / "elsewhere" / "bot" / "call-ears.sock"))
+    mouth = _touch(str(tmp_path / "elsewhere" / "bot" / "call-mouth.sock"))
+    run_ear = _link(ear, str(home.joinpath(*RUN) / "elsew" / "call-ears.sock"))
+    run_mouth = _link(mouth, str(home.joinpath(*RUN) / "elsew" / "call-mouth.sock"))
+    assert str(home.joinpath(*RUN)) in sources.bot_roots()
+    assert _all_ears() == [run_ear]
+    assert output.call_socks() == [run_mouth]
+
+
+def test_a_run_symlink_and_a_direct_hit_on_one_socket_count_once(home):
+    """wimo's private bot: its socket is found at ~/.wimo/phone/private (the guess) and
+    through run/wimo.private (phone's symlink to it). One leg, named by run/."""
+    ear = _touch(str(home / ".wimo" / "phone" / "private" / "call-ears.sock"))
+    mouth = _touch(str(home / ".wimo" / "phone" / "private" / "call-mouth.sock"))
+    run_ear = _link(ear, str(home.joinpath(*RUN) / "wimo.private" / "call-ears.sock"))
+    run_mouth = _link(mouth, str(home.joinpath(*RUN) / "wimo.private" / "call-mouth.sock"))
+    assert _all_ears() == [run_ear]
+    assert output.call_socks() == [run_mouth]
+    assert os.path.realpath(output.call_socks()[0]) == os.path.realpath(mouth)
+
+
+def test_a_run_symlink_to_an_agents_delta_chat_bot_counts_once(home):
+    """The direct ~/.<agent>/delta-chat hit comes first, so it names the one leg."""
+    ear = _touch(str(home / ".ada" / "delta-chat" / "call-ears.sock"))
+    _link(ear, str(home.joinpath(*RUN) / "ada" / "call-ears.sock"))
+    assert _all_ears() == [ear]
+
+
+def test_an_agents_own_phone_dir_and_its_profiles_are_found(home):
+    """The Doctor's bot at ~/.doc/phone and wimo's at ~/.wimo/phone/private (mba)."""
+    doc_ear = _touch(str(home / ".doc" / "phone" / "call-ears.sock"))
+    doc_mouth = _touch(str(home / ".doc" / "phone" / "call-mouth.sock"))
+    wimo_ear = _touch(str(home / ".wimo" / "phone" / "private" / "call-ears.sock"))
+    wimo_mouth = _touch(str(home / ".wimo" / "phone" / "private" / "call-mouth.sock"))
+    assert _all_ears() == sorted([doc_ear, wimo_ear])
+    assert output.call_socks() == sorted([doc_mouth, wimo_mouth])
+
+
+def test_an_unknown_dir_is_not_found(tmp_path, home):
+    """Not a root, not a published symlink: not found. Nor a socket two dirs under a root."""
+    _touch(str(home / ".junk" / "notphone" / "call-ears.sock"))
+    _touch(str(home / ".junk" / "notphone" / "call-mouth.sock"))
+    _touch(str(home / "elsewhere" / "bot" / "call-mouth.sock"))          # a phone.json root: voice reads no phone.json
+    _touch(str(home / ".eve" / "phone" / "a" / "b" / "call-ears.sock"))  # deeper than [/<profile>]
+    _touch(str(home / "phone" / "call-ears.sock"))                       # ~/phone is not ~/.<agent>/phone
+    assert _all_ears() == []
+    assert output.call_socks() == []
+
+
+def test_sessionphones_own_home_is_not_an_agents_phone(tmp_path, home, monkeypatch):
+    """~/.*/phone matches ~/.sessionkit/phone; it is skipped, so an explicit
+    $SESSIONPHONE_ROOT still keeps ~/.sessionkit/phone/state out of the search."""
+    _touch(str(home.joinpath(*NEW) / "call-ears.sock"))
+    _touch(str(home.joinpath(*NEW) / "call-mouth.sock"))
+    monkeypatch.setenv("SESSIONPHONE_ROOT", str(tmp_path / "explicit"))
+    assert str(home / ".sessionkit" / "phone") not in sources.bot_roots()
+    assert str(home / ".sessionkit" / "phone") not in _keeper_roots().bot_roots()
+    assert _all_ears() == []
+    assert output.call_socks() == []
+
+
+def test_the_run_root_and_the_guess_come_after_the_known_roots(tmp_path, home, monkeypatch):
+    """Order: phone root(s), $DC_ROOT, ~/.*/delta-chat, run/, then ~/.*/phone."""
+    monkeypatch.setenv("DC_ROOT", str(tmp_path / "dc"))
+    (home / ".ada" / "delta-chat").mkdir(parents=True)
+    (home / ".wimo" / "phone").mkdir(parents=True)
+    (home / ".doc" / "phone").mkdir(parents=True)
+    home.joinpath(*NEW).mkdir(parents=True)
+    want = [str(home.joinpath(*NEW)), str(home / ".sessionphone"), str(tmp_path / "dc"),
+            str(home / ".ada" / "delta-chat"), str(home.joinpath(*RUN)),
+            str(home / ".doc" / "phone"), str(home / ".wimo" / "phone")]
+    assert sources.bot_roots() == _keeper_roots().bot_roots() == want
+
+
 # ---- the web leg ------------------------------------------------------------------------
 
 def test_the_web_leg_at_the_new_root_is_the_web_leg(home):
@@ -236,9 +327,41 @@ def test_the_keeper_copy_of_the_rule_equals_sources(tmp_path, home, monkeypatch)
     monkeypatch.setenv("DC_ROOT", str(tmp_path / "dc"))
     _touch(str(tmp_path / "dc" / "call-ears.sock"))
     same()
+    _touch(str(home / ".wimo" / "phone" / "private" / "call-mouth.sock"))
+    _touch(str(home / ".doc" / "phone" / "call-ears.sock"))
+    same()
+    _link(str(home / ".wimo" / "phone" / "private" / "call-mouth.sock"),
+          str(home.joinpath(*RUN) / "wimo.private" / "call-mouth.sock"))
+    _link(str(_touch(str(tmp_path / "far" / "call-ears.sock"))),
+          str(home.joinpath(*RUN) / "far" / "call-ears.sock"))
+    same()
     monkeypatch.setenv("SESSIONPHONE_ROOT", str(tmp_path / "x"))
     same()
     assert pr.NEW_ROOT == sources.PHONE_NEW_ROOT and pr.OLD_ROOT == sources.PHONE_OLD_ROOT
+    assert pr.RUN_ROOT == sources.PHONE_RUN_ROOT and pr.PHONE_HOME == sources.PHONE_HOME
+
+
+def test_the_mouth_finds_what_the_ears_bot_socks_find(tmp_path, home, monkeypatch):
+    """The third copy: output.call_socks() == bot_socks("call-mouth.sock"), in both
+    twins, over the new roots as well as the old."""
+    pr = _keeper_roots()
+
+    def same():
+        assert output.call_socks() == sources.bot_socks("call-mouth.sock") == pr.bot_socks("call-mouth.sock")
+
+    same()
+    _touch(str(home / ".sessionphone" / "call-mouth.sock"))
+    _touch(str(home / ".alice" / "delta-chat" / "p" / "call-mouth.sock"))
+    _touch(str(home / ".doc" / "phone" / "call-mouth.sock"))
+    wimo = _touch(str(home / ".wimo" / "phone" / "private" / "call-mouth.sock"))
+    _link(wimo, str(home.joinpath(*RUN) / "wimo.private" / "call-mouth.sock"))
+    _link(_touch(str(tmp_path / "far" / "call-mouth.sock")),
+          str(home.joinpath(*RUN) / "far" / "call-mouth.sock"))
+    same()
+    assert len(output.call_socks()) == 5
+    monkeypatch.setenv("DC_ROOT", str(tmp_path / "dc"))
+    _touch(str(tmp_path / "dc" / "call-mouth.sock"))
+    same()
 
 
 def test_ears_mail_and_call_ears_share_one_helper():

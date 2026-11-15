@@ -7,8 +7,10 @@ line names. A sound from `mouth play` plays on its own lane beside them
 (`src/mouth/bed.py`). Code: `src/mouth/`.
 
 - **In:** text from `mouth say`, a sound file from `mouth play`, or mail to
-  `mouth@<host>`. `mouth play` takes a file, never a URL: the decoder reads
-  files only (ffmpeg's `-protocol_whitelist file`).
+  `mouth@<host>`. `mouth play` takes a file path or a URL (`file://`,
+  `http://`, `https://`). A remote URL is fetched to a local file first, so
+  the decoder still reads files only (ffmpeg's `-protocol_whitelist file`):
+  [Play a URL](#play-a-url).
 - **Out:** the speech (or the sound) on the line's device, and rows in the
   heard log (the same log the ears write, unless `--log-dir` names
   another): a `saying` row when a line starts to play, and a `said` row
@@ -26,6 +28,20 @@ line names. A sound from `mouth play` plays on its own lane beside them
   `Supersedes` is trusted (a local drop, as `amend` writes, or signed v2) or
   comes From the line's own sender. Any other supersede of it plays after
   it, as news (`src/mouth/player.py` `_superseded`).
+- **A line is 300 characters at most, unless `--long`.** Spoken answers
+  are kept short, so `mouth say` refuses a longer line: it prints one line
+  on stderr, `mouth: over 300 characters: split it, or mail it (or --long)`,
+  speaks nothing, queues nothing and exits 2. Split the line, put the
+  long part in mail, or pass `mouth say --long` to speak it anyway. The
+  count is of the text as given (the words joined, or stdin), in
+  characters. The cap is the `say_max_chars` setting: the caller's settings
+  cascade (session, seat, agent), then the host's mouth.json, then `300`.
+  `0` or `"off"` is no cap; a value that is not valid is skipped and the
+  next layer answers ([settings.md](settings.md)). Only `mouth say` is
+  capped: `mouth.say()` refuses only when asked (`cap=True`), so mail to
+  the mouth, a resumed rest, a replay and a notice are never refused
+  (`src/mouth/voices.py` `say_max_chars_setting`). Nor is an alert line
+  (`mouth say --alert`), below.
 
 ## How it works
 
@@ -43,6 +59,25 @@ line names. A sound from `mouth play` plays on its own lane beside them
   mail is spoken (a From on this host, or in
   `$MOUTH_MAIL_ALLOW`); any other is filed as refused, unplayed
   (`src/mouth/box.py`).
+- **Who a line is from.** `mouth say` and `mouth play` are mailers: each
+  line is From whoever ran it, read from the environment the way
+  sessionmail's `message send` reads it. There is no `--from`
+  (`src/mouth/sender.py`).
+  - From a seat, it is the seat's address: the plus address the seat
+    declares in `EMAIL` or `TM_AGENT_ADDRESS`. With none declared, it is the
+    first of `TM_AGENT_ADDRESS`, `CLAUDE_CODE_AGENT`, `CLAUDE_CODE_SESSION_ID`
+    and `CLAUDE_SESSION_ID` that is set. An empty variable counts as unset.
+  - From a plain shell, where `message send` would refuse, it is your
+    login name.
+  - The domain is always this host's short name (`<you>@<host>`), so the
+    From is on this host and the mouth admits it whether or not an operator
+    block is set. That holds unless `$MOUTH_MAIL_ALLOW` narrows the list and
+    leaves the address out.
+  - `VOICEMODE_AGENT` picks a voice, never the From. The agent name still
+    rides in `X-Mouth-Agent`, and an agentless line carries `mouth` there,
+    as it read before.
+  - An `amend`, a cut line's resumed rest and a `mouth again` replay keep
+    the line's own From.
 - **What a line may make the mouth do** depends on where it came from, not
   only on its From (`_trust` in `src/mouth/box.py`):
   - A **local** line, one that `mouth say`, `play` or `amend` dropped, may
@@ -169,6 +204,35 @@ line names. A sound from `mouth play` plays on its own lane beside them
   (`src/mouth/box.py` `_room_hold`). To turn it off, set `"room_hold": false`
   in mouth.json, or `MOUTH_ROOM_HOLD=off`, which wins over the file; a line's
   own `--hold` wins over both.
+- **A held line waits at most `hold_max_s` (12 s).** A turn-end hold, the
+  sender's `--hold turn-end` or a room line's, has a ceiling counted from
+  when the line was queued. In a busy room one turn can run for minutes with
+  no pause the ears count as its end, and a line held for all of it leaves
+  the seat mute. Past the ceiling the line plays at the next gap in the
+  user's words (no new partial for 1.5 s, `hold.HOLD_GAP_S`), or 3 s later
+  if no gap comes (`hold.HOLD_GAP_WINDOW_S`), so it waits 15 s at most. A
+  turn shorter than the ceiling still releases at its end, as before, and a
+  held opener queued before the user's turn began is still dropped as
+  `stale`. Set `"hold_max_s"` in mouth.json, or `MOUTH_HOLD_MAX_S`, which
+  wins over the file; `0` (or `off` in the env) is no ceiling
+  (`src/mouth/hold.py` `past_hold_max`). On a device where barge-in is on,
+  such as headphones, the user's ongoing words can cut a line the ceiling
+  released, as they can cut any line. A resume, the rest of a cut line, is not
+  capped: it waits for the end of the turn, so a line the ceiling released and
+  the user's words cut still plays its rest then.
+- **A clone line waits for 3 s of its audio before it plays.** A cloned
+  voice renders barely faster than it plays, or slower under load, so a
+  clone line started on its first chunk runs dry on any stall and crackles.
+  The mouth's default lead, `lead_s`, is `3` seconds for a line a clone
+  speaks and `0` (play as it streams) for any other: Kokoro (a hosted
+  endpoint included), Apple and silence. The price is up to about 3 s more
+  before a clone line starts. To change it, highest first: `mouth say --lead S` (or `mouth.say(lead_s=S)`,
+  or a mail's `X-Mouth-Lead: S`) for one line; `lead_s` in the caller's
+  settings cascade (session, seat, agent); `lead_s` in the host's mouth.json
+  ([settings.md](settings.md)). Any of them, `0` included, wins over the
+  default, for a clone too. A played file never waits. `saying` logs
+  `lead_s`, `lead_from` (`builtin` for the default) and `held_s`
+  (`src/mouth/voices.py` `lead_setting`).
 - **The record:** `saying` is written at the first audio frame and `said`
   at the end (`src/ears/heard.py`, `src/mouth/player.py`). A line that
   never plays gets a `said` alone. `said` says what played, and if the
@@ -269,14 +333,25 @@ line names. A sound from `mouth play` plays on its own lane beside them
   it has a box. Some drops are quiet by rule: a queued line its own
   sender retracts, a resume a say-again replaced, a refused mail, a line
   the player recovers as `lost`
-  an hour or more after it was asked (or at an age it cannot tell), and
+  an hour or more after it was asked (or at an age it cannot tell), an
+  alert line (`none: an alert line, never mailed`), and
   any drop while `$MOUTH_NOTICE` is `off`. The `said` row's
   `notice` says which (`src/mouth/notice.py`).
   A notice goes by sessionmail's `message send`, never straight to an MTA,
   and there is no fallback: with no `message` binary, or a refused send,
   the row reads `failed: no message binary (...)` or
   `failed: message send exit N kind K: ...`, and stderr (the service's
-  log) gets one `mouth: ERROR: notice to <addr> failed: ...` line. It goes From the seat
+  log) gets one `mouth: ERROR: notice to <addr> failed: ...` line. When
+  several notices in a row fail (`mouth.json`'s `notice_alert_after`, 3 by
+  default), the mouth also says so once, out loud, as an alert line in its
+  own queue, which needs no mail, and writes one `mouth: ERROR: notice
+  alert:` line. It stays quiet while notices go on failing, then says once
+  that they go out again, after which a new run of failures is said again.
+  Every send tried counts, from whichever process sent it: the run is kept
+  in `notice-alert.json` in the mouth's folder. A fenced send and a spent
+  budget try none, so they count nothing. `notice_alert` (or
+  `$MOUTH_NOTICE_ALERT`) `off` turns this off; nothing ever exits over it
+  ([settings](settings.md#mouthjson), [logs](logs.md)). It goes From the seat
   `mouth`, display name `Mouth`, unsigned. A caller's `CLAUDE_SESSION_*`
   key, session id and must-sign never reach the send, so a player a CLI
   `say` started never signs as its caller. `$MOUTH_SIGNER_SOCK` and
@@ -292,6 +367,26 @@ line names. A sound from `mouth play` plays on its own lane beside them
   Any other process that drops a line, a script or a review rig, must set
   `$MOUTH_SENDMAIL` (a command that takes `message send`'s arguments), or
   its notice is recorded `failed: message send fenced: ...`.
+- **An alert line** (`mouth say --alert TEXT`, `mouth.say(text, alert=True)`)
+  is the host's own line, never a caller's: what a part of sessionvoice
+  says when its mail fails.
+  - **No seat is named on it.** Whoever runs it, its agent, session and
+    sender are empty, so the box writes the mouth's own (`X-Mouth-Agent:
+    mouth`, From `mouth@<host>`), as for any line with no agent. No seat is
+    told of it, and no caller's settings cascade is read: it takes the
+    host's voice and level, as a resume does.
+  - **It speaks and leaves.** Its interest is `zero` (any other is
+    refused), and it goes to the front of the queue (`next`) unless
+    `--priority`, `--next` or `--now` says otherwise. It is still a room
+    line, held for the end of the user's turn, and it is never refused for
+    length.
+  - **Its rows say what it is.** Its `saying` and `said` rows carry
+    `alert: true`, so a reader of the heard log can tell it from a seat's
+    line. So does the rest that a barge-in's replay queues again: that rest
+    is an alert line too. No other line's rows carry the key.
+  - **It is never mailed about.** Whatever becomes of it, its `said` row's
+    `notice` is `none: an alert line, never mailed`
+    (`src/mouth/notice.py` `_decide`).
 - **A reply to a notice is filed, never spoken.** A notice's Message-ID is
   `<ns.uid.mouth-notice@<host>>`; a mail whose In-Reply-To or References
   names one, in that form or the older `<ns.uid@<host>.mouth-notice>`, is
@@ -328,7 +423,9 @@ More commands (`mouth --help` lists them all):
 
     mouth say --wait ...         # block until said; print it
     mouth say --next ... / --now # jump the queue / cut in at once
-    mouth play FILE --start S --end S   # a file, never a URL
+    mouth say --alert ...        # the host's own line: no seat, never mailed about
+    mouth play FILE --start S --end S   # a file, or a section of it
+    mouth play URL                      # file://, http:// or https://
     mouth status                 # player, queue, what is playing
 
 ## Devices: which output, which input, how loud
@@ -407,6 +504,9 @@ when the separator is installed. `--no-instrumental` plays the file as it is.
     mouth play FILE --volume 40                    # this file's level, 0-100
     mouth play FILE --no-instrumental              # as it is, vocals and all
     mouth play FILE --stem drums,bass              # stems from its sidecar, mixed
+    mouth play https://host/song.m4a               # fetched once, then kept
+    mouth play --find "No Scrubs TLC"              # find it by name, then play it
+    mouth play FILE --now                          # stop this device's song, play this
     mouth split --install                          # the separator, once (about 1 GB)
 
 - **It ducks under speech.** A played file plays on its own lane beside the
@@ -417,7 +517,8 @@ when the separator is installed. `--no-instrumental` plays the file as it is.
   voice never cuts it.
 - **It plays without its vocals when it can.** If the file's sidecar holds
   an instrumental (`mixes/instrumental.*` in `.<file>.d/`, the folder beside
-  it; [sidecar.md](sidecar.md) lists every layout it reads), the mouth plays that in its place, on any device, a call's included.
+  it, or for a file played by URL in `<mouth dir>/url-sidecars/<sha256>/`;
+  [sidecar.md](sidecar.md) lists every layout it reads), the mouth plays that in its place, on any device, a call's included.
   `mouth.music_instrumental` (on by default) turns this off;
   `--no-instrumental` plays the file as it is for one play, and
   `--instrumental` plays the instrumental even of a file a split judged to be
@@ -469,7 +570,8 @@ when the separator is installed. `--no-instrumental` plays the file as it is.
   `$MOUTH_SEPARATOR_HOME`, and writes `installed.json` there last, once the
   venv and the model are both in.
 - **`mouth split FILE...` makes the stems and the instrumental** into the
-  file's sidecar, `.<file>.d/`: `stems/{vocals,drums,bass,other}.flac`,
+  file's sidecar, `.<file>.d/` (for a file played by URL,
+  `<mouth dir>/url-sidecars/<sha256>/`): `stems/{vocals,drums,bass,other}.flac`,
   `mixes/instrumental.flac` and `split.json`, the manifest that says what
   made them and from which bytes. It runs in the foreground, below the
   audio's priority, one split at a time on the host; a second split of the
@@ -499,6 +601,25 @@ when the separator is installed. `--no-instrumental` plays the file as it is.
   mailed play takes stems only from inside the sounds directory.
 - **Its level** is `--volume N`, else `mouth.play_volume`, else
   `mouth.volume`, in the settings cascade.
+- **Where it goes in the queue** is `--now`, `--next` or `--last`, else
+  `mouth.play_queue`, else `last`, in the settings cascade.
+  - `last`: the end of the queue, after everything already waiting. A plain
+    `mouth play` has always done this.
+  - `next`: the front of the queue. It plays as soon as the song on its
+    device ends. If a `now` run (below) still has songs waiting on that
+    device, it plays after them, so the run is not split. Among several
+    `next` plays, the first one asked plays first.
+  - `now`: the song playing on its device is stopped and this plays at
+    once. Only that device's song stops: a song on another device plays on,
+    and a spoken line is never cut. On the same device, a file still waits
+    for a spoken line to end, a few seconds at most. The stopped song's
+    `said` row says `cut`, with the reason `interrupted`. Songs that were
+    waiting stay queued, and play after this one.
+  - Spoken lines mix over a song in every mode. `mouth say --now` and
+    `--next` are not changed.
+  - Set `play_queue` to `now`, and every `mouth play`, a short sound
+    included, stops the song on its device. A per-call `--last` or
+    `--next` still beats it.
 - **To stop it,** `mouth retract <utt>` with the id `mouth play` printed.
   `mouth stop` stops it too, but it also cuts the line playing and
   flushes the queue.
@@ -507,6 +628,124 @@ when the separator is installed. `--no-instrumental` plays the file as it is.
   and while the mouth holds a device such as AirPods, another player that
   opens the same device can fail with "could not open/initialize audio
   device".
+
+### Play a URL
+
+`mouth play SOURCE` takes a URL wherever it takes a file path, with the
+same flags. Nothing reads a URL but `mouth play` itself: the URL is
+resolved to a local file before the line is queued, and the player, the
+instrumental and the split see only that file.
+
+- **`file:///abs/song.m4a` plays the file it names, in place.** It is
+  percent-decoded (`file:///a/My%20Song.m4a` names `/a/My Song.m4a`), never
+  fetched or copied, and plays exactly as the path would. Only this host's
+  files are played: a `file://` URL naming another host is refused.
+  `play_remote` does not apply to it. A missing file gets
+  `mouth: no such file <path>`.
+- **`http://` and `https://` are fetched, then the local copy plays.**
+  `mouth play` prints `mouth: fetching <url>` on stderr and downloads the
+  file before it queues the line, so the command waits for the download. It
+  still returns once the line is queued, unless `--wait`. The line's `file`
+  is the local copy, and `source_url` names the URL it came from (without
+  any `user:password@`).
+- **A fetched file is kept, by default forever.** It goes into the play
+  cache, `<mouth dir>/play-cache/`, one folder per URL, under the URL's own
+  file name. A second play of the same URL makes no request and plays the
+  same file at once, with the instrumental and stems made for it. The URL
+  is the key: the same file at two URLs is fetched twice.
+- **Its instrumental and stems are never beside the file.** For any URL,
+  `file://` included, the sidecar is `<mouth dir>/url-sidecars/<sha256>/`,
+  keyed by the file's bytes, so nothing is written into another tool's
+  folder or the play cache. Two URLs with the same bytes share one split.
+  The first play of a file reads it once to hash it; `mouth split` on the
+  same file later uses the same folder. A plain path keeps `.<name>.d/`
+  beside it ([sidecar.md](sidecar.md#a-url-sources-sidecar)).
+- **Settings** (in `mouth.json` and the settings cascade;
+  [settings.md](settings.md#mouthjson)):
+  - `play_remote` (on): off refuses every `http://` and `https://` URL.
+    It has no flag and no variable. The host file can lock it
+    (`"_locked": ["play_remote"]`), and then no session, seat or agent
+    layer can turn it back on.
+  - `play_cache` (on): off fetches the URL for that play only, into
+    `<mouth dir>/play-spool/`, and keeps nothing in the play cache. The
+    next URL play clears spooled files a day old that no queued, playing
+    or bedded line names, so a later `mouth again` of one may find it gone.
+  - `play_cache_dir` (host file only): another folder for the cache.
+  - `play_cache_max_age_s` (host file only): seconds a kept file stays
+    fresh; an older one is fetched again on its next play.
+- **What is refused,** each with a plain line on stderr, exit 2, and
+  nothing queued: any other scheme (`ftp://`, `rtsp://`); a remote URL with
+  `play_remote` off; a failed fetch (`HTTP 404`, `timed out`,
+  `connection failed`, a redirect to anything but http(s), a text or web
+  page, more than 2 GB); and a cache or spool that cannot be written.
+  A failed fetch leaves nothing behind, so the next play tries again.
+- **A mailed play never takes a URL.** `X-Mouth-File` still names a file
+  in the sounds directory, and only that.
+
+### Find a song
+
+`mouth play --find WORDS` plays a song you name instead of a file you
+point at. The mouth does not search on its own: it asks the programs set in
+`play_finders` in the host's `mouth.json`, called finders, and plays the URL
+the finder gives back, with every other `mouth play` flag.
+
+    mouth play --find "No Scrubs TLC"              # the first match plays
+    mouth play --find "walk of life" --matches list   # print the matches, play none
+    mouth play --find "walk of life" --pick 2      # play the 2nd of them
+    mouth play --find "dire straits" --matches all # every match, as one run
+    mouth play --find "no scrubs" --finder local   # ask that finder only
+
+- **Set a finder first.** With no `play_finders`, `--find` is refused and
+  says where to set one. Each finder has a `name` and an `argv`, the command
+  as a list of words. Finders are read from the host's `mouth.json` alone,
+  never from a session, seat or agent layer, so a caller cannot choose which
+  program runs:
+
+      "play_finders": [
+        {"name": "music", "argv": ["music", "find", "--url"]},
+        {"name": "local", "argv": ["find-song", "--url"]}
+      ]
+
+- **How a finder is run.** The words are split on spaces and added to the
+  end of `argv` as separate arguments: `--find "walk of life"` runs
+  `music find --url walk of life`. No shell runs, so nothing in the words is
+  expanded. A finder gets `play_finder_timeout_s` seconds (10 by default).
+  One still running then is stopped, with everything it started, and
+  nothing plays.
+- **The finders are asked in order.** The first one that finds anything
+  wins, and the rest are not asked. `--finder NAME` asks that one only. A
+  finder that fails stops the search: the next finder is not asked in its
+  place.
+- **What a finder prints:** one match per line, its fields separated by
+  tabs. The last field is the URL, a `file:///` URL with an absolute path or
+  an `http://` or `https://` URL; the fields before it are the match's
+  label, as `--matches list` shows it. It exits 0 when it found something
+  and 1 when it found nothing. Anything else is a failure, and so is exit 0
+  with nothing printed, or a line with no URL.
+- **Which match plays** is `--pick N` or `--matches`, else
+  `mouth.play_find_matches`, else `first`, in the settings cascade.
+  `--pick` and `--matches` cannot be used together.
+  - `first`: the first match.
+  - `list`: none. It prints the matches, numbered (`1  <label>`), and exits
+    3, even for one match, so `--matches list` is a safe look before you
+    play. The next call takes one with `--pick N`.
+  - `all`: every match, in the finder's order, queued as one run that plays
+    as a block, one utt printed per line. A match that cannot be played (a
+    failed fetch, a missing file) gets one stderr line and is skipped, and
+    the run goes on. `--wait` is refused with a run: it waits for one play.
+- **A found song plays like any other.** Its URL goes through
+  [Play a URL](#play-a-url): a `file://` match plays in place, and an
+  `http(s)://` match is fetched first, under `play_remote` and `play_cache`.
+  `--now`, `--next`, `--last`, `--device`, `--volume` and the rest apply.
+- **The exit codes:** 0 played; 1 not found
+  (`mouth: not found: <words> (asked: music, local)`); 2 refused, with one
+  line on stderr: no finder set, a finder failed or timed out
+  (`mouth: finder music failed: exit 4`, with the last line the finder
+  wrote to stderr), `--pick N` past the last match, an unknown `--finder`,
+  or SOURCE and `--find` together; 3 `list`. Nothing is queued before the
+  finder has answered and the match is chosen: nothing plays on a guess.
+- **A mailed play never runs a finder.** Only `mouth play` in your own
+  shell does.
 
 ## Your voice
 
@@ -542,9 +781,11 @@ that answered, in `"from"`: `session`, `seat`, `agent`, `env`, `settings` or
 **Set it once, for a seat** (the main knob). Find the seat's name in the
 `"seat"` field of `session settings --json <sid> mouth`. Then add `voice` to
 the seat's `mouth.json`, keeping whatever it already holds (`volume`,
-`lead_s`):
+`lead_s`). Ask `session path seats <seat>` for the seat's folder instead of
+typing the path: it names the folder this host uses, so the lines below make
+no second one:
 
-    f=~/.session/seats/<seat>/settings/mouth.json
+    f="$(session path seats <seat>)/settings/mouth.json"
     mkdir -p "${f%/*}"; [ -s "$f" ] || echo '{}' > "$f"
     jq '.voice = "bm_george"' "$f" > "$f.new" && mv "$f.new" "$f"
     mouth voices      # "default": "bm_george", "from": "seat"

@@ -22,15 +22,17 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections import deque
 from datetime import datetime
 from itertools import count
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 import mouth
 from ears import heard
-from mouth import bed, hold, output
+from mouth import backends, bed, hold, output
 
 from test_mouth_bed import (RecOut, env, kind, play, rows, run, say,  # noqa: F401 - fixtures
                             started, wait_for)
@@ -53,10 +55,13 @@ def events(env, name: str) -> list:
     return [r for r in rows(env) if r["kind"] == "event" and r.get("event") == name]
 
 
-def heard_row(kind_: str, text: str = "", source: str = "mic", speaker=None, age_s: float = 0.0) -> int:
-    """A row in the ears' own log (a partial or a turn), and its side-car label."""
+def heard_row(kind_: str, text: str = "", source: str = "mic", speaker=None, age_s: float = 0.0,
+              at=None) -> int:
+    """A row in the ears' own log (a partial or a turn), and its side-car label.
+    ``at`` stamps it at that time (a clock the test holds), else ``age_s`` ago."""
     seq = next(_seq)
-    t = datetime.fromtimestamp(time.time() - age_s).astimezone().isoformat(timespec="milliseconds")
+    t0 = time.time() - age_s if at is None else at
+    t = datetime.fromtimestamp(t0).astimezone().isoformat(timespec="milliseconds")
     with open(heard.log_path(), "a") as f:
         f.write(json.dumps({"ts": t, "seq": seq, "kind": kind_, "text": text, "source": source}) + "\n")
     if speaker is not None:
@@ -92,6 +97,140 @@ def mixers(monkeypatch):
     return seen
 
 
+class Weighs(list):
+    """Every ``Ducker._weigh``, in the order they ran: ``(now, causes, via, down
+    before, down after, rows)``. ``now`` is the Ducker's own clock, the one its
+    ``ducked_s`` is measured on; ``via`` is ``line`` for the player's tick at a
+    line's first frame (``tick(barge=False)``), else ``poll`` (the bed's own);
+    ``rows`` is every ``(event, fields)`` that weigh wrote (EARS-535).
+
+    EARS-487: the duck's timing is the bed thread's, so a test asserts on these
+    rows (which weigh dipped, which came back up, and why), never on how many
+    wall-clock seconds the host happened to give the bed thread."""
+
+    def dip(self):
+        """``(down, up)``: the one weigh that dipped and the one that came back up."""
+        downs = [w for w in self if not w[3] and w[4]]
+        ups = [w for w in self if w[3] and not w[4]]
+        assert len(downs) == 1 and len(ups) == 1, (downs, ups)
+        return downs[0], ups[0]
+
+    def assert_back_up_after(self, restore_s: float, ducked_s: float):
+        """The dip came up on the FIRST weigh at which every cause had been clear for
+        ``restore_s``, never sooner and never a weigh later; its ``ducked_s`` is the
+        span between the weigh that dipped and that one, on the Ducker's clock."""
+        (t_down, *_), (t_up, up_causes, *_) = self.dip()
+        assert ducked_s == round(t_up - t_down, 3)
+        assert up_causes == ()
+        last = max(w[0] for w in self if w[1] and t_down <= w[0] <= t_up)
+        assert t_up - last >= restore_s, "it came back before restore_s"
+        early = [w for w in self if last < w[0] < t_up and not w[1] and w[0] - last >= restore_s]
+        assert not early, f"a quiet weigh past restore_s left it down: {early}"
+        return t_down, t_up
+
+    def downs(self) -> int:
+        return sum(1 for w in self if not w[3] and w[4])
+
+    def ups(self) -> int:
+        return sum(1 for w in self if w[3] and not w[4])
+
+    def assert_rows_are_the_dip(self, d: dict, u: dict) -> None:
+        """EARS-535: the ``duck`` row was written by the weigh that dipped and the
+        ``unduck`` row by the weigh that came back up, no other weigh wrote one, and
+        the ``ducked_s`` that row carries is the span between those two weighs on the
+        Ducker's clock. Never a tolerance on how late the bed thread stamped them."""
+        (t_down, *_, down_rows), (t_up, *_, up_rows) = self.dip()
+        assert [n for n, _ in down_rows] == ["duck"] and [n for n, _ in up_rows] == ["unduck"], list(self)
+        assert [n for w in self for n, _ in w[5]] == ["duck", "unduck"], list(self)
+        assert up_rows[0][1]["ducked_s"] == u["ducked_s"] == round(t_up - t_down, 3)
+        assert d["seq"] < u["seq"]
+
+
+@pytest.fixture
+def weighs(monkeypatch) -> Weighs:
+    seen, lock, local = Weighs(), threading.Lock(), threading.local()
+    real_tick, real_weigh, real_row = bed.Ducker.tick, bed.Ducker._weigh, bed.Ducker._row
+
+    def tick(self, barge=None):
+        local.via = "line" if barge is False else "poll"
+        try:
+            return real_tick(self, barge)
+        finally:
+            local.via = None
+
+    def weigh(self, causes, now):
+        with lock:    # the bed and player threads, one at a time: rows in the order they ran
+            before, local.rows = self.down, []
+            try:
+                moved = real_weigh(self, causes, now)
+                seen.append((now, tuple(causes), getattr(local, "via", None), before, self.down,
+                             tuple(local.rows)))
+            finally:
+                local.rows = None
+            return moved
+
+    def row(self, name, **kw):
+        if getattr(local, "rows", None) is not None:
+            local.rows.append((name, dict(kw)))
+        return real_row(self, name, **kw)
+    monkeypatch.setattr(bed.Ducker, "tick", tick)
+    monkeypatch.setattr(bed.Ducker, "_weigh", weigh)
+    monkeypatch.setattr(bed.Ducker, "_row", row)
+    return seen
+
+
+#: what a held tail keeps back: more than the ramp up (``DUCK_UP_S``) and a poll
+TAIL_S = 1.0
+
+
+def held_tail(monkeypatch, cls: str, until, name=None, backstop_s: float = 10.0) -> None:
+    """``backends.<cls>`` streams all but its last ``TAIL_S``, then holds them until
+    ``until()`` is true (``backstop_s`` at most), then plays them. ``name``: only the
+    file of that name (a ``FileSound``); else every stream of that class.
+
+    EARS-535: "the music comes back to full" and "the line still holds the ``say``
+    cause" are about the duck, not about whether the song (or the line) happened
+    to outlast the bed thread's restore, its poll and the 500 ms ramp on this host.
+    Held until the Ducker's own weighs say the dip came up, the song still has
+    ``TAIL_S`` of frames to play, every one pulled after ``set_duck(1.0)``, so the
+    ramp is drawn whatever the host's speed. A dip that never comes up gets no
+    help: the song plays its tail at the backstop, still low."""
+    base = getattr(backends, cls)
+
+    class Held(base):
+        def stream(self, text, voice, speed):
+            if name is not None and Path(getattr(self, "path", "")).name != name:
+                yield from base.stream(self, text, voice, speed)
+                return
+            keep, tail, n = int(TAIL_S * self.sample_rate), deque(), 0
+            for b in base.stream(self, text, voice, speed):
+                tail.append(b)
+                n += len(b)
+                while n - len(tail[0]) >= keep:
+                    n -= len(tail[0])
+                    yield tail.popleft()
+            end = time.monotonic() + backstop_s
+            while not until() and time.monotonic() < end:
+                time.sleep(0.01)
+            yield from tail
+    monkeypatch.setattr(backends, cls, Held)
+
+
+def says_late(monkeypatch, late_s: float) -> list:
+    """The player lets the ``say`` cause go ``late_s`` after it found nothing
+    playable: a loaded host's player thread, on purpose (EARS-535). The list it
+    returns gets a ``True`` for each time it did: the stall was real."""
+    real, fired = bed.Beds.lines_done, []
+
+    def lines_done(self):
+        if self.saying:
+            fired.append(True)
+            time.sleep(late_s)
+        return real(self)
+    monkeypatch.setattr(bed.Beds, "lines_done", lines_done)
+    return fired
+
+
 # -- hold.speaking_over: the barge cause ------------------------------------------
 
 def test_speaking_over_is_the_floor_on_the_devices_barge_sources(env):
@@ -108,25 +247,38 @@ def test_speaking_over_is_the_floor_on_the_devices_barge_sources(env):
     assert hold.speaking_over("call:7", who=None)["text"] == "on the phone"
 
 
-def test_speaking_over_keeps_the_barge_in_who_filter(env, monkeypatch):
+@pytest.mark.parametrize("stall", [None, "before-each-look"])
+def test_speaking_over_keeps_the_barge_in_who_filter(env, monkeypatch, stall):
+    """Every stamp and every look is on ONE clock the test holds (``t0``, passed
+    as ``now``), so the label wait runs from the partial's own stamp to the look,
+    on that clock: not named yet 0.29 s after it, never named 0.31 s after it. The
+    old look read the host's clock, so a test thread that lost more than the
+    0.3 s label wait between the write and the look flipped "not named yet"
+    (EARS-535). ``before-each-look`` is that thread, on purpose: 0.35 s lost
+    before every look."""
     monkeypatch.setenv("MOUTH_LABEL_WAIT_S", "0.3")
     theo = frozenset({"theo"})
-    partial("the radio says", speaker="other", age_s=0.6)
-    assert hold.speaking_over("null", who=theo) is None              # named, and not him
-    partial("hang on", speaker="theo", age_s=0.5)
-    assert hold.speaking_over("null", who=theo)["text"] == "hang on"
-    turn(age_s=0.4)
-    partial("who is this")
-    assert hold.speaking_over("null", who=theo) is None              # not named yet: wait for it
-    time.sleep(0.35)
-    for c in hold._caches.values():
-        c.update(t=0.0, v=None)
-    assert hold.speaking_over("null", who=theo)["text"] == "who is this"   # never named: counts
+    t0 = time.time()
+
+    def look(at: float, **kw):
+        if stall == "before-each-look":
+            time.sleep(0.35)
+        for c in hold._caches.values():
+            c.update(t=0.0, v=None)
+        return hold.speaking_over("null", now=t0 + at, **kw)
+    partial("the radio says", speaker="other", at=t0 - 0.6)
+    assert look(0.0, who=theo) is None                                # named, and not him
+    partial("hang on", speaker="theo", at=t0 - 0.5)
+    assert look(0.0, who=theo)["text"] == "hang on"
+    turn(at=t0 - 0.4)
+    partial("who is this", at=t0)
+    assert look(0.0, who=theo) is None                                # not named yet: wait for it
+    assert look(0.29, who=theo) is None                               # ... for the whole label wait
+    assert look(0.31, who=theo)["text"] == "who is this"              # never named: counts
     settings(env, barge_in=["theo"])
-    turn(age_s=0.0)
-    time.sleep(0.01)
-    partial("the radio again", speaker="other")
-    assert hold.speaking_over("null") is None                        # read from the settings
+    turn(at=t0 + 0.4)
+    partial("the radio again", speaker="other", at=t0 + 0.41)
+    assert look(0.42) is None                                         # read from the settings
 
 
 # -- the mixer's ramp: per sample, down 150 ms, up 500 ms -----------------------------
@@ -166,21 +318,64 @@ def test_the_duck_ramps_per_sample_down_150_ms_and_up_500_ms(monkeypatch):
 
 # -- duck-on-barge ------------------------------------------------------------------
 
+@pytest.mark.parametrize("stall", [None, "through-his-words", "after-his-turn", "unduck-row-late", "turn-late"])
 @pytest.mark.needs_ffmpeg
-def test_his_words_duck_the_music_and_it_comes_back(env, mixers, monkeypatch):
+def test_his_words_duck_the_music_and_it_comes_back(env, mixers, weighs, monkeypatch, stall):
+    """``ducked_s`` is the bed thread's: from the weigh that saw his words to the
+    first weigh ``restore_s`` after the last one that did. A loaded host gives that
+    thread less CPU, so the old window ``0.6 < ducked_s < 1.6`` read 0.597 (EARS-487).
+    The assertions are on the Ducker's own weighs and the order of the rows. The
+    ``stall`` cases are that loaded host on purpose: the bed thread gets no weigh
+    from the dip to his turn (the old window read ~0.45), or none for 1.5 s after
+    it (~2.0).
+
+    EARS-535: the rows are the weighs' own (``assert_rows_are_the_dip``), not a
+    0.15 s tolerance between their stamps and ``ducked_s``; ``unduck-row-late``
+    stamps the unduck row 0.3 s after its weigh read the clock. And the song's
+    last ``TAIL_S`` waits for the dip to come up (``held_tail``), so "it comes
+    back to full" never races the song's length; ``turn-late`` is this thread
+    losing 2.6 s before his turn ends, past the end of the 3 s song."""
     monkeypatch.setenv("MOUTH_BARGE_DEVICES", "null")
     settings(env, music_duck_restore_s=0.3)
+    held_tail(monkeypatch, "FileSound", until=lambda: weighs.ups() >= 1, name="song.wav")
+    late = []
+    if stall == "unduck-row-late":
+        real_event = heard.event
+
+        def stamped_late(name, **kw):
+            if name == "unduck":
+                late.append(True)
+                time.sleep(0.3)                          # its weigh read the clock; the stamp is later
+            return real_event(name, **kw)
+        monkeypatch.setattr(heard, "event", stamped_late)
+    turning, turned, held = threading.Event(), threading.Event(), []
+    real_tick = bed.Ducker.tick
+
+    def stalled(self, barge=None):
+        if self.down and stall == "through-his-words" and not turned.is_set():
+            turned.wait(5)
+        if self.down and stall == "after-his-turn" and turning.is_set() and not held:
+            held.append(time.monotonic())
+            time.sleep(1.5)
+        return real_tick(self, barge)
+    monkeypatch.setattr(bed.Ducker, "tick", stalled)
     f = play(env, seconds=3.0)
     stale = play(env, seconds=0.3, name="next.wav")      # the next song: his words never drop it
     th = run(env, idle=0.5)
     assert wait_for(lambda: started(env, f["utt"]))
     time.sleep(0.3)
+    t_words = time.monotonic()
     partial("hang on, wait")                             # a stop word, even: it ducks, never cuts
     assert wait_for(lambda: events(env, "duck"), 2.0)
     assert wait_for(lambda: [m["ducked"] for m in mouth._music(env.d)] == [True], 1.0)   # mouth status
     time.sleep(0.4)
+    if stall == "turn-late":
+        time.sleep(2.6)                                  # past the song's end: the tail waits
+    t_turn = time.monotonic()
+    turning.set()
     turn("hang on, wait")
-    assert wait_for(lambda: events(env, "unduck"), 2.0)
+    turned.set()
+    assert wait_for(lambda: events(env, "unduck"), 5.0)
     assert wait_for(lambda: [m["ducked"] for m in mouth._music(env.d)] == [False], 1.0)
     th.join(12)
     said = kind(env, "said")
@@ -189,15 +384,23 @@ def test_his_words_duck_the_music_and_it_comes_back(env, mixers, monkeypatch):
     assert (d[0]["utt"], d[0]["level"], d[0]["why"], d[0]["causes"], d[0]["device"], d[0]["source"]) == \
         (f["utt"], 20, "barge", ["barge"], "null", "mouth")
     assert (u[0]["utt"], u[0]["device"], u[0]["source"]) == (f["utt"], "null", "mouth")
-    assert 0.6 < u[0]["ducked_s"] < 1.6                  # 0.4 s of his words, the turn, restore 0.3 s
-    assert ts(u[0]) - ts(d[0]) == pytest.approx(u[0]["ducked_s"], abs=0.15)
+    # his words dipped it, and it held through them: down after he spoke, up only
+    # after his turn ended and restore_s had passed, at the first weigh that could
+    t_down, t_up = weighs.assert_back_up_after(0.3, u[0]["ducked_s"])
+    assert weighs.dip()[0][1] == ("barge",)
+    assert t_words < t_down < t_turn < t_up
+    assert u[0]["ducked_s"] >= round(t_turn - t_down, 3) >= 0.4   # at least his 0.4 s of words
+    if stall == "after-his-turn":
+        assert held and t_up > held[0] + 1.5             # the stall was real: up only after it
+    weighs.assert_rows_are_the_dip(d[0], u[0])
+    assert late == ([True] if stall == "unduck-row-late" else [])   # the stall was real
     m = said[f["utt"]]
     assert (m["reason"], m["cut"], m["ducks"]) == ("done", False, 1)
     assert m["ducked_s"] == pytest.approx(u[0]["ducked_s"], abs=0.01)
     assert m["played_s"] == pytest.approx(3.0, abs=0.06)
     assert said[stale["utt"]]["reason"] == "done", "the barge-in flush dropped the next song"
     g = [x for _, x in mixers["null"].trace]
-    assert min(g) == pytest.approx(0.2) and g[-1] == pytest.approx(1.0)
+    assert min(g) == pytest.approx(0.2) and g[-1] == pytest.approx(1.0)    # back to full
     assert not any(r.get("reason") == "barge-in" for r in said.values())
 
 
@@ -216,31 +419,46 @@ def test_no_barge_duck_where_barge_in_does_not_count(env, mixers):
 
 # -- duck-under-say ------------------------------------------------------------------
 
+@pytest.mark.parametrize("stall", [None, "say-ends-late"])
 @pytest.mark.needs_ffmpeg
-def test_a_line_plays_over_the_ducked_music_and_two_stacked_lines_are_one_duck(env, mixers):
+def test_a_line_plays_over_the_ducked_music_and_two_stacked_lines_are_one_duck(env, mixers, weighs,
+                                                                                 monkeypatch, stall):
+    """The lines end ~3.1 s into the 5 s song. The trace reaching 1.0 needed
+    restore_s, a poll and the 500 ms ramp up to fit in what was left of it (4 s did
+    not, 1 in 6); now the song's tail waits for the dip to come up (EARS-535).
+    ``say-ends-late``: the player lets the say cause go 1.2 s late, ~4.3 s in."""
     settings(env, music_duck_restore_s=0.3)
-    # 5 s: the lines end ~3.1 s in, then restore_s, a poll and the 500 ms ramp up
-    # must all fit inside the song for the trace to reach 1.0 (4 s did not, 1 in 6)
+    held_tail(monkeypatch, "FileSound", until=lambda: weighs.ups() >= 1, name="song.wav")
+    late = says_late(monkeypatch, 1.2) if stall == "say-ends-late" else None
     f = play(env, seconds=5.0, device="dev-a")
     one = say(env, "the first line", device="dev-a")
     two = say(env, "and a second one right behind it", device="dev-a")
     run(env, idle=0.5).join(15)
-    saying, said = kind(env, "saying"), kind(env, "said")
+    said = kind(env, "said")
     pos = order(env)
-    assert ts(saying[one["utt"]]) - ts(saying[f["utt"]]) < 0.5, "the line waited for the song"
+    assert pos[("saying", one["utt"])] < pos[("said", f["utt"])], "the line waited for the song"
     assert pos[("said", two["utt"])] < pos[("said", f["utt"])]
     d, u = events(env, "duck"), events(env, "unduck")
     assert len(d) == 1 and len(u) == 1, "stacked lines pumped the music"
     assert (d[0]["why"], d[0]["level"], d[0]["utt"]) == ("say", 20, f["utt"])
-    # with the line (or with the music's first frame, if ffmpeg was slower), not a poll later
-    assert ts(d[0]) - max(ts(saying[one["utt"]]), ts(saying[f["utt"]])) < 0.15
+    # with the line (or with the music's first frame, if ffmpeg was slower), not a poll
+    # later: dipped no later than the line's own first-frame weigh, or (the line was on
+    # before the bed had a Ducker) at the bed's first weigh (EARS-487: by the weighs'
+    # order, not by 0.15 s of the host's wall clock). The dip is the FIRST weigh that
+    # saw a line: with line one on before the Ducker, by_line[0] is line TWO's weigh,
+    # and "<= by_line[0]" alone would let a dip polls late through.
+    down = weighs.dip()[0]
+    saw = next(i for i, w in enumerate(weighs) if w[1])
+    by_line = [i for i, w in enumerate(weighs) if w[2] == "line"]
+    assert weighs.index(down) == saw <= (by_line[0] if by_line else 0), list(weighs)
     assert ts(u[0]) > ts(said[two["utt"]])                  # back up after the LAST line
-    assert ts(u[0]) - ts(said[two["utt"]]) == pytest.approx(0.3, abs=0.25)
+    weighs.assert_back_up_after(0.3, u[0]["ducked_s"])      # and restore_s after it, at the first weigh
     assert said[one["utt"]]["over"] == f["utt"] and said[two["utt"]]["over"] == f["utt"]
     m = said[f["utt"]]
     assert (m["reason"], m["cut"], m["ducks"]) == ("done", False, 1)
     g = [x for _, x in mixers["dev-a"].trace]
-    assert min(g) == pytest.approx(0.2) and g[-1] == pytest.approx(1.0)
+    assert min(g) == pytest.approx(0.2) and g[-1] == pytest.approx(1.0)    # back to full
+    assert late is None or late == [True]                                   # the stall was real
 
 
 @pytest.mark.needs_ffmpeg
@@ -435,14 +653,25 @@ def test_t1_the_setting_decides_whether_a_line_over_the_music_ducks_it(env, mixe
         assert not events(env, "duck") and not events(env, "unduck")
 
 
+@pytest.mark.parametrize("stall", [None, "say-ends-late", "clock-moves-late"])
 @pytest.mark.needs_ffmpeg
-def test_t5_an_override_set_mid_bed_lifts_the_dip_and_it_returns_when_it_expires(env, mixers, monkeypatch):
+def test_t5_an_override_set_mid_bed_lifts_the_dip_and_it_returns_when_it_expires(env, mixers, weighs, monkeypatch,
+                                                                                  stall):
     """SC5: the same Bed and mixer lane, no restart. The override lifts the dip
-    within one poll; once the fake clock passes ``until`` it dips again."""
+    within one poll; once the fake clock passes ``until`` it dips again.
+
+    EARS-535: the line's last ``TAIL_S`` waits for that second dip, so the say
+    cause is still live when the fake clock moves however late this thread moves
+    it (``clock-moves-late``: 5 s late, past the ~4.7 s line's end); the song's
+    waits for the second dip to come up, so its trace ends at 1.0 however late
+    the say cause lets go (``say-ends-late``: 0.8 s late, ~5.5 s into the 6 s song)."""
     from mouth import duckswitch
     clock = [time.time()]
     monkeypatch.setattr(duckswitch, "clock", lambda: clock[0])
     settings(env, music_duck_restore_s=0.3)
+    held_tail(monkeypatch, "FileSound", until=lambda: weighs.ups() >= 2, name="song.wav")
+    held_tail(monkeypatch, "Silence", until=lambda: weighs.downs() >= 2)
+    late = says_late(monkeypatch, 0.8) if stall == "say-ends-late" else None
     f = play(env, seconds=6.0)
     line = say(env, "word " * 14)                                 # ~4.5 s: the say cause holds
     th = run(env, idle=0.5)
@@ -456,12 +685,19 @@ def test_t5_an_override_set_mid_bed_lifts_the_dip_and_it_returns_when_it_expires
     up = lambda: mixers["null"].trace and mixers["null"].trace[-1][1] > 0.5
     assert wait_for(low, 1.0)
     duckswitch.set(env.d, on=False, for_s=600)
-    t0 = time.monotonic()
+    t_set = time.monotonic()
     assert wait_for(lambda: events(env, "unduck"), 1.0)
-    assert time.monotonic() - t0 < 0.35                           # one poll (100 ms), and slack
+    # within one poll: the first weigh that began after the override was set lifted
+    # the dip, if an earlier one had not (EARS-487: the weighs' order on the bed's
+    # clock, not the 0.35 s of the host's wall clock this test thread happened to see)
+    lifted = next(i for i, w in enumerate(weighs) if w[3] and not w[4])
+    after = [i for i, w in enumerate(weighs) if w[0] > t_set]
+    assert lifted <= (after[0] if after else len(weighs)), list(weighs)
     assert wait_for(lambda: bed.read(env.d)[0].get("duck_by") == "override", 1.0)
     assert not bed.read(env.d)[0]["ducked"]
     assert wait_for(up, 1.0)
+    if stall == "clock-moves-late":
+        time.sleep(5.0)                                           # the line's tail waits for it
     clock[0] += 601                                               # the override has expired
     assert wait_for(lambda: len(events(env, "duck")) == 2, 1.0)
     th.join(15)
@@ -478,7 +714,8 @@ def test_t5_an_override_set_mid_bed_lifts_the_dip_and_it_returns_when_it_expires
     g = [x for _, x in mixers["null"].trace]                      # ONE mixer: down, up, down, up
     lows = [i for i, x in enumerate(g) if x < 0.21]
     runs = 1 + sum(1 for a, b in zip(lows, lows[1:]) if b != a + 1) if lows else 0
-    assert runs == 2 and g[-1] == pytest.approx(1.0)
+    assert runs == 2 and g[-1] == pytest.approx(1.0)                # back to full, at the end
+    assert late is None or late == [True]                         # the stall was real
 
 
 def test_t6_one_skipped_row_per_would_be_dip_and_the_latch_never_blocks_a_dip(env):
@@ -703,9 +940,15 @@ def test_t4_with_ducking_off_by_override_his_singing_neither_dips_nor_cuts_the_m
 
 # -- volume-bed-times-duck -------------------------------------------------------------
 
+@pytest.mark.parametrize("stall", [None, "say-ends-late"])
 @pytest.mark.needs_ffmpeg
-def test_a_bed_at_50_ducks_to_10_and_comes_back_to_50(env, mixers):
+def test_a_bed_at_50_ducks_to_10_and_comes_back_to_50(env, mixers, weighs, monkeypatch, stall):
+    """The song's tail waits for the dip to come up (EARS-535), so "comes back to
+    50" never races the 3 s song: ``say-ends-late`` lets the say cause go 1.6 s
+    late, ~2.4 s in, too late for restore_s, a poll and the ramp up to fit."""
     settings(env, music_duck_restore_s=0.2)
+    held_tail(monkeypatch, "FileSound", until=lambda: weighs.ups() >= 1, name="song.wav")
+    late = says_late(monkeypatch, 1.6) if stall == "say-ends-late" else None
     f = play(env, seconds=3.0, device="dev-a", volume=50)
     line = say(env, "a short line", device="dev-a")
     run(env, idle=0.5).join(12)
@@ -716,6 +959,7 @@ def test_a_bed_at_50_ducks_to_10_and_comes_back_to_50(env, mixers):
     # the trace starts (the bed is ticked at once), so the trace may open mid-ramp
     assert min(g) == pytest.approx(0.10) and max(g) == pytest.approx(0.5)
     assert g[-1] == pytest.approx(0.5), "it came back to 1.0, not to its own level"
+    assert late is None or late == [True]                         # the stall was real
 
 
 # -- review 1546 F1: never two outputs beside a closing mixer ----------------------------

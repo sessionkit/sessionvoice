@@ -23,6 +23,7 @@ from urllib.parse import urljoin, urlsplit
 import pytest
 
 from talk import server
+from tests import fake_tools
 from tests.test_talk_kit import FRONT, PAGE, SECRET, USER, kget, kit, room  # noqa: F401 (fixtures)
 
 PREFIX = ("X-Sessionkit-Prefix", "/talk")
@@ -38,6 +39,9 @@ OPERATOR_LINKS = {"cfg.settings_url", "cfg.call_url"}
 # (kind, value): a quoted value is a string literal, a bare one an identifier.
 MEASURED = Counter({
     ("href", "manifest.json"): 1,             # <link rel="manifest">
+    ("href", "favicon.ico"): 1,               # the icons, added after that measurement:
+    ("href", "icon.svg"): 1,                  # relative, so the front door's own icon is
+    ("href", "apple-touch-icon.png"): 1,      # never the one a browser at /talk/ fetches
     ("src", "avatar/${k}"): 1,                # the faces
     ("href", "cfg.settings_url"): 1,          # operator link
     ("href", "cfg.call_url"): 1,              # operator link
@@ -137,16 +141,28 @@ def test_no_url_is_absolute_but_the_two_operator_links():
 
 def test_every_page_url_resolves_under_the_prefix():
     us = literal_urls(urls(HTML))
-    assert sorted(us) == sorted(["manifest.json", "avatar/someone", "events?n=400&debug=1",
-                                 "events?n=150", "pair", "pair"])
+    assert sorted(us) == sorted(["manifest.json", "favicon.ico", "icon.svg", "apple-touch-icon.png",
+                                 "avatar/someone", "events?n=400&debug=1", "events?n=150",
+                                 "pair", "pair"])
     for u in us:
         assert urlsplit(urljoin(BASE, u)).path.startswith("/talk/"), u
 
 
 def test_the_manifest_starts_under_the_prefix():
-    assert MANIFEST_URL_MEMBERS & MANIFEST.keys() == {"start_url"}
+    assert MANIFEST_URL_MEMBERS & MANIFEST.keys() == {"start_url", "icons"}
     assert not absolute(MANIFEST["start_url"])
     assert urljoin(urljoin(BASE, "manifest.json"), MANIFEST["start_url"]) == BASE
+
+
+def test_every_manifest_icon_resolves_under_the_prefix_and_is_served():
+    """A manifest icon is resolved against the manifest's own URL. Each one is relative,
+    lands under /talk/, and names a file the icon route serves."""
+    srcs = [i["src"] for i in MANIFEST["icons"]]
+    assert srcs and len(set(srcs)) == len(srcs)
+    for src in srcs:
+        assert not absolute(src), src
+        url = urljoin(urljoin(BASE, "manifest.json"), src)
+        assert server.route(strip(url)) == "icon" and strip(url).lstrip("/") in server.ICONS, src
 
 
 def manifest_links(html):
@@ -217,14 +233,15 @@ def test_the_page_manifest_and_events_answer_under_the_prefix(kit):
     assert body.startswith(b"event: config\n")
 
 
-def test_every_page_link_reaches_its_route_under_the_prefix(kit, tmp_path):
+def test_every_page_link_reaches_its_route_under_the_prefix(kit, tmp_path, monkeypatch):
     """Each URL the page carries, resolved at /talk/ and stripped as the front door
-    strips it, is answered by its route; none redirects."""
-    face = tmp_path / "home" / ".session" / "agents" / "someone"
+    strips it, is answered by its route; none redirects. The face is served through a fake
+    tools (tests/fake_tools.py), so the runner's own sessiontools, or none, never decides it."""
+    face = fake_tools.with_kit_tools(tmp_path, monkeypatch, tmp_path / "home") / "someone"
     face.mkdir(parents=True)
     (face / "avatar.jpg").write_bytes(b"\xff\xd8 a face \xff\xd9")
     kit()
-    expect = {"manifest": 200, "avatar": 200, "events": 200, "pair": 204}
+    expect = {"manifest": 200, "icon": 200, "avatar": 200, "events": 200, "pair": 204}
     seen = set()
     for u in literal_urls(urls(HTML)):
         path = strip(urljoin(BASE, u))

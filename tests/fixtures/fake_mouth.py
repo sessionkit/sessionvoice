@@ -7,7 +7,9 @@ queues nothing and touches no mouth: it records its argv and exits as it is told
 Everything after "--" is what the keeper passed (the keeper runs `MOUTH again UTT ...`,
 so give it --mouth "python3 fake_mouth.py --log FILE --"). It appends that argv to
 FILE as one JSON line, sleeps S seconds, then exits N (default 0). On 0 it prints the
-JSON line the real `mouth again` prints; otherwise it prints TEXT on stderr.
+JSON line the real `mouth again` prints, or for `say` (the mail alert's `say --alert
+TEXT`) a plain utt on one line, as `mouth say` prints, numbered by FILE's lines;
+otherwise it prints TEXT on stderr.
 """
 import json
 import sys
@@ -23,11 +25,18 @@ def main(argv):
         head = argv
     for k, v in zip(head[::2], head[1::2]):
         opts[k] = v
+    try:
+        with open(opts["--log"]) as f:
+            index = sum(1 for _ in f)
+    except FileNotFoundError:
+        index = 0
     with open(opts["--log"], "a") as f:
         f.write(json.dumps(rest) + "\n")
     time.sleep(float(opts["--sleep"]))
     code = int(opts["--exit"])
-    if code == 0:
+    if code == 0 and rest[:1] == ["say"]:
+        print(f"a1e7{index:08x}")
+    elif code == 0:
         utt = rest[1] if len(rest) > 1 else ""
         print(json.dumps({"utt": "replay0000001", "again_of": utt, "again_from": "audio"}))
     else:

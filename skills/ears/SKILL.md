@@ -82,6 +82,10 @@ from `scripts/`.
     (about 1 GB): pass it on, and install only if the user asks.
   - `--stem drums,bass` plays a song's stems, once `mouth split FILE` has
     made them.
+  - `mouth play --find "No Scrubs TLC"`: play a song by name, when the
+    host's `mouth.json` sets `play_finders`. `--matches list` shows the
+    matches without playing; `--pick N` plays one (docs/mouth.md, "Find a
+    song").
 - `SwitchAudioSource -c -t output` (if installed) names the user's output
   device now: a headset, or the built-in speakers. A headset vanishing from
   the list usually means it moved to a phone: a call.

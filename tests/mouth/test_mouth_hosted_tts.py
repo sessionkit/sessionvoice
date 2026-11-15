@@ -160,8 +160,9 @@ def test_tts_in_mouth_json_is_the_url_and_model_the_line_goes_to(stub, mouth_jso
     assert len(audio) == 480 and not audio.any()
     [req] = stub.requests
     assert req.path == "/v1/audio/speech"
+    # af_sky carries its language, lang_code "a" (EARS-543)
     assert req.body == {"model": "example-tts-model", "input": "hello", "voice": "af_sky",
-                        "response_format": "pcm"}
+                        "response_format": "pcm", "lang_code": "a"}
 
 
 def test_a_trailing_slash_on_tts_url_is_dropped(stub, mouth_json):
@@ -317,7 +318,7 @@ def test_unconfigured_is_the_builtin_with_no_key(monkeypatch):
     assert backends.speech_endpoint() == (BUILTIN_URL, BUILTIN_MODEL)
     be, voice = backends.resolve("kokoro", "af_sky")
     assert (be.name, be.base_url, be.model, be.api_key, be.extra_body, voice) == (
-        "kokoro", BUILTIN_URL, BUILTIN_MODEL, None, {}, "af_sky")
+        "kokoro", BUILTIN_URL, BUILTIN_MODEL, None, {"lang_code": "a"}, "af_sky")  # EARS-543
 
 
 def test_unconfigured_auto_probes_the_builtin_url_only(no_live_probe):
@@ -342,8 +343,9 @@ def test_the_request_is_todays_no_key_header(stub, monkeypatch):
     speak(be)
     [req] = stub.requests
     assert "authorization" not in {k.lower() for k in req.headers}
+    # today's body, plus af_sky's language since EARS-543
     assert req.body == {"model": BUILTIN_MODEL, "input": "hello", "voice": "af_sky",
-                        "response_format": "pcm"}
+                        "response_format": "pcm", "lang_code": "a"}
 
 
 # -- the schema: one additive property ------------------------------------------------

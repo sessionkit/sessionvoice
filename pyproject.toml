@@ -1,6 +1,6 @@
 [project]
 name = "sessionvoice"
-version = "0.3.3"
+version = "0.4.0"
 description = "One listening engine for coding agents and the Delta bot: Apple / Nemotron / whisper -> one event stream -> VAD -> turns"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -89,8 +89,9 @@ ears = ["_keeper/ears-keeper.sh", "_keeper/call-ears", "_keeper/input-watch.swif
 # same way. They are data, never imported by the mouth: `mouth split` runs run.py in the
 # separator venv. torch and demucs, that venv's, are in no dependency list here.
 mouth = ["_separator/*"]
-# talk serves its page and manifest from beside server.py
-talk = ["index.html", "manifest.json"]
+# talk serves its page, manifest and icons from beside server.py
+talk = ["index.html", "manifest.json", "icon.svg", "favicon.ico", "apple-touch-icon.png",
+        "icon-192.png", "icon-512.png", "icon-mask-512.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

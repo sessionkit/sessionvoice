@@ -115,11 +115,13 @@ Install then fetches the server's weights, about 2.9 GB, so the first call
 does not wait on them. It prints the size first, skips any already cached
 and prints progress while it fetches. `--no-prefetch` (or
 `EARS_NO_PREFETCH=1`) skips this on a host that must not download, and
-`--dry-run` prints the size and fetches nothing. A fetch that fails does
-not fail the install. It says why and how much is left. Whatever is not
-fetched at install is downloaded by the server on first use: the first
-transcription waits on Parakeet, and the first line spoken waits on Kokoro
-and its voices.
+`--dry-run` prints the size and fetches nothing. The opt-out covers these
+weights only: a missing Silero VAD model (2.3 MB) is still fetched, because
+the keeper cannot hear without it ([models](models.md#silero-vad)). A fetch
+that fails does not fail the install. It says why and how much is left.
+Whatever is not fetched at install is downloaded by the server on first
+use: the first transcription waits on Parakeet, and the first line spoken
+waits on Kokoro and its voices.
 
 **These weights are not pinned.** mlx-audio's server takes whatever is on
 Hugging Face `main` at first use, and it has no way to ask for a revision,

@@ -285,6 +285,122 @@ def test_a_flat_agent_has_no_face_at_rung_a(h, tmp_path, monkeypatch):
     assert home.avatar("ana") is None and server.avatar_path("ana") is None
 
 
+# ---- faces at rung (a): agent_config, then paths.agent_report (the launcher's folder) ------------
+#
+# The three host layouts an upgrade can leave, with sessiontools installed:
+#   a: the face in tools' config folder (tools' agent/config/<name>/);
+#   b: the face ONLY in the pre-4.2 agents/<name>/ (no <name>.md beside it), the launcher
+#      still reading that folder;
+#   c: a complete pre-4.2 agents/<name>/ (<name>.md and the face).
+
+def _plant(case: str, h: Path, tmp_path: Path, monkeypatch) -> Path:
+    """Case A, B or C's HOME with a fake sessiontools; returns the planted face."""
+    if case == "a":
+        root = tmp_path / "tools-root"
+        fake_tools.with_sessiontools(tmp_path, monkeypatch, root)
+        return face(root / "agent" / "config" / "ivy" / "avatar.jpg", b"A")
+    agents = fake_tools.with_kit_tools(tmp_path, monkeypatch, h)
+    if case == "c":
+        (agents / "ivy").mkdir(parents=True)
+        (agents / "ivy" / "ivy.md").write_text("# ivy\n")
+    return face(agents / "ivy" / "avatar.jpg", case.upper().encode())
+
+
+@pytest.mark.parametrize("case", ["a", "b", "c"])
+def test_each_upgrade_layout_has_its_face_served_with_tools_installed(case, h, tmp_path,
+                                                                      monkeypatch):
+    want = _plant(case, h, tmp_path, monkeypatch)
+    assert home.tools_agent().how == "sessiontools"
+    assert home.avatar("ivy") == want
+    assert server.avatar_path("ivy") == str(want)
+    assert home.avatar("nobody") is None and server.avatar_path("nobody") is None
+
+
+def test_tools_config_folder_comes_before_the_launchers_folder(h, tmp_path, monkeypatch):
+    """Both hold a face: agent_config's folder (0.3.3's answer) is asked first."""
+    agents = fake_tools.with_kit_tools(tmp_path, monkeypatch, h)
+    old = face(agents / "ivy" / "avatar.jpg", b"OLD")
+    new = face(h / ".sessionkit" / "tools" / "state" / "agent" / "config" / "ivy" / "avatar.jpg",
+               b"NEW")
+    t = home.tools_agent()
+    assert t.avatars("ivy")[:2] == [new, old]
+    assert home.avatar("ivy", tools=t) == new
+
+
+def test_a_directory_agent_is_one_candidate_not_two(h, tmp_path, monkeypatch):
+    """agent_report's config folder and <agents>/<name>/ are the same folder for a directory
+    agent: listed once."""
+    root = tmp_path / "tools-root"
+    fake_tools.with_sessiontools(tmp_path, monkeypatch, root)
+    d = root / "agent" / "config" / "ivy"
+    d.mkdir(parents=True)
+    (d / "ivy.md").write_text("")
+    assert home.tools_agent().avatars("ivy") == [d / "avatar.jpg"]
+
+
+@pytest.mark.parametrize("layout", ["flat", "unknown"])
+def test_an_empty_config_path_is_never_joined(layout, h, tmp_path, monkeypatch):
+    """agent_report says "" for a flat agent and for a name the launcher refuses: no
+    ``avatar.jpg`` relative to the cwd, and no stray face beside the flat file."""
+    agents = fake_tools.with_kit_tools(tmp_path, monkeypatch, h)
+    agents.mkdir(parents=True)
+    if layout == "flat":
+        (agents / "ivy.md").write_text("")
+    face(agents / "avatar.jpg", b"STRAY")
+    monkeypatch.chdir(tmp_path)
+    face(tmp_path / "avatar.jpg", b"CWD")
+    cands = home.tools_agent().avatars("ivy")
+    assert all(p.is_absolute() for p in cands) and Path("avatar.jpg") not in cands
+    assert home.avatar("ivy") is None
+
+
+@pytest.mark.parametrize("report", ["none", "raise"])
+def test_a_tools_that_cannot_answer_agent_report_gets_the_old_folder(report, h, tmp_path,
+                                                                     monkeypatch):
+    """An older tools (no ``paths.agent_report``) or one whose ``agent_report`` raises: the
+    pre-4.2 agents folder under HOME is read instead, after tools' config folder."""
+    root = tmp_path / "tools-root"
+    fake_tools.with_sessiontools(tmp_path, monkeypatch, root, report=report)
+    t = home.tools_agent()
+    assert t.how == "sessiontools"
+    old = h / home.TOOLS_OLD["agents"] / "ivy" / "avatar.jpg"
+    assert t.avatars("ivy") == [old]
+    face(old, b"OLD")
+    assert home.avatar("ivy") == old and server.avatar_path("ivy") == str(old)
+    new = face(root / "agent" / "config" / "ivy" / "avatar.jpg", b"NEW")
+    assert home.avatar("ivy") == new
+    assert home.avatar("nobody") is None
+
+
+def test_while_agent_report_answers_the_old_folder_is_not_read(h, tmp_path, monkeypatch):
+    """A tools that answers agent_report with its own folders: the literal pre-4.2 folder
+    under HOME is a decoy, never a candidate."""
+    fake_tools.with_sessiontools(tmp_path, monkeypatch, tmp_path / "tools-root")
+    face(h / home.TOOLS_OLD["agents"] / "ivy" / "avatar.jpg", b"DECOY")
+    assert h / home.TOOLS_OLD["agents"] / "ivy" / "avatar.jpg" not in \
+        home.tools_agent().avatars("ivy")
+    assert home.avatar("ivy") is None
+
+
+def test_a_refusing_agent_config_still_asks_agent_report(h, tmp_path, monkeypatch):
+    agents = fake_tools.with_kit_tools(tmp_path, monkeypatch, h)
+    want = face(agents / "ivy" / "avatar.jpg", b"B")
+    import sessiontools.settings as st
+
+    def refuse(agent, env=None):
+        raise RuntimeError("a fake refusal")
+    monkeypatch.setattr(st, "agent_config", refuse)
+    assert home.avatar("ivy") == want
+
+
+def test_a_report_that_is_not_the_contract_gets_the_old_folder(h, tmp_path, monkeypatch):
+    fake_tools.with_sessiontools(tmp_path, monkeypatch, tmp_path / "tools-root")
+    import sessiontools.paths as sp
+    monkeypatch.setattr(sp, "agent_report", lambda name, env=None: {"version": "x"})
+    assert home.tools_agent().avatars("ivy") == [h / home.TOOLS_OLD["agents"] / "ivy" /
+                                                  "avatar.jpg"]
+
+
 def test_with_no_tools_a_face_is_read_from_the_old_folders_in_order(h):
     agents = face(h / home.TOOLS_OLD["agents"] / "ana" / "avatar.jpg", b"OLD")
     assert home.avatar("ana") == agents
@@ -497,9 +613,22 @@ T = datetime(2030, 6, 9, 8, 0).astimezone()
 DAY = "heard_2030-06-09.jsonl"
 
 
-def _heard_first_reply(tmp_path, h, env_extra) -> int:
+def _host_tools(tmp_path, h) -> Path:
+    """A stand-in for a sessiontools INSTALLED on the runner, as the real one answers on this
+    fake HOME: it adopts tools' old root, ``~/.session``, while that is real (sessiontools 0.3.3
+    does; EARS-525). Under the decoy it names zed a seat; without one, it names none."""
+    return fake_tools.sessiontools_pkg(tmp_path / "host-site", h / ".session")
+
+
+def _heard_first_reply(tmp_path, h, env_extra, host=None) -> int:
     """walter spoke; the user's next turn opens "Hey zed, ...". It is NOT walter's reply when
-    heard-first knows zed is a seat (124), and it is (0) when it does not."""
+    heard-first knows zed is a seat (124), and it is (0) when it does not.
+
+    heard-first runs with ``sys.executable``, so it sees the runner's installed packages, and an
+    installed sessiontools would answer rung (a) before the fake ``session`` (EARS-525). Rung
+    (a) is the test's to choose: ENV_EXTRA's ``PYTHONPATH`` (a fake sessiontools), else one
+    that hides any other (:func:`fake_tools.hidden_sessiontools`). HOST, a folder put AFTER
+    it, stands for site-packages: a sessiontools there must never be the one asked."""
     at = lambda s: (T + timedelta(seconds=s)).isoformat()
     root = tmp_path / "vm"
     logs = root / "logs" / "conversations"
@@ -512,22 +641,33 @@ def _heard_first_reply(tmp_path, h, env_extra) -> int:
     (logs / DAY).write_text("".join(json.dumps(r) + "\n" for r in recs))
     state = tmp_path / "walter.state"
     state.write_text(json.dumps({"offsets": {str(logs / DAY): 0}}))
+    rung_a = env_extra.get("PYTHONPATH") or str(fake_tools.hidden_sessiontools(tmp_path / "hide"))
     env = {"VOICEMODE_BASE_DIR": str(root), "HOME": str(h),
-           "PATH": os.pathsep.join([str(h.nobin), "/usr/bin", "/bin"]), **env_extra}
+           "PATH": os.pathsep.join([str(h.nobin), "/usr/bin", "/bin"]), **env_extra,
+           "PYTHONPATH": os.pathsep.join([rung_a] + ([str(host)] if host else []))}
     p = subprocess.run([sys.executable, str(BIN / "heard-first"), "--rule", "reply:walter",
                         "--state", str(state), "--timeout", "1"],
                        capture_output=True, text=True, timeout=30, env=env)
+    assert p.returncode in (0, 124), p.stderr
     return p.returncode
 
 
-def test_heard_first_knows_no_seat_from_the_decoy_while_tools_answers(tmp_path, h):
+@pytest.mark.parametrize("host", [False, True], ids=["no host tools", "host tools"])
+def test_heard_first_knows_no_seat_from_the_decoy_while_tools_answers(host, tmp_path, h):
+    """Tools answers (rung b, the fake ``session``) and lists no zed: the decoy at tools' old
+    folders names no seat, so "Hey zed" does not stop it being walter's reply. With a host
+    sessiontools that would adopt the decoy (zed a seat: 124), still 0."""
     decoy(h)
     fake_tools.session_bin(h.nobin, agent=tmp_path / "tools-root" / "agent")
-    assert _heard_first_reply(tmp_path, h, {}) == 0
+    assert _heard_first_reply(tmp_path, h, {}, _host_tools(tmp_path, h) if host else None) == 0
+    assert "path agent" in fake_tools.calls(h.nobin)                    # rung b answered
 
 
+@pytest.mark.parametrize("host", [False, True], ids=["no host tools", "host tools"])
 @pytest.mark.parametrize("how", ["session path", "sessiontools", "voice seats"])
-def test_heard_first_knows_the_seats_tools_and_voice_list(how, tmp_path, h):
+def test_heard_first_knows_the_seats_tools_and_voice_list(how, host, tmp_path, h):
+    """zed is a seat where tools (rung a or b) or voice's own seats/ list it: "Hey zed" is not
+    walter's reply. A host sessiontools, which lists no zed here, is never the one asked."""
     root = tmp_path / "tools-root"
     extra = {}
     if how == "sessiontools":
@@ -538,12 +678,18 @@ def test_heard_first_knows_the_seats_tools_and_voice_list(how, tmp_path, h):
         state_file(root / "agent" / "home" / SEAT, "TOOLS")
     else:
         state_file(fresh(h), "VOICE")
-    assert _heard_first_reply(tmp_path, h, extra) == 124
+    assert _heard_first_reply(tmp_path, h, extra, _host_tools(tmp_path, h) if host else None) == 124
+    asked = fake_tools.calls(h.nobin)
+    if how == "sessiontools":
+        assert asked == []                                              # rung a starts no process
+    else:
+        assert "path agent" in asked                                    # rung b was asked
 
 
 def test_heard_first_with_no_tools_reads_rung_c(tmp_path, h):
     state_file(h / home.TOOLS_OLD["agent"] / "home" / SEAT, "OLD")
     assert _heard_first_reply(tmp_path, h, {}) == 124
+    assert "path agent" in fake_tools.calls(h.nobin)                    # rung b asked, unanswered
 
 
 # ---- the scan: tools' and mail's folders are named only in TOOLS_OLD ---------------------------

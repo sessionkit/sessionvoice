@@ -14,7 +14,7 @@
 HOME and VOICEMODE_BASE_DIR are temp dirs; every server binds a FREE port,
 never 8780, with the state poll stubbed unless a test runs one pass itself.
 """
-import http.client, json, os, re, socket, subprocess, threading
+import json, os, re, socket, subprocess, threading, time
 from datetime import date
 from html.parser import HTMLParser
 from pathlib import Path
@@ -25,6 +25,7 @@ import pytest
 from ears import heard
 from talk import server, token_store
 from tests import _scanlist, fake_tools
+from tests.talk_helpers import SSE, live_row
 
 TALK_SRC = Path(server.__file__).parent
 
@@ -143,34 +144,6 @@ def live(env):
             t.join(5)
 
 
-class SSE:
-    """A minimal reader of /events: next() returns (event name or None, data)."""
-
-    def __init__(self, port, query="n=150"):
-        self.c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        self.c.request("GET", "/events?" + query,
-                       headers={"Cookie": f"{server.COOKIE}={token_store.load()}"})
-        self.r = self.c.getresponse()
-        assert self.r.status == 200
-
-    def next(self):
-        name, data = None, None
-        while True:
-            line = self.r.fp.readline().decode()
-            if not line:
-                raise EOFError
-            line = line.rstrip("\n")
-            if line.startswith("event: "):
-                name = line[7:]
-            elif line.startswith("data: "):
-                data = json.loads(line[6:])
-            elif line == "" and data is not None:
-                return name, data
-
-    def close(self):
-        self.c.close()
-
-
 def test_turns_and_mouth_lines_stream_with_no_seats(env, live):
     home, vm = env
     heard.turn("is the kettle on", source="mic")
@@ -185,11 +158,37 @@ def test_turns_and_mouth_lines_stream_with_no_seats(env, live):
         assert name == "backfill"
         assert [r["kind"] for r in rows] == ["turn", "saying", "said"]
         assert rows[0]["text"] == "is the kettle on" and rows[1]["agent"] == "claude"
-        heard.saying("and now?", utt="u2")                       # live, and with no agent
-        name, row = sse.next()
-        while name == "state":
-            name, row = sse.next()
+        name, row = live_row(sse, lambda: heard.saying("and now?", utt="u2"))   # live, no agent
         assert name is None and row["kind"] == "saying" and "agent" not in row
+    finally:
+        sse.close()
+
+
+@pytest.fixture
+def slow_tail(env):
+    """The server pauses between sending "backfill" and positioning the tail: the window
+    a loaded host opens by chance (EARS-536), held open on purpose. A row written as soon
+    as backfill is read lands inside it and is never streamed."""
+    real = server.Handler.send_event
+
+    def send_event(self, name, data):
+        real(self, name, data)
+        if name == "backfill":
+            time.sleep(0.5)
+
+    with mock.patch.object(server.Handler, "send_event", send_event):
+        yield
+
+
+def test_live_row_streams_when_the_tail_opens_late(env, slow_tail, live):
+    heard.turn("is the kettle on", source="mic")
+    sse = SSE(live)
+    try:
+        assert sse.next()[0] == "config"
+        name, rows = sse.next()
+        assert name == "backfill" and [r["text"] for r in rows] == ["is the kettle on"]
+        name, row = live_row(sse, lambda: heard.saying("and now?", utt="u2"))
+        assert name is None and row["kind"] == "saying" and row["text"] == "and now?"
     finally:
         sse.close()
 

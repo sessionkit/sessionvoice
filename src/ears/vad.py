@@ -46,31 +46,68 @@ def _sha256_file(path):
     return h.hexdigest()
 
 
-def fetch_silero(dst, *, url=SILERO_URL, sha256=SILERO_SHA256, opener=None, timeout=60):
+# A fetch that meets a server error (5xx) or a connection error is tried again after each of
+# these waits (seconds), so three tries in all; a 4xx or a checksum mismatch is final at once.
+# One transient 503 from the host must not fail a whole install.
+FETCH_DELAYS = (2.0, 5.0)
+
+
+def _fetch_is_transient(e):
+    """Is this fetch error worth another try? A 5xx, or the connection failing (refused, reset,
+    timed out, DNS, a body cut short). Not a 4xx: the URL is wrong and stays wrong."""
+    import http.client
+    import urllib.error
+    if isinstance(e, urllib.error.HTTPError):
+        return e.code >= 500
+    return isinstance(e, (OSError, http.client.HTTPException))   # URLError, TimeoutError, ConnectionError
+
+
+def fetch_silero(dst, *, url=SILERO_URL, sha256=SILERO_SHA256, opener=None, timeout=60,
+                 delays=None, sleep=None):
     """Download `url` to a temp file beside `dst`, check its SHA-256, and os.replace it onto
     `dst` only on a match. On a mismatch or any fetch error the temp file is deleted, nothing
-    is written at `dst`, and SileroFetchError carries one line naming the URL."""
+    is written at `dst`, and SileroFetchError carries one line naming the URL.
+
+    A 5xx or a connection error is tried again after each wait in `delays` (FETCH_DELAYS when
+    None; `sleep` is time.sleep when None), each try writing the temp file from empty, so a
+    body cut short never counts toward the sum. A 4xx, a disk error or a mismatch is not."""
     import hashlib
     import tempfile
     if opener is None:
         import urllib.request
         opener = urllib.request.urlopen
+    if delays is None:
+        delays = FETCH_DELAYS
+    if sleep is None:
+        import time
+        sleep = time.sleep
     d = os.path.dirname(os.path.abspath(dst))
     try:
         os.makedirs(d, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=d, prefix=".silero_vad.", suffix=".part")
+        os.close(fd)
     except OSError as e:
         why = " ".join(str(e).split()) or type(e).__name__
         raise SileroFetchError(f"could not write in {d} to fetch {url}: {why}; nothing written at {dst}") from e
     try:
-        h = hashlib.sha256()
-        try:
-            with os.fdopen(fd, "wb") as f, opener(url, timeout=timeout) as r:
-                for chunk in iter(lambda: r.read(1 << 16), b""):
-                    h.update(chunk); f.write(chunk)
-        except Exception as e:
-            why = " ".join(str(e).split()) or type(e).__name__
-            raise SileroFetchError(f"could not fetch {url}: {why}; nothing written at {dst}") from e
+        waits = list(delays)
+        while True:
+            h, disk = hashlib.sha256(), True        # disk: the error is ours to write, never retried
+            try:
+                with open(tmp, "wb") as f:          # "wb" truncates: each try starts from empty
+                    disk = False
+                    with opener(url, timeout=timeout) as r:
+                        for chunk in iter(lambda: r.read(1 << 16), b""):
+                            h.update(chunk)
+                            disk = True; f.write(chunk); disk = False
+                    disk = True                     # closing (flushing) the temp is the disk's
+                break
+            except Exception as e:
+                if waits and not disk and _fetch_is_transient(e):
+                    sleep(waits.pop(0))
+                    continue
+                why = " ".join(str(e).split()) or type(e).__name__
+                raise SileroFetchError(f"could not fetch {url}: {why}; nothing written at {dst}") from e
         got = h.hexdigest()
         if got != sha256:
             raise SileroFetchError(f"checksum mismatch for {url}: expected sha256 {sha256[:12]}, "

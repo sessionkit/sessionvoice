@@ -214,6 +214,21 @@ def _subject(text: str) -> str:
     return line if len(line) <= 69 else line[:68] + "…"
 
 
+def _from_local(item: dict) -> str:
+    """The local part of a drop's From: the sender ``item['mail_from']`` names, folded.
+
+    ``mouth say`` and ``play`` set ``mail_from`` from the caller's environment
+    (``mouth.sender``). A resume, a say-again replay and an amend carry the
+    line's own. The domain is never the item's: ``drop`` writes this host's,
+    so the From stays on this host and ``allowed()`` admits it in every mode.
+    With no ``mail_from``, the line's agent, else ``mouth``, as before."""
+    from .sender import fold
+
+    frm = item.get("mail_from")
+    local = fold(frm) if isinstance(frm, str) else ""
+    return local or item.get("agent") or "mouth"
+
+
 def drop(bx: Path, item: dict, *, supersedes: Optional[str] = None) -> Path:
     """Write ITEM into BX/new as a mail: tmp/, then one rename. Sets ``item['mail_id']``.
 
@@ -229,7 +244,7 @@ def drop(bx: Path, item: dict, *, supersedes: Optional[str] = None) -> Path:
     order = time.time_ns()
     mid = f"<{order}.{item['utt']}@{host}.mouth>"
     m = EmailMessage(policy=_POLICY)
-    m["From"] = f"{item.get('agent') or 'mouth'}@{host}"
+    m["From"] = f"{_from_local(item)}@{host}"
     m["To"] = f"mouth@{host}"
     m["Date"] = email.utils.formatdate(item["requested_t"], localtime=True)
     m["Subject"] = _subject(item["text"])
@@ -252,6 +267,12 @@ def drop(bx: Path, item: dict, *, supersedes: Optional[str] = None) -> Path:
         m["X-Mouth-Wait"] = "1"
     for k, h in FIELDS.items():
         v = item.get(k)
+        if k == "agent" and not v:
+            # Always written: read() takes the agent from the From's local part when
+            # X-Mouth-Agent is absent, and the From is now the sender (``_from_local``).
+            # ``mouth`` is what read() made of an agentless line before, so the line
+            # read back, and its notice's recipient, are what they were.
+            v = "mouth"
         if v is not None:
             m[h] = str(v)
     extras = {k: v for k, v in item.items()

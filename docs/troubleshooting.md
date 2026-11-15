@@ -1,11 +1,12 @@
 # Troubleshooting
 
 What to check when sessionvoice misbehaves, one symptom to a section.
-Today there are three. **The mouth's voice chops**, which has three causes (the
+Today there are four. **The mouth's voice chops**, which has three causes (the
 Mac is starved, a clone voice streams slower than real time, or the
 Bluetooth link loses audio), each with its own check and remedy. **The
 ears hear nothing**, which the keeper reports by mail, one cause at a time.
-And **install says a service did not load**.
+**Install says a service did not load**. And **you hear that mail is
+failing**.
 
 ## Mouth: the voice chops
 
@@ -90,7 +91,7 @@ of the same line is clean. The chop happened in the delivery, not in the
 audio that was made.
 
 **Why.** The clone path asks mlx-audio to stream (`"stream": True,
-"streaming_interval": 0.3`, `src/mouth/backends.py:225`). The mouth plays
+"streaming_interval": 0.3`, `src/mouth/backends.py:260`). The mouth plays
 audio as it arrives, so when a starved mlx-audio makes it slower than real
 time, the device runs dry mid-line.
 
@@ -139,9 +140,10 @@ starves the clone too).
   (`"_locked": ["voice"]`). `mouth voices` prints the default and which
   layer set it (`"from"`).
 
-A lead buffer also helps here: `mouth say --lead S` (or `lead_s` in the
-mouth's settings) buffers S seconds of a line's audio before it plays, so a
-clone that renders a little slower than real time has audio in hand. See
+A lead buffer also helps here. A clone line buffers 3 s of its audio
+before it plays by default, so a clone that renders a little slower than
+real time has audio in hand; `mouth say --lead S` (or `lead_s` in the
+mouth's settings) sets another lead, `0` none. See
 [mouth.md](mouth.md).
 
 ### Cause 3: the Bluetooth link is losing audio
@@ -222,6 +224,8 @@ The keeper log, `~/.sessionkit/voice/log/ears-keeper.log`, has a
 - `zeros`: a mic that gives only zeros and no shut lid. The keeper has
   reopened it once already. Check the microphone grant in System Settings,
   Privacy & Security, Microphone, and that the input is the mic you meant.
+  The same zeros at install: [Install: the microphone was not
+  heard](#install-the-microphone-was-not-heard).
 - `beat`: the capture stopped writing heartbeats. The keeper stops it after
   300 s and starts a fresh one; if it comes back, read
   `ears-keeper-capture.log`.
@@ -248,3 +252,135 @@ install --only NAME` for each one named: NAME is the name in the block, but
 not its job). If it fails the same way, the
 service's own log in `~/.sessionkit/voice/log/` (`EARS_LOG_DIR` moves it) may say
 why it would not start.
+
+## Install: the microphone was not heard
+
+`ears services install` waits for the keeper's room capture to hear something,
+and printed a `mic NOT HEARD` line on stderr and exited 2.
+
+**What it checks.** After the keeper loads, with listening on, install waits up
+to 60 s (`EARS_MIC_CHECK_S`) for the capture's first heartbeat with sound.
+macOS asks for the microphone on behalf of that capture's Python, not your
+terminal, so this is the only proof that the grant the room uses is in place.
+Install opens no microphone itself.
+
+- Listening is on after `--listen`, or when `ears.json` already has it on (a
+  re-install or an upgrade).
+- It prints this before the wait. When macOS asks, click Allow:
+
+      mic    listening up to 60 s for the keeper's first sound (EARS_MIC_CHECK_S); if macOS asks to use the microphone, click Allow
+
+- Heard, the exit unchanged:
+
+      mic    heard: MacBook Pro Microphone (peak 1834), 18 s after the keeper loaded
+
+**The lines that exit 2**, one of them on stderr:
+
+    ears services install: mic NOT HEARD in 60 s (only silence): open System Settings > Privacy & Security > Microphone and turn on python3.13 (the ears keeper's capture), then run: ears services install --only keeper
+    ears services install: mic NOT HEARD in 60 s (no sound arrived): open System Settings > Privacy & Security > Microphone and turn on python3.13 (the ears keeper's capture), then run: ears services install --only keeper
+    ears services install: mic NOT HEARD in 60 s (the capture failed): open System Settings > Privacy & Security > Microphone and turn on python3.13 (the ears keeper's capture), then run: ears services install --only keeper
+    ears services install: mic NOT HEARD: the lid is shut, so the built-in mic is off; open the lid or plug in a mic, then run: ears services install --only keeper
+    ears services install: mic NOT HEARD: ears.json pins the input to USB Mic, which is not connected; plug in USB Mic, or remove the pin from ears.json, then run: ears services install --only keeper
+
+- `python3.13` is the app macOS shows: the file the capture runs as (a
+  framework Python shows as `Python`). Install names it from the capture's
+  own process, else from the Python it installed with.
+- The lid and the pinned input are said at once, with no wait: the Privacy
+  setting would be the wrong fix for either.
+
+**Causes of the first three.**
+
+- **No grant.** You clicked Don't Allow, or the grant was turned off.
+- **Allow came too late.** The first beat comes about 20 s after the keeper
+  loads, then one every 15 s. Inside the 60 s bound, that leaves about 40 s
+  from the prompt to your click. A later Allow still works for the room;
+  only this check missed it. Re-run.
+- **The app is not in the list yet.** If the prompt was never answered, the
+  Python may not be listed under Microphone, and there is no `+` to add it.
+  Re-run the remedy below, and click Allow when macOS asks.
+- **A muted input, or one at volume 0,** also gives only silence. Check the
+  input's level in System Settings > Sound > Input.
+- **The wrong input.** The room follows the Mac's default input unless
+  `ears.json` pins one (`input`).
+
+**The evidence** is in the install log, never on the screen: one `mic` line per
+run, with the verdict, the time waited, each beat's peak, the capture's pid,
+the app's path and any capture error. The path is the run's `log` row,
+`~/.sessionkit/voice/log/install.log`.
+
+**Remedy.** Fix the cause, then run the check again. Listening is on by then,
+so no flag is needed. It reloads only the keeper, whose next beat answers
+within 15 s:
+
+    ears services install --only keeper
+
+**The cases it does not check**, each one line, the exit unchanged:
+
+    mic    not checked: listening is off; install with --listen to check now
+    mic    not checked: EARS_MIC_CHECK_S=0
+    mic    not checked: this Mac has no microphone (no audio input device)
+    mic    not checked: a call is live, so the room mic is off until it ends
+    mic    not checked: the keeper here is hand-made (LABEL); install did not load it
+    mic    not checked: the keeper did not load (above)
+    mic    not checked: --only has no keeper
+    mic    not checked: no keeper in this run
+
+- Listening off comes first. On a fresh install without `--listen`, a Mac
+  with no input device prints the listening-off line, not the
+  no-microphone one.
+- A hand-made keeper (`LABEL` is its launchd label) is not checked because
+  install did not load it. `--listen` still turned listening on: the hand-made
+  keeper reads the same `ears.json`.
+- `no keeper in this run`: a refusal above dropped the keeper.
+- `EARS_MIC_CHECK_S=0` turns the check off for a run where nobody is at the
+  Mac (a scripted re-install, an upgrade). Without it, a run with listening on
+  can exit 2 on a shut lid, a muted input or an unanswered prompt.
+- A dry run says what it would do and opens nothing:
+
+      mic    would wait up to 60 s for the keeper's first heartbeat with sound; nothing is opened now
+
+**Known limits.**
+
+- `--only ...,speakers` also loads the speakers side-car, a second microphone
+  user that runs on its own Python. The check does not prove that one's grant.
+- A re-install keeps a capture that is already running, so the check proves
+  that capture. A new Python with the same code is checked only after the
+  capture restarts.
+
+## Mail: you hear that it is failing
+
+The mouth said one of these, once:
+
+- *"Turn mail is failing: 3 in a row did not go out, so agents are not
+  getting your turns."* The turn mailer (`keeper/ears-mail.py`) could not
+  mail your turns to the agents.
+- *"The mouth's notices are failing: 3 in a row did not go out, so agents
+  are not told when their lines are cut or dropped."* The mouth could not
+  mail the notice a seat gets when its line is cut or dropped.
+- *"The ears' notices are failing: 3 in a row did not go out, so agents
+  are not told when the microphone or the capture changes."* The keeper
+  could not mail its own notices (mic changes, DEAF, a device gone or back).
+
+Each is said once per run of failures, never once per turn. When a send
+goes through again you hear that it works again, also once. Nothing stops
+over it: the ears keep hearing and the mouth keeps speaking.
+
+**Check.** Read the log the line names, in `~/.sessionkit/voice/log/`
+(`EARS_LOG_DIR` moves it). Turn mail: `ears-mail.log`. Notices:
+`ears-mouth.log`, or `player.log` when `mouth say` started the player.
+The keeper's notices: `ears-keeper.log`, where each failed one is `mail
+FAILED (<why>): <subject>`.
+Each failed send has its own line just above the alert, `ears-mail: ERROR:
+send to <seat> failed, exit <code>: <why>` or `mouth: ERROR: notice to
+<addr> failed: <why>`, and the why names the cause. The commonest is that
+`message` (sessionmail's) is not installed or not found: exit 127, or `no
+message binary`.
+
+**Remedy.** Fix the cause the log names; the next send that goes through
+brings the "working again" line. What you said while turn mail failed was
+not sent, so say it once more if it matters.
+
+**Turn it off.** `"mail_alert": "off"` in `ears.json` stops the turn
+mailer's and the keeper's; `"notice_alert": "off"` in `mouth.json` stops the mouth's. The
+failures are still logged. `mail_alert_after` and `notice_alert_after` set
+how many in a row it takes, 3 by default ([settings](settings.md)).

@@ -171,6 +171,59 @@ labels were `com.sessionvoice.ears-<name>` and `com.sessionvoice.mlx-audio`
 before; install moves each service it installs off its old label. The move,
 step by step, with each check and undo: [upgrade-labels.md][upgrade-labels].
 
+Each service also gets a service file, which is how `sessionkit service`
+finds it: `~/.sessionkit/voice/services/<name>.json`, beside `settings/`.
+`<name>` is the label after `dev.sessionkit.voice.`, for example
+`ears-keeper`, `mlx-audio` or `talk`. Install writes the file with
+`"enabled": true` once its own job has loaded. A job that failed to load
+gets no file, and a dry run writes none. Uninstall rewrites the file with
+`"enabled": false` and keeps it, so the service stays known on this Mac.
+The file names the label, the `ears services install --only` and
+`uninstall --only` commands, and, where they apply, the port, a health URL
+and `"hazard": ["call"]` for a job whose restart can drop a live call. Talk's,
+for example:
+
+```json
+{"service": 1, "name": "talk", "label": "dev.sessionkit.voice.talk",
+ "enabled": true, "install": "ears services install --only talk",
+ "uninstall": "ears services uninstall --only talk",
+ "description": "the live view in a browser",
+ "port": 8780, "bind": "127.0.0.1"}
+```
+
+When ours does not run, the file still says so, under our own label (never
+another program's), with `"enabled": false` and a short `note`:
+
+| What install found | `note` |
+| --- | --- |
+| a hand-made job it skips, under an old name or at our label | `a hand-made <label> runs instead` |
+| the speech port held by another program's server | `:8890 is served by another program` |
+| `final.url` pointing at a server elsewhere | `final.url points elsewhere; not managed here` |
+| the speech server's checks failing, as a `WARNING` | `not installed: <the reason, one line>` |
+
+Our own speech server, already serving or loaded, keeps `"enabled": true`.
+Uninstall that leaves a hand-made job in place writes the same note. A
+refused install writes no file.
+
+If a file cannot be written (a read-only `services/` folder, say), install or
+uninstall still finishes its launchd work and rolls nothing back: the job
+stands. It prints one line on stderr per file, naming the file and the reason,
+then exits 3, which means exactly that: the job stands, the service file is not
+written. A refusal, a job that did not load or a `mic NOT HEARD` still exits 2,
+which wins over 3.
+
+```text
+ears services install: service file ~/.sessionkit/voice/services/talk.json not written: Permission denied; the job stands
+```
+
+Every exit code `ears services` uses:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | done |
+| 2 | a usage error, a refusal, no launchd, a job that did not load, or a [`mic NOT HEARD`][mic-not-heard] |
+| 3 | install or uninstall did its launchd work, but a service file is not written |
+
 The keeper reads `ears.json` on every loop: `listen` (off stops every ear),
 `input` (`default` follows the Mac, a name pins the ears to it),
 `room_on_call`, and the engine keys, which the capture then follows. Its
@@ -188,8 +241,27 @@ variables, set in the plist or the shell that starts it:
 | `EARS_PY` | `.venv/bin/python` in the checkout it runs from | The Python that runs the capture. Install sets it to its own. |
 | `EARS_AGENT` | `ears` | The seat the keeper writes and mails as. Install reads it once. |
 
+When its notices fail: each notice's send has 30 seconds. At the third
+notice in a row that fails (by default; no `message` found counts), the
+keeper says so once, out loud, through the mouth (`mouth say --alert`), and
+once more when a notice goes through again. It obeys `ears.json`'s
+`mail_alert` and `mail_alert_after`, and `EARS_MAIL_ALERT` and
+`EARS_MAIL_ALERT_AFTER` over them, as the turn mailer does
+([settings](settings.md#earsjson)), but keeps its own count, in
+`keeper-mail.json` in `EARS_RUN`. `EARS_MOUTH` names the mouth command
+(default: `EARS_PY -m mouth`).
+
 Its timing knobs (`EARS_INTERVAL`, `EARS_STABLE`, `EARS_BEAT_STALE` and
 more) are listed with the log lines they change: [logs.md][log-files].
+
+Install's microphone check (`ears services install`, with listening on) reads
+one variable from the shell that runs install:
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `EARS_MIC_CHECK_S` | `60` | How long install waits for the keeper's first heartbeat with sound, in seconds (up to 600). `0` turns the check off. Any other value is the default, and the wait line says so. |
+
+What each outcome means: [troubleshooting][mic-not-heard].
 
 `ears-sounds`, `mouth-sounds` and talk have no `ears services` agent. Their
 plists are templates in `launchd/`, which `bin/render-plist` fills in for
@@ -211,8 +283,15 @@ a seat called by name.
 - **Its variables:** `EARS_SPEAKER` (who a turn is from, when the speaker
   side-car names nobody), `EARS_MAIL_FROM` (the box, `heard` by default),
   `EARS_MAIL_ROOM` (the room's tag: turns go To `heard+room` by default),
-  `EARS_MAIL_DOMAIN` (the host part of the address) and `EARS_MAIL_MESSAGE`
-  (the `message` command it sends with).
+  `EARS_MAIL_DOMAIN` (the host part of the address), `EARS_MAIL_MESSAGE`
+  (the `message` command it sends with), and `EARS_MAIL_ALERT` and
+  `EARS_MAIL_ALERT_AFTER`, which win over `ears.json`'s `mail_alert` and
+  `mail_alert_after` ([settings](settings.md#earsjson)).
+- **When mail fails:** at the third send in a row that fails (by default),
+  the turn mailer says so once, out loud, through the mouth (`--mouth`,
+  `mouth say --alert`), and once more when a send goes through again. It
+  reads `ears.json` itself, at `$EARS_CONF` when that is set, else
+  `~/.sessionkit/voice/settings/ears.json`.
 - **The device copy:** `--device-copy on` (the default) also Cc's each
   room turn to `heard+<device>` on the same send, so a session subscribed
   to a device's address keeps hearing it; `off` sends to the room's
@@ -279,6 +358,7 @@ The variables most often set:
 | `MOUTH_LOG_DIR` | Where the mouth writes its heard-log lines, in place of the home's. |
 | `MOUTH_SESSION_BIN` | The `session` command. Set to `""`, the layers above the file are off. |
 | `MOUTH_SENDMAIL`, `MOUTH_NOTICE` | How the mouth mails its notices; `MOUTH_NOTICE=off` sends none. |
+| `MOUTH_NOTICE_ALERT`, `MOUTH_NOTICE_ALERT_AFTER` | Whether the mouth says so out loud when its notices fail several times in a row (`speak` or `off`), and after how many. Read in the process that sends the notice. Win over `notice_alert` and `notice_alert_after` ([settings](settings.md#mouthjson)). |
 
 The mouth's 39 variables had a `VOICEMODE_MOUTH_` name before, which is
 still read; the full list is in [mouth.md][mouth-old].
@@ -380,3 +460,4 @@ part follows the family's settings layers today:
 [speakers]: ../speakers/README.md
 [devices]: audio-devices.md
 [upgrade-labels]: upgrade-labels.md
+[mic-not-heard]: troubleshooting.md#install-the-microphone-was-not-heard

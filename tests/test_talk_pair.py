@@ -11,11 +11,12 @@ other path is a 404. No body is read; the connection is always closed.
 Every server binds a FREE port picked by the kernel, never 8780, on 127.0.0.1.
 HOME and VOICEMODE_BASE_DIR are a tmp dir; the state poll never starts.
 """
-import os, socket, threading, time
+import os, socket, threading
 
 import pytest
 
 from talk import server, token_store
+from tests.talk_helpers import HANG_CEILING, log_until, recv_until, requests_logged
 from tests.test_talk_host_check import raw
 
 TS = "talk.example.ts.net"
@@ -54,25 +55,19 @@ def talk(room):
 def post(port, path="/pair", host=None, token=None, headers=(), body=b"", after=b""):
     """One POST over a raw socket, read to EOF. token=None sends no X-Talk-Token.
     Returns (status, [(name, value), ...] in order, body, closed): every header line is
-    kept, so a test can count Set-Cookie lines; closed is True when the server hung up."""
+    kept, so a test can count Set-Cookie lines; closed is True when the server hung up
+    (one that never hangs up reds at the hang ceiling instead)."""
     lines = [f"POST {path} HTTP/1.1", f"Host: {host or f'127.0.0.1:{port}'}"]
     if token is not None:
         lines.append(f"X-Talk-Token: {token}")
     lines += [f"{k}: {v}" for k, v in headers]
     if body:
         lines.append(f"Content-Length: {len(body)}")
-    with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+    # Read to EOF under a hang ceiling (tests/talk_helpers.py): a slow answer only waits
+    # longer, and a server that never hangs up reds at the ceiling instead of hanging.
+    with socket.create_connection(("127.0.0.1", port), timeout=HANG_CEILING) as s:
         s.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1") + body + after)
-        data, closed = b"", False
-        while True:
-            try:
-                chunk = s.recv(65536)
-            except socket.timeout:
-                break
-            if not chunk:
-                closed = True
-                break
-            data += chunk
+        data, closed = recv_until(s)
     head, _, rest = data.partition(b"\r\n\r\n")
     status_line, *hdrs = head.decode("latin-1").split("\r\n")
     pairs = [(k.strip().lower(), v.strip()) for k, _, v in (h.partition(":") for h in hdrs)]
@@ -264,10 +259,10 @@ def test_no_body_is_read_and_the_connection_closes(talk, room):
 def test_other_methods_are_unchanged(talk, room):
     port = talk()
     for method in ("PUT", "DELETE", "HEAD"):
-        with socket.create_connection(("127.0.0.1", port), timeout=5) as s:
+        with socket.create_connection(("127.0.0.1", port), timeout=HANG_CEILING) as s:
             s.sendall(f"{method} /pair HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Talk-Token: {room}\r\n\r\n"
                       .encode())
-            head = s.recv(65536)
+            head, _ = recv_until(s)     # the whole answer, to EOF (an error closes)
         assert head.startswith(b"HTTP/1.1 501") and b"set-cookie" not in head.lower()
 
 
@@ -283,8 +278,7 @@ def test_the_token_never_reaches_stderr(talk, room, capsys):
     post(port, path="/nope", token=room)
     post(port, token=room, headers=[("Origin", "https://attacker.example")])
     post(port, path=f"/pair?talk_token={room}")
-    time.sleep(0.1)
-    err = capsys.readouterr().err
+    err = log_until(capsys, requests_logged(8))           # the handlers log from their threads
     assert room not in err and room[:20] not in err
     assert err.count('"POST /pair HTTP/1.1" 204') == 1
     assert "403 refused: the pairing token does not match" in err

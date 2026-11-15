@@ -288,6 +288,24 @@ def test_install_fetches_a_missing_silero_by_the_pin_and_goes_on(fetchable, caps
     assert "REFUSED" not in cap.err and _parts(want.parent) == []
 
 
+def test_install_rides_out_one_503_on_the_fetch(fetchable, monkeypatch, capsys):
+    """One transient 503 does not refuse the install (EARS-524): the fetch is tried again."""
+    import urllib.error
+    monkeypatch.setattr(vad, "FETCH_DELAYS", (0.0, 0.0))
+    served = fetchable["opener"]
+
+    def flaky(url, timeout=None):
+        if not served.calls:
+            served.calls.append({"url": url, "logs": False, "plists": []})
+            raise urllib.error.HTTPError(url, 503, "Service Unavailable", {}, None)
+        return served(url, timeout=timeout)
+    monkeypatch.setattr(services, "SILERO_OPENER", flaky)
+    want = services._silero_want()
+    assert services.main(["install", "--agent", "dave"]) == 0
+    assert want.read_bytes() == FAKE and [c["url"] for c in served.calls] == [vad.SILERO_URL] * 2
+    assert "REFUSED" not in capsys.readouterr().err and _parts(want.parent) == []
+
+
 def test_the_fetch_lands_where_the_keeper_reads_it(fetchable, monkeypatch, capsys):
     want = fetchable["tmp"] / "models/elsewhere.onnx"
     monkeypatch.setenv("EARS_SILERO_ONNX", str(want))
@@ -341,6 +359,104 @@ def test_a_dry_run_says_what_it_would_fetch_and_fetches_nothing(fetchable, capsy
             in cap.out.splitlines())
     assert fetchable["opener"].calls == [] and cap.err == ""
     assert not want.exists() and _parts(want.parent) == []
+
+
+# ---- the opt-out does not cover Silero, and says so (EARS-533) ------------------------------
+# --no-prefetch and EARS_NO_PREFETCH skip the speech weights only: the keeper cannot hear
+# without the Silero model and nothing fetches it at first use, so install still fetches it, and
+# says so on its own line just before the fetch. The fetch and its two lines are unchanged.
+
+def _not_skipped(off) -> str:
+    return (f"silero not skipped by {off}, which skips the speech weights only: install still "
+            "fetches the Silero VAD model (2.3 MB, pinned, sha256 checked), because the keeper "
+            "cannot hear without it and nothing fetches it at first use")
+
+
+def _fetched(want) -> str:
+    return f"silero fetched: {want} matches the pin ({vad.SILERO_TAG}, sha256 {vad.SILERO_SHA256[:12]})"
+
+
+@pytest.fixture
+def prefetch_on(monkeypatch):
+    """Neither opt-out set (the env fence sets EARS_NO_PREFETCH=1 for every test), and a speech
+    prefetch that fails the test: the runs below are --only keeper, which prefetches nothing."""
+    monkeypatch.delenv("EARS_NO_PREFETCH", raising=False)
+    monkeypatch.setattr(services, "_prefetch_sh", lambda *a, **kw: pytest.fail("prefetched"))
+
+
+@pytest.mark.parametrize("how, off", [(["--no-prefetch"], "--no-prefetch"),
+                                      ([], "EARS_NO_PREFETCH=1")])
+def test_the_opt_out_still_fetches_silero_and_says_so(fetchable, monkeypatch, capsys, how, off):
+    if how:
+        monkeypatch.delenv("EARS_NO_PREFETCH", raising=False)
+    else:
+        monkeypatch.setenv("EARS_NO_PREFETCH", "1")
+    want = services._silero_want()
+    assert services.main(["install", "--agent", "dave", *how]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert want.read_bytes() == FAKE
+    assert [c["url"] for c in fetchable["opener"].calls] == [vad.SILERO_URL]
+    at = out.index(_not_skipped(off))
+    assert out[at + 1:at + 3] == [_fetching(want), _fetched(want)]
+    assert f"speech weights: prefetch skipped ({off})" in "\n".join(out)   # the weights still are
+
+
+def test_without_the_opt_out_the_fetch_says_nothing_new(fetchable, prefetch_on, capsys):
+    want = services._silero_want()
+    assert services.main(["install", "--agent", "dave", "--only", "keeper"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert [c["url"] for c in fetchable["opener"].calls] == [vad.SILERO_URL]
+    at = out.index(_fetching(want))
+    assert out[at + 1] == _fetched(want)
+    assert not [line for line in out if "not skipped" in line]
+
+
+def test_without_the_opt_out_the_503_retry_is_unchanged(fetchable, prefetch_on, monkeypatch, capsys):
+    import urllib.error
+    monkeypatch.setattr(vad, "FETCH_DELAYS", (0.0, 0.0))
+    served = fetchable["opener"]
+
+    def flaky(url, timeout=None):
+        if not served.calls:
+            served.calls.append({"url": url, "logs": False, "plists": []})
+            raise urllib.error.HTTPError(url, 503, "Service Unavailable", {}, None)
+        return served(url, timeout=timeout)
+    monkeypatch.setattr(services, "SILERO_OPENER", flaky)
+    want = services._silero_want()
+    assert services.main(["install", "--agent", "dave", "--only", "keeper"]) == 0
+    cap = capsys.readouterr()
+    assert want.read_bytes() == FAKE and [c["url"] for c in served.calls] == [vad.SILERO_URL] * 2
+    assert "REFUSED" not in cap.err and "not skipped" not in cap.out
+
+
+def test_a_dry_run_under_the_opt_out_says_so_and_fetches_nothing(fetchable, capsys):
+    want = services._silero_want()
+    assert services.main(["install", "--agent", "dave", "--dry-run", "--no-prefetch"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    at = out.index(_not_skipped("--no-prefetch"))
+    assert out[at + 1] == (f"silero would fetch Silero VAD {vad.SILERO_TAG} (2.3 MB) from "
+                           f"{vad.SILERO_URL} -> {want}")
+    assert fetchable["opener"].calls == [] and not want.exists()
+
+
+@pytest.mark.parametrize("have", ["present", "linked"])
+def test_a_silero_already_there_says_nothing_new_under_the_opt_out(fetchable, capsys, have):
+    path = services._silero_want() if have == "present" else services._silero_copy()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"onnx")
+    assert services.main(["install", "--agent", "dave", "--no-prefetch"]) == 0
+    out = capsys.readouterr().out
+    assert fetchable["opener"].calls == [] and f"silero {have}" in out
+    assert "not skipped" not in out
+
+
+def test_the_no_prefetch_help_names_the_silero_exception(capsys):
+    with pytest.raises(SystemExit):
+        services.main(["--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert ("It does not cover the Silero VAD model (2.3 MB, pinned, sha256 checked): install "
+            "still fetches a missing one, because the keeper cannot hear without it. "
+            "EARS_NO_PREFETCH=1 does the same") in out
 
 
 # ---- success criterion 5: no test reaches the network --------------------------------------

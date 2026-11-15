@@ -43,6 +43,11 @@ IGNORED = [
     "talk/features/70.2.md",
 ]
 
+# A whole directory, ignored by two lines (`/openspec` and `/openspec/**`), not per file.
+IGNORED_DIR = "openspec"
+# The one file in it: tracked in the checkout, never in the archive.
+OPENSPEC_POINTER = "openspec/config.yaml"
+
 # The code beside those notes still ships: the ignore lines name files, never a folder.
 STILL_SHIPPED = [
     "keeper/ears-keeper.sh",
@@ -167,6 +172,44 @@ def archive():
     return files
 
 
+@pytest.fixture(scope="module")
+def archive_names():
+    """Every member name in `git archive HEAD`: files and directory entries alike."""
+    data = _archive_head()
+    if data is None:
+        pytest.skip("not a git checkout of this repo (a wheel, sdist or the archive): no HEAD")
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        return [member.name for member in tar.getmembers()]
+
+
+def _tracked(path):
+    """True when `path` is tracked at ROOT, or None when ROOT is not the top of a git checkout."""
+    if shutil.which("git") is None:
+        return None
+    top = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--show-toplevel"],
+                         capture_output=True, text=True, env=_git_env())
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != ROOT:
+        return None
+    files = subprocess.run(["git", "-C", str(ROOT), "ls-files", "--", path],
+                           capture_output=True, text=True, env=_git_env(), check=True)
+    return path in files.stdout.splitlines()
+
+
+def test_no_openspec_path_is_in_the_archive(archive_names):
+    """Not the pointer, and not the empty directory entry a per-file line leaves behind."""
+    found = [n for n in archive_names
+             if n.rstrip("/") == IGNORED_DIR or n.startswith(IGNORED_DIR + "/")]
+    assert not found, f"openspec paths ship in `git archive HEAD`: {found}"
+
+
+def test_the_openspec_pointer_is_still_tracked():
+    """The ignore lines drop the pointer from the archive only; the checkout keeps it."""
+    tracked = _tracked(OPENSPEC_POINTER)
+    if tracked is None:
+        pytest.skip("not a git checkout of this repo (a wheel, sdist or the archive): no HEAD")
+    assert tracked, f"{OPENSPEC_POINTER} is not tracked: the archive check would pass vacuously"
+
+
 @pytest.mark.parametrize("path", IGNORED)
 def test_the_internal_note_is_not_in_the_archive(archive, path):
     assert path not in archive, f"{path} ships in `git archive HEAD`: export-ignore it"
@@ -184,7 +227,10 @@ def test_the_code_beside_the_notes_still_ships(archive, path):
 
 
 def test_no_shipped_page_links_an_ignored_note(archive):
-    """A link to a file the archive leaves out is a dead link for everyone who installs it."""
+    """A link to a file the archive leaves out is a dead link for everyone who installs it.
+
+    That includes the ignored directory, openspec/, and anything in it.
+    """
     ignored = set(IGNORED)
     dead = []
     for path, body in sorted(archive.items()):
@@ -195,7 +241,8 @@ def test_no_shipped_page_links_an_ignored_note(archive):
                 continue
             resolved = posixpath.normpath(posixpath.join(posixpath.dirname(path),
                                                          target.split("#", 1)[0]))
-            if resolved in ignored:
+            if (resolved in ignored or resolved == IGNORED_DIR
+                    or resolved.startswith(IGNORED_DIR + "/")):
                 dead.append(f"{path} -> {target}")
     assert not dead, f"shipped pages link export-ignored notes: {dead}"
 

@@ -254,8 +254,10 @@ def test_mouth_schema_covers_normalize(tmp_path, monkeypatch):
 
 def test_mouth_schema_covers_the_lead(tmp_path, monkeypatch):
     """EARS-285 fix-002: ``lead_s`` is a setting, default 0,
-    what the mouth reads with nothing set; below the minimum falls
-    to the default."""
+    what the mouth reads with nothing set for any line but a clone's
+    (EARS-529: a clone's built-in is 3 s, which a JSON default cannot key
+    on a backend; docs/settings.md names the difference); below the minimum
+    falls to the default."""
     from mouth import voices
     lead = MOUTH["properties"]["lead_s"]
     assert lead["title"] and lead["description"]

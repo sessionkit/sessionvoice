@@ -12,18 +12,17 @@ Every server binds a FREE port picked by the kernel, never 8780, on 127.0.0.1
 import socket, struct, time
 
 from talk import server
+from tests.talk_helpers import HANG_CEILING, recv_until
 from tests.test_talk_token_gate import req, room, talk  # noqa: F401  (fixtures)
 
 
 def _keep_alive_then_reset(port):
     """One answered request on a kept-alive connection, then a reset (SO_LINGER 0), as a
     browser drops an idle connection."""
-    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    s = socket.create_connection(("127.0.0.1", port), timeout=HANG_CEILING)
     s.sendall(f"GET /manifest.json HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode())
-    got = b""
-    while b"\r\n\r\n" not in got:
-        got += s.recv(65536)
-    assert got.startswith(b"HTTP/1.1 200 ")
+    got, closed = recv_until(s, lambda d: b"\r\n\r\n" in d)
+    assert got.startswith(b"HTTP/1.1 200 ") and not closed       # answered, and still kept alive
     s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
     s.close()
     time.sleep(0.3)                    # the handler's thread meets the reset
@@ -45,15 +44,16 @@ def test_any_other_exception_still_reaches_the_log(talk, capsys, monkeypatch):
     def broken(self):
         raise RuntimeError("a fault in talk itself")
     monkeypatch.setattr(server.Handler, "do_GET", broken)
-    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    s = socket.create_connection(("127.0.0.1", port), timeout=HANG_CEILING)
     s.sendall(f"GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n".encode())
-    s.settimeout(5)
     try:
-        s.recv(65536)                  # the handler closes it without an answer
-    except OSError:
+        got, closed = recv_until(s)    # the handler closes it without an answer
+        assert got == b"" and closed
+    except ConnectionResetError:
         pass
     s.close()
-    time.sleep(0.3)
+    # socketserver logs the error BEFORE it closes the connection (handle_error, then
+    # shutdown_request), so once the hang-up has arrived the traceback is already written.
     err = capsys.readouterr().err
     assert "Traceback" in err and "RuntimeError: a fault in talk itself" in err
 

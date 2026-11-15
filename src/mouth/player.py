@@ -236,7 +236,11 @@ def _common(item: dict) -> dict:
             "volume": item.get("volume"), "volume_from": item.get("volume_from"),
             # the line's thread on its saying/said, so a past line says which
             # turn it answered and which call it is in; None is dropped
-            "in_reply_to": item.get("in_reply_to"), "call_id": item.get("call_id")}
+            "in_reply_to": item.get("in_reply_to"), "call_id": item.get("call_id"),
+            # the host's own line (mouth say --alert), which no seat said: a reader of
+            # the heard log can tell it from a seat's line. Every other line's rows
+            # carry no such key (None is dropped)
+            "alert": True if item.get("alert") is True else None}
 
 
 def _gain(item: dict) -> Optional[float]:
@@ -601,7 +605,7 @@ def play_one(item: dict, d: Path, synth: Optional[Synth] = None, prefetched: boo
     started = False
     gain = _gain(item)   # applied where the samples are written: every output, one place
     # the voice's own gain and limiter, before the volume: read once a line
-    lev, level_rec = _level.for_line(item, backend.name, sr, d=d)
+    lev, level_rec = _level.for_line(item, backend.name, sr, d=d, log=_log)   # no ffmpeg: one warn row, once
 
     first_frame_t = None
     barge_here = _hold.barge_device(getattr(out, "name", item["device"]))
@@ -670,7 +674,7 @@ def play_one(item: dict, d: Path, synth: Optional[Synth] = None, prefetched: boo
             except Exception:  # noqa: BLE001 - a file that cannot start never stops the line
                 pass
 
-    lead, lead_from = _voices.lead_setting(item=item, d=d)   # 0 unless asked
+    lead, lead_from = _voices.lead_setting(item=item, d=d)   # a clone's 3 s, else 0, unless asked
     held = None   # wall seconds the lead held the first frame (saying.held_s)
     try:
         if lead > 0:
@@ -996,7 +1000,11 @@ def _resume(d: Path, item: dict, rec: dict) -> None:
             pan=item.get("pan"), log_dir=Path(item["log_dir"]) if item.get("log_dir") else None,
             d=d, spawn=False, hold="turn-end", expires_s=plan.get("resume_s") or _hold.resume_s(),
             volume=level,
+            # an alert line's rest is an alert line too: the host's own, never a seat's
+            alert=item.get("alert") is True,
             extra={"agent": item.get("agent"), "session": item.get("session"),
+                   # its rest is From the line's own sender, never the player's env
+                   "mail_from": item.get("mail_from"),
                    # the utt its notice named, and the cut line it names back
                    "utt": plan["resume_utt"], "resume_of": item["utt"],
                    "resume_text": str(item.get("text") or "")[:RESUME_TEXT_MAX], **carry,

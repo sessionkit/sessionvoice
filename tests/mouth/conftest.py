@@ -29,6 +29,9 @@
 - ``MOUTH_MPV_SOCKET`` is a path in tmp with nothing behind it
   (EARS-293), so a runner's ``MOUTH_DUCK`` never lowers the live
   DJ's music. A test that wants an mpv starts a fake one and names its socket.
+- No thread outlives its test (``threads_settled``, EARS-550): teardown waits for every
+  thread the test started, before ``monkeypatch`` puts the env back, so a late player's
+  ``message`` call meets this test's fake, never the next test's fence.
 - ``signed`` (EARS-335, EARS-345; not autouse) fakes ONLY the mail verifier: a mail
   carrying ``X-Session-Signature`` verifies, and its ``--json`` verdict (``verdict_of``)
   goes through the mouth's real ``box.parse_verdict``. ``tests/conftest.py`` sets
@@ -84,6 +87,63 @@ def heard_box(tmp_path_factory, monkeypatch, fake_message_on_path) -> Path:
     return hb
 
 
+#: How long a test's teardown waits for the threads it started before it fails, by name.
+#: A player run with ``idle_exit_s=0.3`` ends well inside a second on an idle host, and a
+#: long line (``LONG`` in test_mouth_notice) plays about 7 s; a host at load 40 runs that
+#: several times slower. Past this a thread is stuck, not slow.
+SETTLE_S = 60.0
+
+
+def settle(threads, bound: float) -> list:
+    """Join THREADS, all within BOUND seconds in total; the ones still alive after it."""
+    end = time.monotonic() + bound
+    for t in threads:
+        t.join(max(0.0, end - time.monotonic()))
+    return [t for t in threads if t.is_alive()]
+
+
+def started_since(before) -> list:
+    """The joinable threads alive now that were not in BEFORE: the ones this test started,
+    or a thread of its started. A foreign thread Python only wraps (a ``_DummyThread``:
+    an audio callback, a C library's own) cannot be joined and is not counted."""
+    me = threading.current_thread()
+    return [t for t in threading.enumerate()
+            if t not in before and t is not me and not isinstance(t, threading._DummyThread)]
+
+
+@pytest.fixture(autouse=True)
+def threads_settled(monkeypatch, heard_box):
+    """No thread a test started outlives it: its teardown waits for each one, up to
+    ``SETTLE_S``, and fails the test naming any still running.
+
+    A thread left running carries on into whatever test runs next, and so do its child
+    processes. A player outlived its test's ``join(5)`` (its barged line resumed, ~7 s on)
+    and dropped a line after the test ended: the drop asked sessionmail for the sender's
+    box (``message path ivy``, ``notice.recipient``) once the test's fake ``message`` was
+    off PATH and HOME was the session's again. The mail fence refused it, but the refusal
+    named a later test, still in its setup, and failed the run with no test to blame.
+
+    The wait is here, at the end of the test's own teardown, and before ``monkeypatch``
+    (which ``heard_box`` and this fixture ask for, so it is set up first and torn down
+    last) puts the env back: a late thread still meets this test's fake ``message``,
+    fenced HOME and fake ``message send``. A fixture the test asked for (a fake server)
+    is torn down before this runs, so the thread it was serving ends first."""
+    before = set(threading.enumerate())
+    yield
+    left = settle(started_since(before), SETTLE_S)
+    if left:
+        names = ", ".join(f"{t.name} ({_target(t)})" for t in left)
+        pytest.fail(f"{len(left)} thread(s) this test started still ran {SETTLE_S:.0f} s after it "
+                    f"ended: {names}. Join every thread a test starts: one left running runs on "
+                    "into the next test, and its sessionmail calls meet the mail fence there.",
+                    pytrace=False)
+
+
+def _target(t: threading.Thread) -> str:
+    f = getattr(t, "_target", None)
+    return getattr(f, "__qualname__", None) or type(t).__qualname__
+
+
 @pytest.fixture(autouse=True)
 def fresh_voices(monkeypatch):
     """EARS-292: the resolver keeps the voices it read; every test reads its own fenced HOME's."""
@@ -91,6 +151,37 @@ def fresh_voices(monkeypatch):
 
     monkeypatch.setattr(resolver, "_loaded", False)
     monkeypatch.setattr(resolver, "_registry", resolver._Registry())
+
+
+def _cold_floor(caches: dict) -> None:
+    for c in caches.values():
+        c.update(t=0.0, v=None)
+
+
+@pytest.fixture(autouse=True)
+def cold_floor_cache():
+    """Every mouth test starts and ends with hold's floor cache cold.
+
+    ``hold._look_floor`` keeps the newest floor it scanned in a module-level dict,
+    ``hold._caches`` (one entry per set of ears), and trusts it for ``max_age_s``
+    (0.1 s) whenever ``directory`` is None. A test that leaves a ``speaking`` partial
+    there hands it to whichever test runs next inside that window: that test's player
+    reads the user as talking, holds its room-held lines and prefetches the first of
+    them, so ``test_mouth.py``'s "the next line is ready" saw its FIRST line marked
+    ``prefetched`` in a shuffled order. ``test_floor_cache_fence.py`` pins this fixture.
+
+    Emptied in place (``hold._cache`` is the ``mic`` entry), before and after. A test
+    may swap in its own dict with ``monkeypatch``; the dict the module held at the
+    start is emptied as well as whichever it holds at the end, so the cache is cold
+    whether this runs before or after ``monkeypatch``'s undo. The per-test resets the
+    mouth tests make mid-test stay: they cold the cache between a test's own writes."""
+    from mouth import hold
+
+    own = hold._caches
+    _cold_floor(own)
+    yield
+    _cold_floor(own)
+    _cold_floor(hold._caches)
 
 
 @pytest.fixture(autouse=True)

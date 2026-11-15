@@ -29,6 +29,8 @@ def fenced(tmp_path, monkeypatch):
         raise AssertionError("a test reached the real urlopen")
     monkeypatch.setattr(urllib.request, "urlopen", no_network)
     monkeypatch.setattr(urllib.request, "urlretrieve", no_network)
+    # a transient error is tried again (EARS-524); no test here really sleeps between tries
+    monkeypatch.setattr(vad, "FETCH_DELAYS", (0.0, 0.0))
     # the apple helper is opt-in and never built here; keep install off subprocess entirely
     monkeypatch.setattr(cli.subprocess, "run", no_network)
     return tmp_path / "home"
@@ -124,13 +126,14 @@ def test_bad_hash_writes_nothing_and_fails(fenced, monkeypatch, capsys):
     assert f"got {hashlib.sha256(GOOD + b'tampered').hexdigest()[:12]}" in err
 
 
-@pytest.mark.parametrize("opener", [
-    Opener(error=urllib.error.HTTPError(vad.SILERO_URL, 404, "Not Found", {}, None)),
-    Opener(error=OSError("Network is unreachable\nsecond line")),
-    Opener(fail_after=1),   # dies mid-body, after the first chunk is already on disk
+@pytest.mark.parametrize("opener,tries", [
+    (Opener(error=urllib.error.HTTPError(vad.SILERO_URL, 404, "Not Found", {}, None)), 1),
+    (Opener(error=OSError("Network is unreachable\nsecond line")), 3),
+    (Opener(fail_after=1), 3),   # dies mid-body, after the first chunk is already on disk
 ], ids=["http-404", "no-network", "mid-body"])
-def test_fetch_error_writes_nothing_and_fails(fenced, monkeypatch, capsys, opener):
+def test_fetch_error_writes_nothing_and_fails(fenced, monkeypatch, capsys, opener, tries):
     assert run_install(monkeypatch, opener) == 1
+    assert len(opener.urls) == tries       # a 4xx is final; a connection error is tried 3 times
     assert not model(fenced).exists()
     assert leftovers(fenced) == []
     err = capsys.readouterr().err

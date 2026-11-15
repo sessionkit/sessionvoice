@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
 import sys
 import time
@@ -50,6 +51,7 @@ from typing import Optional
 
 from ears import envnames, heard
 
+from . import sender as _sender
 from . import voices as _voices
 from .paths import mouth_dir
 from .voices import default_voice
@@ -169,7 +171,9 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
         expires_s: Optional[float] = None, interest: Optional[str] = None,
         in_reply_to: Optional[str] = None, volume=None, duck: Optional[bool] = None,
         duck_level=None, normalize: Optional[bool] = None, lead_s=None,
-        barge_words=None, instrumental: Optional[bool] = None) -> dict:
+        barge_words=None, instrumental: Optional[bool] = None, cap: bool = False,
+        cut_bed: Optional[str] = None, cascaded: Optional[dict] = None,
+        alert: bool = False) -> dict:
     """Queue ``text``; return the queued item (``utt``), or with ``wait`` its ``said`` record.
 
     ``priority`` (a playlist, lower plays sooner): None (50, the back of the
@@ -196,9 +200,10 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
 
     ``lead_s``: seconds of this line's audio the player buffers
     before its first frame (``mouth say --lead S``), else ``lead_s`` in the
-    caller's cascade, the host file, 0: play as it streams. 2.5 rides out a
-    clone rendering below real time. A bad one is refused before anything is
-    written.
+    caller's cascade, the host file, then the built-in: 3 for a clone voice
+    (one rendering below real time), 0 (play as it streams) for any other.
+    An explicit 0 is 0, for a clone too. A bad one is refused before anything
+    is written.
 
     ``instrumental``: a played file's own ``--instrumental/--no-instrumental``,
     else ``$MOUTH_MUSIC_INSTRUMENTAL`` (the caller's, now), the caller's cascade
@@ -220,12 +225,44 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
     and ``barge_words_from: flag``, and a resume carries it. A bad one is
     refused before anything is written.
 
+    ``cap``: refuse a line longer than ``say_max_chars`` characters (``len(text)``)
+    in the caller's cascade, the host file, else 300; 0 or ``off`` is no cap
+    (``voices.say_max_chars_setting``). ``mouth say`` sets it unless ``--long``;
+    nothing else does, so a resume, a replay or a notice is never refused. The
+    refusal is one ValueError line, ``mouth: over 300 characters: split it, or
+    mail it (or --long)``, raised before anything is queued.
+
+    ``cut_bed``: the utt of a playing bed to stop, aimed at it alone (``reason=
+    interrupted``), right after this line is dropped and before any wait: how
+    ``mouth play --now`` stops the song on its device (:func:`play_many`).
+
+    ``cascaded``: the caller's cascade already read (a ``voices.cascade()`` answer
+    that asked for at least ``voices.LINE_KEYS``), so this line runs no
+    ``session settings`` of its own: how a play's one run serves its mode and its
+    line (:func:`play_many`). None reads it here, when the line needs it.
+
     ``log_dir``: where this line's heard rows go. It rides the mail as
     ``X-Mouth-Log-Dir``, and the player honours it only under its log root
     (``box.heard_root``), so one outside the root is refused here, before anything
     is written, rather than ignored at play.
+
+    ``alert``: the host's own line, never a caller's (``mouth say --alert``):
+    what a part of sessionvoice says when its mail fails. Whoever runs it, its
+    ``agent``, ``session`` and ``mail_from`` are None, so no seat is named on
+    it or told of it; and, as for a resume, no caller's cascade is read (the
+    host's voice and level). Its interest is ``zero`` (any other
+    is refused), its priority ``next`` unless one is given, and it is never
+    refused for length. It rides the line as ``alert: true``, onto its saying
+    and said rows, and no drop notice is ever mailed about it
+    (``notice._decide``).
     """
     priority = _priority(priority)
+    if alert:
+        if interest not in (None, "zero"):
+            raise ValueError("mouth: an alert line's interest is zero")
+        interest = "zero"
+        priority = "next" if priority is None else priority
+        cap = False
     from .hold import HOLDS, NO_HOLD
 
     if hold not in (None, *HOLDS, NO_HOLD):
@@ -270,23 +307,32 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
         hdrs = reply.reply_headers(rid, parent)
     d.mkdir(parents=True, exist_ok=True)
     now = time.time()
-    sid = heard.caller_session()
+    sid = None if alert else heard.caller_session()   # an alert line names no caller
     is_file = backend == "file"
     # ONE `session settings` run serves the voice, the level and the duck
     # A resume (the player's own, ``resume_of``) reads none: the player's session is
     # whoever spawned it, and the cut line carries what its caller answered.
     # A say-again replay (``again_of``) is the same: its caller is the keeper.
     resuming = bool((extra or {}).get("resume_of") or (extra or {}).get("again_of"))
-    need = not resuming and (voice is None or volume is None or is_file or normalize is None
-                             or lead_s is None)
-    cascaded = _voices.cascade(sid, _voices.LINE_KEYS) if need else {}
+    # an alert line is the host's own too: no caller's cascade, voice or address
+    hosts = resuming or alert
+    need = not hosts and (voice is None or volume is None or is_file or normalize is None
+                          or lead_s is None or cap)
+    if not need:
+        cascaded = {}
+    elif cascaded is None:
+        cascaded = _voices.cascade(sid, _voices.LINE_KEYS)
+    if cap:   # mouth say's own line cap: refused before anything is queued
+        limit, _ = _voices.say_max_chars_setting(cascaded=cascaded, d=d)
+        if limit and len(text) > limit:
+            raise ValueError(f"mouth: over {limit} characters: split it, or mail it (or --long)")
     level, level_from = _voices.volume_setting(file=is_file, flag=volume, cascaded=cascaded, d=d)
     item = {
         "utt": uuid.uuid4().hex[:12],
         "text": text,
         # the caller's cascade and env; a resume is the player's own, so
         # it takes the box's order: the player's env never beats the host file
-        "voice": voice or default_voice(d, sid, cascaded, caller=not resuming)[0],
+        "voice": voice or default_voice(d, sid, cascaded, caller=not hosts)[0],
         "speed": speed,
         "backend": backend or envnames.get("MOUTH_BACKEND") or "auto",
         "device": device,
@@ -295,8 +341,12 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
         "pan": pan_value(pan),
         "requested_t": now,
         "requested_ts": datetime.fromtimestamp(now).astimezone().isoformat(timespec="milliseconds"),
-        "agent": heard.caller_agent(),
+        "agent": None if alert else heard.caller_agent(),
         "session": sid,
+        # who ran it, as `message send` would name them (mouth.sender); the drop's
+        # From. A resume or a say-again replay carries its line's own, as an extra.
+        # An alert line has none: the box writes the mouth's own From for it.
+        "mail_from": None if hosts else _sender.address(),
         "log_dir": str(log_dir) if log_dir else envnames.get("MOUTH_LOG_DIR"),
         "wait": wait,
         "priority": priority,
@@ -307,6 +357,8 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
         "expires_t": (now + expires_s) if expires_s is not None else None,
         **(extra or {}),
     }
+    if alert:   # only an alert line carries the key: every other line's rows stay as they were
+        item["alert"] = True
     # Only what a layer above the built-in answered rides on the line: with no
     # flag and no setting, the mail is byte-for-byte today's, and the player
     # fills in the built-in when it takes the line (voices.fill_item).
@@ -380,6 +432,8 @@ def say(text: str, *, voice: Optional[str] = None, speed: Optional[float] = None
             cur = _playing(d)
             if cur:
                 _stop_file(d, {"t": time.time(), "reason": "interrupted", "flush": False, "utt": cur["utt"]})
+        if cut_bed:
+            _stop_file(d, {"t": time.time(), "reason": "interrupted", "flush": False, "utt": cut_bed})
         if spawn:
             ensure_player(d)
         item.setdefault("device_from", device_from)   # the caller is told, whether it rode or not
@@ -488,10 +542,69 @@ def sound_label(source: str, start: Optional[float] = None, end: Optional[float]
     return f"[sound {Path(source).name}{span}]"
 
 
+def _fetched(url: str, d: Optional[Path]) -> Path:
+    """A remote SOURCE as a local file, before anything is queued (cache or spool).
+
+    The caller's ``play_remote`` and ``play_cache`` (one cascade run of their own,
+    lock-aware: ``voices.play_url_settings``), then the fetch: into the play cache, or
+    with the cache off into the spool, which this play sweeps first. One line on the
+    caller's stderr on a miss (``mouth: fetching URL``), none on a hit.
+
+    ValueError, naming the URL without its credentials: remote plays switched off
+    (naming the setting and the layer), a failed fetch (``fetch``'s own text), or the
+    cache or spool that could not be written (an OSError: a full disk, an unwritable
+    dir). Nothing is queued either way."""
+    from . import fetch
+
+    d = d or mouth_dir()
+    s = _voices.play_url_settings(
+        cascaded=_voices.cascade(heard.caller_session(), _voices.PLAY_URL_KEYS), d=d)
+    on, src = s["remote"]
+    if not on:
+        raise ValueError(f"mouth: a remote URL is not played: play_remote is off ({src}); "
+                         "a path or a file:// URL still plays")
+
+    def tell(line: str) -> None:   # the caller's stderr, never spoken (autosplit.tell)
+        print(line, file=sys.stderr, flush=True)
+
+    try:
+        fetch.sweep_spool(d)
+        if s["cache"][0]:
+            return fetch.cached(url, s["dir"], max_age_s=s["max_age_s"], tell=tell)
+        return fetch.spooled(url, fetch.spool_dir(d), tell=tell)
+    except OSError as e:
+        why = e.strerror or type(e).__name__
+        if e.filename:
+            why = f"{why}: {e.filename}"
+        raise ValueError(f"mouth: could not fetch {fetch.shown(url)}: "
+                         f"could not write it ({why})") from None
+
+
 def play(source: str, *, start: Optional[float] = None, end: Optional[float] = None,
          extra_tag: Optional[dict] = None, instrumental: Optional[bool] = None,
-         stem=None, **kw) -> dict:
+         stem=None, queue: Optional[str] = None, **kw) -> dict:
     """Queue a sound file (or ``start``..``end`` seconds of it). Same queue, stop, log.
+
+    ``source`` is a path, or a URL (``mouth.fetch.classify``):
+
+    - ``file:///abs/song.m4a`` plays the file it names, percent-decoded, in place: it
+      is never fetched or copied, and the remote switch does not refuse it. A
+      ``file://`` URL naming another host is refused.
+    - ``http://`` and ``https://`` are fetched first, into the play cache (a second
+      play is a hit, with no request), and the CACHED file is queued as ``file``.
+      The line carries ``source_url``, the URL without its credentials. The
+      settings ``play_remote`` (off: refused) and ``play_cache`` (off: fetched for
+      this play only) answer from the caller's layers; a host lock wins.
+    - Any other scheme is refused.
+
+    A URL source (``file://`` or http(s)) is registered (``mouth.sourcekey``): its
+    sidecar is ``<mouth dir>/url-sidecars/<sha256 of its bytes>/``, never beside it.
+    A plain path already registered is re-checked, so a replaced file gets its new
+    bytes' folder. An unreadable source is refused.
+
+    Every refusal, and a failed fetch, is a ValueError before anything is queued.
+    The decoder still reads local files only (``-protocol_whitelist file``): it
+    never sees the URL.
 
     ``stem``: play the file's stems instead (``mouth play --stem NAME[,NAME]``), one or a
     comma list (or a list) of ``vocals``, ``drums``, ``bass``, ``other``, mixed in ONE
@@ -500,22 +613,49 @@ def play(source: str, *, start: Optional[float] = None, end: Optional[float] = N
     before anything is queued, naming the one command that makes it (``mouth split``).
     The line carries the names only; the player finds the files at take time.
 
+    ``queue``: where the play goes in the queue (:data:`QUEUE_MODES`): ``last``, the
+    end (today's plain play); ``next``, the front (rank 0), so it plays when the song
+    on its device ends; ``now``, which stops the song playing on THAT device only and
+    plays at once (:func:`play_many`). None reads ``play_queue`` from the caller's
+    layers and the host file, else ``last``. Speech mixes over a song in every mode:
+    ``now`` never cuts a spoken line. ``priority`` alone keeps its raw meaning
+    (``say``); both together are refused.
+
     ``instrumental``: True or False is this play's own answer to whether it plays
     the file's instrumental (``--instrumental``/``--no-instrumental``); None reads
     the setting's layers (``say``). With no instrumental yet, a play of a song may
-    start its split and wait for it in the queue (``mouth.autosplit``).
+    start its split and wait for it in the queue (``mouth.autosplit``)."""
+    return play_many([source], start=start, end=end, extra_tag=extra_tag,
+                     instrumental=instrumental, stem=stem, queue=queue, **kw)[0]
 
-    A URL is refused before anything is queued: the decoder reads files only
-    (``-protocol_whitelist file``)."""
-    if "://" in source:
-        raise ValueError("mouth: a URL is not played; download it, then mouth play the file")
-    path = Path(source).expanduser().resolve()
-    if not path.is_file():
-        raise ValueError(f"mouth: no such file {source}")
-    source = str(path)
+
+def _prepare(source: str, *, start: Optional[float] = None, end: Optional[float] = None,
+             extra_tag: Optional[dict] = None, instrumental: Optional[bool] = None,
+             stem=None, d: Optional[Path] = None) -> tuple[str, dict]:
+    """One play's source made ready to drop, before anything is queued: its scheme
+    checked, a URL fetched, a URL source registered, its stems checked. Returns
+    ``(text, extra)`` for ``say``. Every refusal is a ValueError (:func:`play`)."""
+    from . import fetch
+
+    kind, value = fetch.classify(source)   # a refused scheme or file:// host raises here
     if start is not None and end is not None and end <= start:
-        raise ValueError("mouth: --end must be after --start")
-    extra = {"file": source, "start": start, "end": end, **(extra_tag or {})}
+        raise ValueError("mouth: --end must be after --start")   # before any download
+    origin = {}
+    if kind == "remote":
+        value = str(_fetched(value, d))
+        origin = {"source_url": fetch.shown(source)}
+    path = Path(value).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"mouth: no such file {value if kind == 'file' and value else source}")
+    source = str(path)
+    # A URL source's sidecar is url-sidecars/<sha256>/, never beside it (design.md §11):
+    # registered before anything reads it. A plain path registers nothing new, but one
+    # already registered is refreshed, so a replaced file finds its new bytes' folder.
+    from . import sourcekey
+
+    if kind != "path" or sourcekey.lookup(path, d) is not None:
+        sourcekey.register(path, d)   # unreadable: refused, nothing queued
+    extra = {"file": source, "start": start, "end": end, **origin, **(extra_tag or {})}
     if stem is not None:
         from . import stems
 
@@ -525,8 +665,164 @@ def play(source: str, *, start: Optional[float] = None, end: Optional[float] = N
         names = stems.names(stem)
         stems.check(source, names)       # a missing stem: refused with the command that makes it
         extra["stem"] = names
-    return say(sound_label(source, start, end), backend="file", instrumental=instrumental,
-               extra=extra, **kw)
+    return sound_label(source, start, end), extra
+
+
+#: ``mouth play``'s queue modes (``play_queue``, ``--now``/``--next``/``--last``).
+QUEUE_MODES = _voices.QUEUE_MODES
+#: The top of a ``now`` play's rank band, (-1, -0.5]: ahead of every ``next`` (0) and
+#: every plain play (50), behind a spoken ``now`` line (-1), which mixes over it anyway.
+NOW_SONG_RANK = -0.5
+#: The lowest rank a ``now`` play takes: just above -1, so a spoken ``now`` line
+#: still sorts first. A float halving towards -1 reaches -1.0 exactly after ~53
+#: stacked ``now`` runs; past this floor a new one ties with the lowest, FIFO.
+NOW_RANK_FLOOR = math.nextafter(-1.0, 0.0)
+
+
+def now_rank(lines, key: Optional[str]) -> float:
+    """The rank of a ``now`` play on device KEY, given the queued LINES
+    (``box.Queue(d).lines()``): strictly below every queued played file for the
+    same device whose rank is in (-1, -0.5], so it plays before an earlier ``now``
+    run's remainder, which stays queued behind it; else :data:`NOW_SONG_RANK`.
+    It halves towards -1 and never reaches it (:data:`NOW_RANK_FLOOR`)."""
+    from . import bed
+    from .box import DEFAULT_RANK
+
+    ranks = [float(x["_rank"]) for x in lines
+             if x.get("file") and -1.0 < float(x.get("_rank", DEFAULT_RANK)) <= NOW_SONG_RANK
+             and bed.device_key(x.get("device")) == key]
+    if not ranks:
+        return NOW_SONG_RANK
+    r = min(ranks)
+    return max(r - (r + 1) / 2, NOW_RANK_FLOOR)
+
+
+def _bed_playing(d: Path, key: Optional[str]) -> Optional[str]:
+    """The utt of the song playing on device KEY, as ``bed.json`` names it (its own
+    ``key``, which the player computed), else None. Only while a player runs:
+    ``bed.json`` outlives a player that died."""
+    from . import bed
+
+    if not d.exists() or not _player_running(d):
+        return None
+    for b in bed.read(d):
+        if b.get("key") == key and b.get("utt"):
+            return b["utt"]
+    return None
+
+
+def queue_mode(queue: Optional[str] = None, *, d: Optional[Path] = None,
+               cascaded: Optional[dict] = None) -> tuple[str, str]:
+    """``(mode, from)`` for a ``mouth play``: QUEUE as given (``flag``), else
+    ``play_queue`` in the caller's layers and the host file (read only when no flag
+    answers), else ``last`` (``builtin``). A bad QUEUE is refused.
+
+    ``cascaded``: the play's own cascade, already read with ``play_queue`` among its
+    keys (``voices.play_keys``), so no run is made here; None makes one."""
+    if queue is not None:
+        q = queue.strip().lower() if isinstance(queue, str) else None
+        if q not in QUEUE_MODES:
+            raise ValueError("mouth: queue is " + ", ".join(QUEUE_MODES))
+        return q, "flag"
+    if cascaded is None:
+        cascaded = _voices.cascade(heard.caller_session(), _voices.PLAY_MODE_KEYS)
+    return _voices.play_mode_settings(cascaded, d)["play_queue"]
+
+
+#: Which of a ``mouth play --find``'s matches it plays (``play_find_matches``,
+#: ``--matches``).
+FIND_MATCHES = _voices.FIND_MATCHES
+
+
+def find_matches(matches: Optional[str] = None, *, d: Optional[Path] = None,
+                 cascaded: Optional[dict] = None) -> tuple[str, str]:
+    """``(mode, from)`` for a ``mouth play --find``: MATCHES as given (``flag``), else
+    ``play_find_matches`` in the caller's layers and the host file (read only when
+    no flag answers), else ``first`` (``builtin``). A bad MATCHES is refused.
+    ``first`` plays the first match, ``list`` plays none and lists them, ``all``
+    plays every one as one run (:func:`play_many`).
+
+    ``cascaded``: the play's own cascade, read up front with ``play_find_matches``
+    among its keys (``voices.play_keys``), so no run is made here; None makes one."""
+    if matches is not None:
+        m = matches.strip().lower() if isinstance(matches, str) else None
+        if m not in FIND_MATCHES:
+            raise ValueError("mouth: matches is " + ", ".join(FIND_MATCHES))
+        return m, "flag"
+    if cascaded is None:
+        cascaded = _voices.cascade(heard.caller_session(), _voices.PLAY_MODE_KEYS)
+    return _voices.play_mode_settings(cascaded, d)["play_find_matches"]
+
+
+def play_many(sources, *, start: Optional[float] = None, end: Optional[float] = None,
+              extra_tag: Optional[dict] = None, instrumental: Optional[bool] = None,
+              stem=None, queue: Optional[str] = None, skip=None, **kw) -> list[dict]:
+    """Queue SOURCES as ONE run, in order, placed by one queue mode; return the
+    queued items (each as :func:`play` returns it), in order.
+
+    The caller's cascade is read ONCE (``cascaded``, else here: one ``session
+    settings`` run, :func:`voices.play_keys`), and it serves the mode and every
+    line of the run: the voice, the level, the duck and the instrumental.
+    The mode is resolved once (:func:`queue_mode`). Every source is prepared first
+    (fetched, registered, checked: :func:`_prepare`), then each is dropped in order
+    at the mode's one rank, so equal ranks keep the run FIFO and it plays as one
+    block: ``last`` at the end, ``next`` at the front, ``now`` ahead of both
+    (:func:`now_rank`). Under ``now`` the song playing on the run's device is read
+    BEFORE the drop, so a run never cuts its own first song, and ONE stop aimed at
+    it is written after the last drop, so no other queued song takes the freed
+    device in between. Nothing else is cut: not a spoken line, not another device.
+
+    ``skip``: None, and a source that cannot be prepared raises before anything is
+    queued. Else a callable ``skip(source, error)``: that source is handed to it and
+    left out, and the run goes on; with none left, a ValueError. ``wait`` plays one
+    source only. ``priority`` alone keeps its raw meaning (``say``); with ``queue``
+    it is refused. Every other keyword is ``say``'s."""
+    sources = list(sources)
+    if not sources:
+        raise ValueError("mouth: nothing to play")
+    if kw.get("wait") and len(sources) > 1:
+        raise ValueError("mouth: --wait plays one")
+    d = kw.get("d")
+    priority = kw.pop("priority", None)
+    if priority is not None and queue is not None:
+        raise ValueError("mouth: a play takes a queue mode or a priority, not both")
+    cascaded = kw.pop("cascaded", None)
+    if cascaded is None:   # the one run: the mode (if no flag answers) and the lines
+        cascaded = _voices.cascade(heard.caller_session(), _voices.play_keys(
+            queue=priority is None and queue is None))
+    mode = mode_from = None
+    if priority is None:
+        mode, mode_from = queue_mode(queue, d=d, cascaded=cascaded)
+        priority = {"next": "next", "last": None}.get(mode)
+    prepared = []
+    for src in sources:
+        try:
+            prepared.append(_prepare(src, start=start, end=end, extra_tag=extra_tag,
+                                     instrumental=instrumental, stem=stem, d=d))
+        except ValueError as e:
+            if skip is None:
+                raise
+            skip(src, e)
+    if not prepared:
+        raise ValueError("mouth: nothing to play")
+    cut = None
+    if mode == "now":
+        from . import bed
+        from .box import Queue
+
+        dd = d or mouth_dir()
+        key = bed.device_key(resolve_device(kw.get("device"), "flag", d)[0])
+        cut = _bed_playing(dd, key)   # read before the drop: a run never cuts its own song
+        priority = now_rank(Queue(dd).lines(), key) if dd.exists() else NOW_SONG_RANK
+    out = []
+    for i, (text, extra) in enumerate(prepared):
+        if mode is not None and mode_from != "builtin":   # only what a layer answered rides
+            extra = {**extra, "queue": mode, "queue_from": mode_from}
+        last = i == len(prepared) - 1
+        out.append(say(text, backend="file", instrumental=instrumental, extra=extra,
+                       priority=priority, cut_bed=cut if last else None,
+                       cascaded=cascaded, **kw))
+    return out
 
 
 #: How long a say-again replay waits for the end of the user's turn before it is dropped.
@@ -603,7 +899,8 @@ def again(utt: str, *, seq=None, heard_text: Optional[str] = None, volume=None,
         extra["again_heard"] = heard_text
     if why is None:   # rung 1: the kept WAV itself
         extra.update({"file": note["wav"], "again_from": "audio",
-                      "agent": note.get("agent"), "session": note.get("session")})
+                      "agent": note.get("agent"), "session": note.get("session"),
+                      "mail_from": note.get("mail_from")})
         if note.get("backend"):
             # The backend that made the WAV. The box makes any line with a ``file`` the
             # ``file`` backend (box.read), so without this the player would level the
@@ -613,7 +910,8 @@ def again(utt: str, *, seq=None, heard_text: Optional[str] = None, volume=None,
         speed, backend = note.get("speed"), note.get("backend")
     elif noted.strip():   # rung 2: the note's text, in the note's voice
         extra.update({"again_from": "text", "again_why": why,
-                      "agent": note.get("agent"), "session": note.get("session")})
+                      "agent": note.get("agent"), "session": note.get("session"),
+                      "mail_from": note.get("mail_from")})
         say_text, say_voice = noted, note.get("voice") or voice
         speed, backend = note.get("speed"), note.get("backend")
     elif given.strip():   # rung 2, the note gone too: what the keeper read off the saying row
@@ -700,8 +998,7 @@ def amend(utt: str, text: str, *, d: Optional[Path] = None) -> dict:
     unheld = x.get("_unheld") or (taken and asked_no_hold(x.get("box_file")))
     if unheld and not item.get("hold"):
         item["hold"] = "now"   # its sender's --hold none / X-Mouth-When: now rides the new mail
-    target = item.pop("mail_id")
-    item.pop("mail_from", None)
+    target = item.pop("mail_id")   # the line's mail_from stays: an amend keeps its From
     if taken:
         item.pop("box_file", None)   # playing.json's own fact, not the line's
         if _rank_of(item.get("priority")) > 0:
@@ -758,7 +1055,7 @@ def status(d: Optional[Path] = None) -> dict:
 
     q = Queue(d)
     running = _player_running(d) if d.exists() else False
-    from . import duckswitch, hold, splitwait
+    from . import duckswitch, hold, level, splitwait
 
     dk = duckswitch.readout(d)
     queued = q.lines()
@@ -769,7 +1066,9 @@ def status(d: Optional[Path] = None) -> dict:
             "splits": splitwait.running(d, queued),
             "duck": {k: dk[k] for k in ("effective", "by", "override")},
             # the host's barge policy, each value with its layer and source
-            "barge": hold.barge_status(d)}
+            "barge": hold.barge_status(d),
+            # false: no ffmpeg, so no voice can be measured and levelling is off
+            "level": {"ffmpeg": level.have_ffmpeg()}}
 
 
 def duck_state(d: Optional[Path] = None, now: Optional[float] = None) -> dict:

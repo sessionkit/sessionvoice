@@ -415,8 +415,12 @@ CALL_SLOW_S = 4.0       # the second look, and a line's header: under the bot's 
 
 def call_socks() -> list[str]:
     """Every bot's mouth-leg socket. $MOUTH_CALL_SOCKS (colon-separated) overrides the
-    search of every bot root the ears search (ears.listen.sources.bot_roots: sessionphone's
-    root, $DC_ROOT, ~/.<agent>/delta-chat), each [/<profile>]/call-mouth.sock."""
+    search. Else this delegates to the ears' ``bot_socks("call-mouth.sock")``, so the mouth
+    searches exactly the roots the ears search (ears.listen.sources.bot_roots: sessionphone's
+    root, $DC_ROOT, ~/.<agent>/delta-chat, ~/.sessionkit/phone/run where phone publishes
+    each bot's sockets as symlinks, and the fallback ~/.<agent>/phone), each
+    [/<profile>]/call-mouth.sock, a socket reached twice counted once. The rule is not
+    copied here: change it in ears.listen.sources (and its keeper twin)."""
     env = envnames.get("MOUTH_CALL_SOCKS")
     if env:
         return [os.path.expanduser(p) for p in env.split(":") if p]

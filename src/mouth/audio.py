@@ -174,7 +174,8 @@ def keep(item: dict, blocks: Iterable[np.ndarray], sample_rate: int, backend_nam
         write_wav(wav, data, sample_rate)
         meta = {"utt": utt, "voice": item.get("voice"), "backend": backend_name,
                 "speed": item.get("speed"), "agent": item.get("agent"),
-                "session": item.get("session"), "text": item.get("text"),
+                "session": item.get("session"), "mail_from": item.get("mail_from"),
+                "text": item.get("text"),
                 "requested_ts": item.get("requested_ts"), "sample_rate": int(sample_rate),
                 "dur_s": round(len(data) / 2 / sample_rate, 3),
                 "kept_ts": _dt.datetime.fromtimestamp(now).astimezone().isoformat(timespec="seconds"),

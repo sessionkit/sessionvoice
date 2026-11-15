@@ -67,7 +67,7 @@ The Python packages, from `pyproject.toml`:
 | Dependency | What needs it | Without it | How you get it | How you upgrade it |
 |---|---|---|---|---|
 | [The speech server](speech-server.md) | The ears' speech-to-text (Parakeet) and the mouth's Kokoro voices, on `127.0.0.1:8890`. An Apple-silicon Mac on macOS 14 or later. | The ears, which hear through it by default, cannot turn speech into text; the mouth's `auto` speaks with macOS `say`. Or point both at another OpenAI-compatible server. | `ears services install` uses an mlx-audio server already there, or builds its own with uv from [`speech/requirements.lock`](../speech/requirements.lock), the speech venv's own hash-pinned set. | `ears services uninstall --only speech`, then `ears services install` with the `--agent NAME` or `--no-agent` the first install used ([upgrade it](speech-server.md#upgrade-it)). |
-| The speech server's weights | Parakeet, Kokoro and Kokoro's voices, about 2.9 GB. | The first transcription and the first line spoken wait on the download. | `ears services install` fetches them from Hugging Face and prints the size first; `--no-prefetch` leaves them to the first call. | Nothing pins them: a later first use can load different weights. `ears services weights` says whether the cache holds the ones sessionvoice expects ([its weights](speech-server.md#its-weights)). |
+| The speech server's weights | Parakeet, Kokoro and Kokoro's voices, about 2.9 GB. | The first transcription and the first line spoken wait on the download. | `ears services install` fetches them from Hugging Face and prints the size first; `--no-prefetch` leaves them to the first call, but not the Silero VAD model, which install still fetches. | Nothing pins them: a later first use can load different weights. `ears services weights` says whether the cache holds the ones sessionvoice expects ([its weights](speech-server.md#its-weights)). |
 | sessionmail's `message` | The turn mail that wakes an agent when you speak (`keeper/ears-mail.py`), and the mouth's notices. | `ears services install` warns `message MISSING`; nothing is mailed, so no agent is woken. | `uv tool install sessionmail`, or the kit. | `uv tool upgrade sessionmail`. |
 | [Claude Code](https://claude.ai/code) | The plugin: `/ears-setup`, the `ears` skill, and the heard hook a seat opts into (`ears heard hook`). | The commands still run in a terminal. | Its installer; the plugin from a marketplace: the kit's, or this repo's own, `sessionvoice`. | Claude Code's own update; `claude plugin update sessionvoice@MARKETPLACE`. |
 | Apple's Command Line Tools | `swiftc`, which builds the keeper's fast device watcher. | The keeper polls `system_profiler` for device changes. It never runs the `swiftc` stub, which would open the install dialog. | `xcode-select --install`. | Software Update. |
@@ -162,6 +162,16 @@ ears services schema                   # the settings-schema copies
   writes ([the schema copies](settings.md#the-files)). A copy that
   already matches is left alone. The keeper does it at its next start too;
   this line does it now.
+- **The room capture** outlives a keeper restart: it is its own process. The
+  re-install restarts the keeper (so does `launchctl kickstart -k
+  gui/$(id -u)/dev.sessionkit.voice.ears-keeper`), and a restarted keeper
+  restarts a room capture still running the old code, once, through its
+  stop file ([the keeper](ears.md#how-it-works)). Check it took: the capture's
+  start time, `ps -o lstart= -p PID` (PID from `pgrep -f
+  STOP-capture-keeper-`: only the room capture carries that stop file; a
+  call leg is an `ears.listen capture` too), is later than the upgrade. If it is not, touch the capture's
+  stop file (its `--stop-file`, `STOP-capture-keeper-HHMMSS`), and the keeper
+  starts a fresh one.
 - **The speaker side-car**, if you installed it: `ears services install
   --only speakers` again.
 - **The plugin:** `claude plugin update sessionvoice@MARKETPLACE`, then

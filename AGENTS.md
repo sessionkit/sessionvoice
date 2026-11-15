@@ -26,6 +26,7 @@ Python 3.10-3.14 and [uv](https://docs.astral.sh/uv/).
     make test                  # uv run --locked pytest: the whole suite, offline
     make test ARGS="-k mouth"  # pytest flags pass through
     make scan                  # the pre-publish scrub check (needs SESSIONKIT_SCAN)
+    make pypi-dist             # what publish uploads: the tag's dists, README links pinned (needs SESSIONKIT_DIR)
 
 - Run `make test` before you hand anything back. It needs no network and
   reaches no audio device.
@@ -67,9 +68,12 @@ commit.
   bypassed by an exported `MOUTH_SENDMAIL`. Set the new name. An imported mouth is refused the real
   `message`, but a player the rig starts (`mouth say`, `mouth serve`), and a
   `mouth retract` or `mouth again` it runs, are the real service and mail
-  for real. The fixture stands in for sessionmail's `message send`. A rig
+  for real. Set `MOUTH_NOTICE_ALERT=off` too: with every notice refused,
+  the third one queues an alert line the player speaks. The fixture stands in for sessionmail's `message send`. A rig
   that runs `keeper/ears-mail.py` without `--dry-run` sets
-  `EARS_MAIL_MESSAGE` to it too.
+  `EARS_MAIL_MESSAGE` to it too, and sets `EARS_MAIL_ALERT=off` or gives
+  it a stub `--mouth`: with every send refused, its third failed send runs
+  `mouth say --alert` and speaks.
   New code that writes a said row outside the player fails
   `test_every_said_row_writer_is_accounted_for`. If a CLI verb runs it in its
   own process, add that verb to `mouth.__main__.SERVICE_VERBS`.

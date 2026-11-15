@@ -48,6 +48,18 @@ podcast, a voice memo), not music: :func:`speech_verdict`. The manifest
 records it as ``verdict``, and a :class:`Hit` from the written layout reports
 it, so the caller can play the original for speech.
 
+**A URL source's sidecar is not beside it.** A file played by
+``file://`` or ``http(s)://`` is registered by ``mouth.play``
+(:mod:`mouth.sourcekey`), and its ONE folder, written and read, is
+``<mouth dir>/url-sidecars/<sha256 of its bytes>/``, in the written layout
+above. Nothing is made or read beside it, by any reader, however the file is
+later named. Two files with the same bytes share the folder. Its manifest
+records ``source.sha256``; when that matches a fresh registry entry the
+outputs are current with no size, mtime or duration test. When the file has
+changed since it was registered (a stale entry), the folder reads as empty:
+no instrumental and no stems, until a play or a split hashes it again. A
+path never registered keeps the folder beside it, exactly as above.
+
 Nothing here writes, runs a process or raises on a bad folder: a duration
 probe is passed in by the caller (:func:`parse_duration` reads the
 ``ffmpeg -i`` text). Paths are taken as given; the caller resolves links
@@ -63,6 +75,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
+
+from . import sourcekey
 
 #: The manifest's file name, inside the written folder.
 MANIFEST = "split.json"
@@ -118,24 +132,41 @@ def base_name(source) -> str:
     return stem if ext else name
 
 
-def canonical_dir(source) -> Path:
-    """The folder the mouth writes for SOURCE: ``<dir>/.<name>.d``."""
+def _entry(source, d: Optional[Path] = None) -> Optional[sourcekey.Entry]:
+    """SOURCE's registry entry when it is a URL source (:mod:`mouth.sourcekey`), else
+    None. Never raises."""
+    try:
+        return sourcekey.lookup(source, d)
+    except (OSError, ValueError):
+        return None
+
+
+def _folders(source, entry, d: Optional[Path] = None) -> list[tuple[str, Path]]:
+    if entry is not None:
+        return [("dot", sourcekey.folder(entry.sha256, d))]
     p = Path(source)
-    return p.parent / f".{p.name}.d"
+    out = [("dot", p.parent / f".{p.name}.d"), ("name", p.parent / f"{p.name}.d")]
+    base = p.parent / f"{base_name(p)}.d"
+    if base not in [f for _, f in out]:
+        out.append(("base", base))
+    return out
 
 
-def read_dirs(source) -> list[tuple[str, Path]]:
+def canonical_dir(source, d: Optional[Path] = None) -> Path:
+    """The folder the mouth writes for SOURCE: ``<dir>/.<name>.d``, or for a URL
+    source ``<mouth dir>/url-sidecars/<sha256>`` (D: the mouth dir, else
+    ``$MOUTH_DIR``'s)."""
+    return _folders(source, _entry(source, d), d)[0][1]
+
+
+def read_dirs(source, d: Optional[Path] = None) -> list[tuple[str, Path]]:
     """SOURCE's sidecar folders in read order, as ``(layout, folder)`` pairs.
 
     Layouts 1 to 3 (``dot``, ``name``, ``base``). A file with no extension
-    has the same ``name`` and ``base`` folder, listed once. Whether each
+    has the same ``name`` and ``base`` folder, listed once. A URL source has
+    one, its ``url-sidecars/<sha256>`` folder, as ``dot``. Whether each
     exists is not checked here."""
-    p = Path(source)
-    out = [("dot", canonical_dir(p)), ("name", p.parent / f"{p.name}.d")]
-    base = p.parent / f"{base_name(p)}.d"
-    if base not in [d for _, d in out]:
-        out.append(("base", base))
-    return out
+    return _folders(source, _entry(source, d), d)
 
 
 def find_audio(folder, name: str) -> Optional[Path]:
@@ -207,6 +238,28 @@ def is_stale(manifest: dict, source, probe: Optional[Callable] = None) -> bool:
     return abs(now - was) > STALE_TOLERANCE_S
 
 
+def _stale(manifest: dict, source, probe, entry) -> bool:
+    """:func:`is_stale`, but a URL source whose fresh entry names the manifest's
+    ``source.sha256`` is current at once: the folder's key IS the content."""
+    if entry is not None and entry.fresh:
+        rec = manifest.get("source") if isinstance(manifest, dict) else None
+        if isinstance(rec, dict) and rec.get("sha256") == entry.sha256:
+            return False
+    return is_stale(manifest, source, probe)
+
+
+def outputs_stale(manifest: dict, source, probe: Optional[Callable] = None,
+                  d: Optional[Path] = None) -> bool:
+    """Whether the outputs MANIFEST describes no longer fit SOURCE, for the folder
+    :func:`canonical_dir` names. :func:`is_stale` for a plain path; for a URL source,
+    stale whenever its entry is (the file changed since it was hashed), and current
+    when the manifest's ``source.sha256`` is the entry's."""
+    entry = _entry(source, d)
+    if entry is not None and not entry.fresh:
+        return True
+    return _stale(manifest, source, probe, entry)
+
+
 def manifest_verdict(manifest) -> Optional[str]:
     """The manifest's ``verdict`` when it is one of :data:`VERDICTS`, else None."""
     v = manifest.get("verdict") if isinstance(manifest, dict) else None
@@ -249,18 +302,31 @@ def parse_duration(text: str) -> Optional[float]:
     return int(h) * 3600 + int(mi) * 60 + float(s)
 
 
-def _layered(source, probe, names) -> Optional[Hit]:
-    """Folders 1 to 3, NAMES in order in each; then step 4 is the caller's."""
-    for layout, folder in read_dirs(source):
+def _live(source, probe):
+    """``(layout, folder, manifest)`` for each of folders 1 to 3 that exists and is not
+    stale. A URL source's stale entry gives none."""
+    entry = _entry(source)
+    if entry is not None and not entry.fresh:
+        return []
+    out = []
+    for layout, folder in _folders(source, entry):
         if not folder.is_dir():
             continue
-        manifest = verdict = None
+        m = None
         if layout == "dot":
             m = read_manifest(folder)
-            if m is not None:
-                if is_stale(m, source, probe):
-                    continue
-                manifest, verdict = m, manifest_verdict(m)
+            if m is not None and _stale(m, source, probe, entry):
+                continue
+        out.append((layout, folder, m))
+    return out
+
+
+def _layered(source, probe, names) -> Optional[Hit]:
+    """Folders 1 to 3, NAMES in order in each; then step 4 is the caller's."""
+    for layout, folder, m in _live(source, probe):
+        manifest = verdict = None
+        if m is not None:
+            manifest, verdict = m, manifest_verdict(m)
         for name in names:
             hit = find_audio(folder, name)
             if hit is not None:
@@ -270,16 +336,7 @@ def _layered(source, probe, names) -> Optional[Hit]:
 
 def _live_folders(source, probe) -> list[Path]:
     """Folders 1 to 3 that exist and are not stale, for step 4."""
-    out = []
-    for layout, folder in read_dirs(source):
-        if not folder.is_dir():
-            continue
-        if layout == "dot":
-            m = read_manifest(folder)
-            if m is not None and is_stale(m, source, probe):
-                continue
-        out.append(folder)
-    return out
+    return [folder for _, folder, _ in _live(source, probe)]
 
 
 def _raw(source, probe, part: str, mlx: bool) -> Optional[Hit]:

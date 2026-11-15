@@ -32,6 +32,30 @@ from tests import env_fence
 from tests._anchor import ANCHOR
 
 
+def _entries(caches: dict) -> dict:
+    return {k: dict(v) for k, v in caches.items()}
+
+
+@pytest.fixture(autouse=True)
+def leaves_no_floor_behind():
+    """The pin for EARS-537: no test here may change hold's own floor cache.
+
+    ``hold.check(..., now=REQ + 31)`` below stamps the cache in 2030 (``hold._look_floor``
+    trusts any stamp with ``now - t < max_age_s``, and a future one is always fresh), with
+    the ``partial`` the ``floor`` fixture wrote. Left in the module's dict, the next test's
+    player read that line as the user speaking for ``hold.idle_s()`` (8 s), held its
+    room-held lines, and ``test_mouth_notice.py``'s ``run_player(...).join(5)`` timed out
+    with no notice sent.
+
+    It checks the dict the module held when the test began, in place. A test may swap in
+    its own with ``monkeypatch`` (the ``floor`` fixture does): the conftest's autouse
+    fixtures ask for ``monkeypatch`` before this one, so its undo runs after this check."""
+    own = hold._caches
+    before = _entries(own)
+    yield
+    assert _entries(own) == before, "hold's floor cache was left changed: it leaks into later tests"
+
+
 @pytest.fixture
 def d(tmp_path, monkeypatch):
     d = tmp_path / "mouth"
@@ -295,10 +319,17 @@ def test_an_extras_pan_inside_minus_one_to_one_is_kept(d, capsys, pan):
 
 @pytest.fixture
 def floor(tmp_path, monkeypatch):
-    """A scratch heard log (no ears run): ``floor("partial")`` makes him speaking."""
+    """A scratch heard log (no ears run): ``floor("partial")`` makes him speaking.
+
+    The floor cache is this test's own, swapped in by ``monkeypatch`` and put back at
+    teardown (EARS-537). The test reads it at ``now=REQ + 31``, a stamp in 2030 that
+    ``hold._look_floor`` treats as fresh until then. Reset in place, as before, the
+    partial stayed in the module's dict, and the next test's player held its lines
+    (``leaves_no_floor_behind``)."""
     from ears import heard
 
     monkeypatch.setenv("VOICEMODE_BASE_DIR", str(tmp_path / "vm"))
+    monkeypatch.setattr(hold, "_caches", {hold.MIC: {"t": 0.0, "v": None}})
     heard.log_dir().mkdir(parents=True, exist_ok=True)
 
     def write(kind, age_s=0.0):
@@ -309,8 +340,6 @@ def floor(tmp_path, monkeypatch):
             f.write(json.dumps(rec) + "\n")
         for c in hold._caches.values():
             c.update(t=0.0, v=None)
-    for c in hold._caches.values():
-        c.update(t=0.0, v=None)
     return write
 
 

@@ -229,16 +229,31 @@ def test_a_room_held_line_from_before_his_turn_is_not_stale(box, ears):
 
 
 def _pair(**more) -> tuple:
+    """The same line twice, queued now: held by the room default, and by its sender.
+
+    Queue it AFTER the partial that begins his turn. A sender's line requested
+    before he began is an opener, and ``check`` files it ``stale``. The ears stamp
+    ``ts`` floored to the millisecond and ``requested_t`` is a full float, so a
+    pair made before the partial reads as after it only while both land in the
+    same millisecond; one ms boundary between them and the sender's line is stale.
+    """
     now = time.time()
     base = {"device": "null", "requested_t": now, **more}
     return {**base, "hold": "turn-end", "hold_from": "room"}, {**base, "hold": "turn-end"}
 
 
-def test_the_timeout_is_an_explicit_turn_ends(ears):
+#: A beat between his partial and the line's request: 0, or past a millisecond
+#: boundary, the gap a loaded runner opens between the two stamps.
+GAPS = pytest.mark.parametrize("gap_s", [0.0, 0.002], ids=["same-ms", "next-ms"])
+
+
+@GAPS
+def test_the_timeout_is_an_explicit_turn_ends(ears, gap_s):
     """Never waits forever: when the ears go quiet for ``idle_s`` (they died), the floor
     is free and the line plays, as an explicit turn-end line does."""
-    room, explicit = _pair()
-    ears("partial")
+    ears("partial")                         # he is talking
+    time.sleep(gap_s)
+    room, explicit = _pair()                # a line arrives mid-turn
     assert hold.check(room) == hold.check(explicit) == "wait"
     later = time.time() + hold.idle_s() + 0.1
     assert hold.check(room, now=later) == hold.check(explicit, now=later) == "play"
@@ -251,9 +266,11 @@ def test_the_idle_timeout_setting_is_shared(ears, monkeypatch):
     assert hold.check(room) == hold.check(explicit) == "play"
 
 
-def test_expiry_counts_from_the_end_of_his_turn_alike(ears):
-    room, explicit = _pair(expires_s=1.0, expires_t=time.time() + 1.0)
+@GAPS
+def test_expiry_counts_from_the_end_of_his_turn_alike(ears, gap_s):
     ears("partial")
+    time.sleep(gap_s)
+    room, explicit = _pair(expires_s=1.0, expires_t=time.time() + 1.0)
     t = time.time() + 5                     # past expires_t, but he is still talking
     assert hold.check(room, now=t) == hold.check(explicit, now=t) == "wait"
     ears("turn")

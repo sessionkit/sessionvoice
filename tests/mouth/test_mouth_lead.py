@@ -2,10 +2,12 @@
 until ``lead_s`` of its audio is buffered, so a slow render eats into the
 lead and not into the line.
 
-fix-002: the lead is a SETTING, default 0 for
-every backend, clone included. A caller asks per line: ``mouth say --lead S``,
+fix-002: the lead is a SETTING. A caller asks per line: ``mouth say --lead S``,
 ``mouth.say(lead_s=S)`` or a mail's ``X-Mouth-Lead: S``; else ``lead_s`` in
-the caller's cascade (session, seat, agent), then the host settings file.
+the caller's cascade (session, seat, agent), then the host settings file,
+then the built-in for the line's backend. EARS-529: that built-in is 3 s for
+a clone (``voices.BUILTIN_LEAD_BY_BACKEND``) and 0 for every other backend;
+any layer above it, 0 included, wins.
 
 The player is driven for real (``player.serve`` / ``play_one``, the null
 output) with ``bench/clone_underrun.py``'s :class:`CloneLike`, small chunks
@@ -88,23 +90,78 @@ def slow():
     return CloneLike(dur_s=1.5, rtf=1.25, interval_s=0.1)
 
 
-# -- the default: no lead, for every backend ---------------------------------
+class SlowKokoro(CloneLike):
+    """The same slow stream under another backend's name: the built-in is keyed
+    on the resolved backend, not on how the audio arrives."""
+    name = "kokoro"
 
-def test_the_default_lead_is_zero_for_every_backend(box):
-    assert voices.BUILTIN_LEAD_S == 0.0
-    for b in ("clone", "kokoro", "apple", "silence", "auto"):
-        assert voices.lead_setting(item={"backend": b}, d=box.d) == (0.0, "builtin")
+
+# -- the default: 3 s for a clone, 0 for every other backend (EARS-529) -------
+
+def test_the_default_lead_is_three_seconds_for_a_clone_only(box):
+    assert voices.BUILTIN_LEAD_S == 0.0 and voices.BUILTIN_LEAD_BY_BACKEND == {"clone": 3.0}
+    assert voices.lead_setting(item={"backend": "clone"}, d=box.d) == (3.0, "builtin")
+    for b in ("kokoro", "openai", "apple", "silence", "auto", None):
+        assert voices.lead_setting(item={"backend": b}, d=box.d) == (0.0, "builtin"), b
+    assert voices.lead_setting(d=box.d) == (0.0, "builtin")    # no line: no backend to key on
     kokoro, _ = backends.resolve("kokoro", "af_sky")
     assert not hasattr(kokoro, "lead_buffer_s")     # a backend asks for nothing (fix-001 did)
 
 
-def test_a_clone_line_with_no_override_holds_nothing(box, monkeypatch):
-    """The slow clone line, nothing asked: it plays as it streams (today's
-    behaviour), so it starts on its first chunk and dries out."""
+def test_a_clone_line_with_no_override_rides_out_a_slow_render(box, monkeypatch):
+    """The slow clone line, nothing asked anywhere, end to end: ``mouth.say``
+    -> the box -> the player. The say leaves ``lead_s`` off the line (a built-in
+    never rides), so the player's built-in for the clone applies: 3 s, more
+    than the 1.5 s line, so the line is held whole (its last chunk at 1.875 s,
+    1.75 s after its first) and never dries out."""
     saying, said, _ = speak(box, monkeypatch, slow())
+    assert (saying["lead_s"], saying["lead_from"]) == (3.0, "builtin")
+    assert saying["held_s"] == pytest.approx(1.75, abs=0.15)
+    assert said["reason"] == "done" and said["played_s"] == pytest.approx(1.5, abs=0.06)
+    assert (said["underruns"], said["underrun_s"]) == (0, 0)
+
+
+def test_say_leaves_the_built_in_lead_off_the_line(box, monkeypatch):
+    """The foreman's check: if ``mouth.say`` stamped the resolved built-in (0,
+    from 'builtin') onto the item, the player would read it as an explicit 0
+    and the clone default would never fire. Nothing set: nothing rides, in
+    the item or in its mail."""
+    monkeypatch.setattr(voices, "cascade", lambda sid, keys: {})
+    item = mouth.say("x", spawn=False, device="null", backend="clone")
+    assert "lead_s" not in item and "lead_s_from" not in item
+    (f,) = (box.d / "box" / "new").iterdir()
+    m = email.message_from_bytes(f.read_bytes(), policy=email.policy.default)
+    assert m["X-Mouth-Lead"] is None
+    back = mbox.read(f, box.d)
+    assert back["lead_s"] is None
+    assert voices.lead_setting(item={**back, "backend": "clone"}, d=box.d) == (3.0, "builtin")
+
+
+def test_an_auto_line_a_clone_speaks_takes_the_clone_default(box, monkeypatch):
+    """``backend: auto`` asked, a clone resolved: ``play_one`` rewrites the
+    line's backend to ``clone`` before it asks for the lead."""
+    fake = slow()
+    monkeypatch.setattr(backends, "resolve", lambda b, v: (fake, v))
+    item = mouth.say("an auto line", spawn=False, device="null", backend="auto")
+    serve(box)
+    got = records(box.logs, item["utt"])
+    assert (got["saying"]["lead_s"], got["saying"]["lead_from"]) == (3.0, "builtin")
+    assert (got["said"]["underruns"], got["said"]["underrun_s"]) == (0, 0)
+
+
+def test_a_non_clone_line_with_no_override_holds_nothing(box, monkeypatch):
+    """The same slow stream named kokoro: the default lead is 0, so it plays
+    as it streams, starts on its first chunk and dries out (behaviour kept)."""
+    saying, said, _ = speak(box, monkeypatch, SlowKokoro(dur_s=1.5, rtf=1.25, interval_s=0.1))
     assert "lead_s" not in saying and "held_s" not in saying
     assert saying["gen_s"] == pytest.approx(0.125, abs=0.08)
     assert said["underruns"] > 0 and said["underrun_s"] > 0.2
+
+
+def test_a_silence_line_keeps_lead_zero_by_default(box, monkeypatch):
+    saying, said, _ = speak(box, monkeypatch, backends.Silence(), text="Hello Theo.")
+    assert "lead_s" not in saying and "held_s" not in saying
+    assert said["reason"] == "done"
 
 
 # -- a line's own lead: python, CLI, mail -------------------------------------
@@ -126,7 +183,8 @@ def test_a_lines_own_lead_is_for_that_line_only(box, monkeypatch):
     serve(box, wait=20)
     a, b = records(box.logs, one["utt"]), records(box.logs, two["utt"])
     assert a["saying"]["lead_s"] == 0.6 and a["saying"]["held_s"] > 0.3
-    assert "lead_s" not in b["saying"] and "held_s" not in b["saying"]
+    # the next line asked nothing: the clone's built-in, not the first line's 0.6
+    assert (b["saying"]["lead_s"], b["saying"]["lead_from"]) == (3.0, "builtin")
 
 
 def test_a_lines_lead_of_zero_beats_the_setting(box, monkeypatch):
@@ -134,6 +192,19 @@ def test_a_lines_lead_of_zero_beats_the_setting(box, monkeypatch):
     saying, said, _ = speak(box, monkeypatch, slow(), lead_s=0)
     assert "held_s" not in saying
     assert said["underruns"] > 0
+
+
+def test_a_lines_lead_of_zero_beats_the_clone_default(box, monkeypatch):
+    """An explicit 0 is 0 for a clone line: no hold, and it dries out as it
+    did before EARS-529."""
+    saying, said, _ = speak(box, monkeypatch, slow(), lead_s=0)
+    assert "lead_s" not in saying and "held_s" not in saying
+    assert said["underruns"] > 0 and said["underrun_s"] > 0.2
+
+
+def test_a_lines_own_lead_beats_the_clone_default(box, monkeypatch):
+    item = mouth.say("x", spawn=False, device="null", backend="clone", lead_s=1)
+    assert voices.lead_setting(item={**item, "backend": "clone"}, d=box.d) == (1.0, "flag")
 
 
 @pytest.mark.parametrize("bad", [-1, "nonsense", float("nan"), float("inf"), True])
@@ -279,6 +350,11 @@ def test_a_mail_asks_for_a_lead_with_x_mouth_lead(box):
     assert voices.lead_setting(item=back, d=box.d) == (1.5, "mail")
 
 
+def test_a_mails_x_mouth_lead_of_zero_beats_the_clone_default(box):
+    back = mbox.read(outside_mail(box, "0"), box.d)
+    assert voices.lead_setting(item={**back, "backend": "clone"}, d=box.d) == (0.0, "mail")
+
+
 def test_a_bad_x_mouth_lead_falls_to_the_setting(box):
     settings_file(box, lead_s=0.8)
     for bad in ("-2", "soon"):
@@ -299,7 +375,34 @@ def test_the_setting_gives_every_line_a_lead(box, monkeypatch):
 @pytest.mark.parametrize("bad", [-1, "2.5", None, True, [2]])
 def test_a_bad_setting_is_the_default(box, bad):
     settings_file(box, lead_s=bad)
-    assert voices.lead_setting(item={"backend": "clone"}, d=box.d) == (0.0, "builtin")
+    assert voices.lead_setting(item={"backend": "clone"}, d=box.d) == (3.0, "builtin")
+    assert voices.lead_setting(item={"backend": "kokoro"}, d=box.d) == (0.0, "builtin")
+
+
+@pytest.mark.parametrize("lead", [0, 1.5])
+def test_the_host_files_lead_beats_the_clone_default(box, lead):
+    """The host file's ``lead_s``, 0 included, is every voice's: a clone too."""
+    settings_file(box, lead_s=lead)
+    assert voices.lead_setting(item={"backend": "clone"}, d=box.d) == (float(lead), "settings")
+
+
+def test_a_host_file_lead_of_zero_plays_a_clone_as_it_streams(box, monkeypatch):
+    settings_file(box, lead_s=0)
+    saying, said, _ = speak(box, monkeypatch, slow())
+    assert "lead_s" not in saying and "held_s" not in saying
+    assert said["underruns"] > 0
+
+
+@pytest.mark.parametrize("layer", ["session", "seat", "agent"])
+def test_a_cascade_lead_of_zero_beats_the_clone_default(box, monkeypatch, layer):
+    """The caller's cascade answers 0: it rides on the line and wins over the
+    clone's 3 s. (The lead has no environment variable: the cascade and the
+    host file are its only layers under the line's own.)"""
+    monkeypatch.setattr(voices, "cascade", lambda sid, keys: {"lead_s": (0, layer)}
+                        if "lead_s" in keys else {})
+    item = mouth.say("x", spawn=False, device="null", backend="clone")
+    assert (item["lead_s"], item["lead_s_from"]) == (0, layer)
+    assert voices.lead_setting(item=item, d=box.d) == (0.0, layer)
 
 
 def test_a_seats_cascade_lead_rides_on_the_line(box, monkeypatch):
@@ -316,6 +419,7 @@ def test_a_seats_cascade_lead_rides_on_the_line(box, monkeypatch):
 def test_a_played_file_never_holds(box):
     settings_file(box, lead_s=2.5)
     assert voices.lead_setting(item={"backend": "file", "file": "x.wav"}, d=box.d) == (0.0, "file")
+    assert voices.lead_setting(item={"backend": "clone", "file": "x.wav"}, d=box.d) == (0.0, "file")
 
 
 # -- the hold itself, through the real player ---------------------------------

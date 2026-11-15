@@ -83,7 +83,7 @@ def launchd(monkeypatch, tmp_path):
     monkeypatch.setattr(services, "LOGS", tmp_path / "logs")
     monkeypatch.setenv("SESSIONVOICE_HOME", str(tmp_path / "sessionvoice"))   # the install log's root
     monkeypatch.setattr(services, "seed_stt", lambda **kw: "stt kept")
-    monkeypatch.setattr(services, "silero", lambda dry_run=False: (True, "silero present"))
+    monkeypatch.setattr(services, "silero", lambda dry_run=False, off=None: (True, "silero present"))
     monkeypatch.setattr(services, "install_schema", lambda: "schema")
     monkeypatch.setattr(services, "BOOT_WAIT_S", 0.05)
     monkeypatch.setattr("time.sleep", lambda s: None)

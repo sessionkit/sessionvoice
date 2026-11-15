@@ -27,6 +27,9 @@ def box(tmp_path, monkeypatch):
     monkeypatch.setenv("MOUTH_LOG_DIR", str(logs))
     monkeypatch.setenv("VOICEMODE_AGENT", "ivy")
     monkeypatch.setenv("VOICEMODE_SESSION_ID", "s-test")
+    # a resume would hold the player open: a barged line came back ~7 s on, after
+    # its test's join(5) gave up, and its drop asked sessionmail for a box
+    monkeypatch.setenv("MOUTH_RESUME_S", "0")
     return SimpleNamespace(d=d, logs=logs)
 
 
@@ -44,6 +47,38 @@ def say(text, **kw):
     kw.setdefault("device", "null")
     kw.setdefault("backend", "silence")
     return mouth.say(text, spawn=False, **kw)
+
+
+def kind(logs: Path, k: str) -> dict:
+    """utt -> its ``k`` row (``saying`` or ``said``)."""
+    return {r["utt"]: r for r in lines(logs) if r["kind"] == k}
+
+
+def wait_for(pred, s: float = 10.0) -> bool:
+    end = time.monotonic() + s
+    while time.monotonic() < end:
+        if pred():
+            return True
+        time.sleep(0.02)
+    return bool(pred())
+
+
+def held_at(monkeypatch, at_s: float) -> SimpleNamespace:
+    """The null device stops taking a line once it has played ``at_s`` seconds,
+    until ``release`` is set; ``reached`` is set when it holds there. Whatever
+    the test does next lands while the line plays, at a known place in it, however
+    slow the host: nothing races the line's length or a slept guess at where it
+    got to. A write past the hold never holds again."""
+    reached, release = threading.Event(), threading.Event()
+    real = output.NullOut.write
+
+    def write(self, block):
+        if not release.is_set() and self.frames_played >= at_s * self.sample_rate:
+            reached.set()
+            release.wait(30)   # a backstop only: the test releases it
+        real(self, block)
+    monkeypatch.setattr(output.NullOut, "write", write)
+    return SimpleNamespace(reached=reached, release=release)
 
 
 # -- heard: the two new kinds ------------------------------------------------
@@ -106,17 +141,26 @@ def test_one_at_a_time_oldest_first(box):
     assert order == [("saying", a["utt"]), ("said", a["utt"]), ("saying", b["utt"]), ("said", b["utt"])]
 
 
-def test_stop_cuts_within_a_block_and_flushes_the_queue(box):
+def test_stop_cuts_within_a_block_and_flushes_the_queue(box, monkeypatch):
+    """The line is held 0.5 s in until the stop is down, so the stop lands
+    there however slow the host; the player looks for a stop before every
+    block, so it plays at most the block in hand (less the device's buffer)
+    and the cut is at 0.5 s. Was: a slept 0.5 s, then 0.3 < cut_at_s < 0.75,
+    which a player slow to its first frame failed."""
+    hold = held_at(monkeypatch, 0.5)
     long = say("word " * 20)          # ~6.7 s
     queued = say("never heard")
     th = run_player(box.d)
-    time.sleep(0.5)
-    mouth.stop()
+    try:
+        assert hold.reached.wait(10), "the line never played"
+        mouth.stop()
+    finally:
+        hold.release.set()
     th.join(5)
     got = lines(box.logs)
     said = {r["utt"]: r for r in got if r["kind"] == "said"}
     assert said[long["utt"]]["reason"] == "stop" and said[long["utt"]]["cut"] is True
-    assert 0.3 < said[long["utt"]]["cut_at_s"] < 0.75
+    assert said[long["utt"]]["cut_at_s"] == pytest.approx(0.5, abs=0.01)   # within a block
     est = said[long["utt"]]["text_played_est"]  # ~0.5 s at 15 chars/s: about one word
     assert est.startswith("word") and len(est) < 15
     assert said[long["utt"]]["dur_s"] == pytest.approx(100 / 15, abs=0.06)  # synthesis ran ahead
@@ -124,12 +168,17 @@ def test_stop_cuts_within_a_block_and_flushes_the_queue(box):
     assert not [r for r in got if r["kind"] == "saying" and r["utt"] == queued["utt"]]
 
 
-def test_stop_current_keeps_the_queue_and_reason_passes_through(box):
+def test_stop_current_keeps_the_queue_and_reason_passes_through(box, monkeypatch):
+    hold = held_at(monkeypatch, 0.4)   # the stop lands while the line plays, never after it
     long, nxt = say("word " * 20), say("next")
     th = run_player(box.d)
-    time.sleep(0.4)
-    mouth.stop("barge-in", flush=False)
+    try:
+        assert hold.reached.wait(10), "the line never played"
+        mouth.stop("barge-in", flush=False)
+    finally:
+        hold.release.set()
     th.join(5)
+    assert not th.is_alive(), "the player outlived its join: a resume held it open"
     said = {r["utt"]: r for r in lines(box.logs) if r["kind"] == "said"}
     assert said[long["utt"]]["reason"] == "barge-in"
     assert said[nxt["utt"]]["reason"] == "done"
@@ -205,10 +254,12 @@ def test_text_at_cuts_back_to_a_word():
 # -- a device that stops taking audio mid-play ---------------------------------
 
 class PullingSd(FakeSd):
-    """A fake PortAudio whose stream pulls in real time, until ``stall`` is set."""
+    """A fake PortAudio whose stream pulls in real time, until ``stall`` is set,
+    or, with ``stall_at_s``, until its writer has played that much."""
 
     def __init__(self):
         self.stall = threading.Event()
+        self.stall_at_s = None
         self.streams = []
 
     def OutputStream(self, *, device, samplerate, channels, dtype, callback):
@@ -232,6 +283,9 @@ class PullingSd(FakeSd):
                         if not fake.stall.is_set():
                             callback(buf, 1200, None, None)
                             s.peak = np.maximum(s.peak, np.abs(buf).max(axis=0))
+                            if fake.stall_at_s is not None and \
+                                    callback.__self__.frames_played >= fake.stall_at_s * samplerate:
+                                fake.stall.set()   # it goes into the case here, at a known place
                         time.sleep(1200 / samplerate)
                 threading.Thread(target=loop, daemon=True).start()
 
@@ -261,16 +315,20 @@ def test_a_healthy_device_counts_what_it_pulled(box, fake_device):
 
 
 def test_a_device_that_stops_pulling_is_lost_not_a_hang(box, fake_device):
+    """The device stops pulling once it has played 0.4 s of the line, so the
+    line counts what the device took, never what it was only handed. Was: a
+    slept 0.4 s, then 0.2 < played_s < 0.7, which a slow first frame or a slow
+    test thread failed."""
+    fake_device.stall_at_s = 0.4     # the AirPods go into the case, 0.4 s in
     lost = say("word " * 20, device="MacBook Pro Speakers")
     after = say("next one", device="null")
     th = run_player(box.d)
-    time.sleep(0.4)
-    fake_device.stall.set()          # the AirPods go into the case
     th.join(5)
     assert not th.is_alive()
     said = {r["utt"]: r for r in lines(box.logs) if r["kind"] == "said"}
     assert said[lost["utt"]]["reason"] == "device-lost" and said[lost["utt"]]["cut"] is True
-    assert 0.2 < said[lost["utt"]]["played_s"] < 0.7
+    # one pull (0.05 s) is the most it can run past the place it stopped
+    assert 0 < said[lost["utt"]]["played_s"] <= 0.45
     assert said[after["utt"]]["reason"] == "done"  # the queue did not stall
 
 
@@ -311,11 +369,15 @@ def test_the_next_line_is_ready_when_this_one_ends(box, monkeypatch):
     assert saying_b["gen_s"] == pytest.approx(0.3, abs=0.05)
 
 
-def test_a_stop_cancels_the_prefetched_line_too(box):
+def test_a_stop_cancels_the_prefetched_line_too(box, monkeypatch):
+    hold = held_at(monkeypatch, 0.5)   # the stop lands while the line plays, never after it
     long, queued = say("word " * 20), say("prefetched but never heard")
     th = run_player(box.d)
-    time.sleep(0.5)
-    mouth.stop()
+    try:
+        assert hold.reached.wait(10), "the line never played"
+        mouth.stop()
+    finally:
+        hold.release.set()
     th.join(5)
     got = lines(box.logs)
     assert not [r for r in got if r["kind"] == "saying" and r["utt"] == queued["utt"]]
@@ -454,11 +516,18 @@ def test_next_jumps_the_queue(box):
     assert order == [c["utt"], a["utt"], b["utt"]]
 
 
-def test_now_interrupts_only_the_line_playing(box):
+def test_now_interrupts_only_the_line_playing(box, monkeypatch):
+    """The now is sent while ``a`` is held 0.4 s in: it always meets ``a``
+    playing. Was: a slept 0.4 s, and a player slow to its first frame took
+    the now first (it jumped the queue: c, a, b)."""
+    hold = held_at(monkeypatch, 0.4)
     a, b = say("word " * 20), say("queued behind")
     th = run_player(box.d)
-    time.sleep(0.4)
-    c = say("urgent", priority="now")
+    try:
+        assert hold.reached.wait(10), "the line never played"
+        c = say("urgent", priority="now")
+    finally:
+        hold.release.set()
     th.join(8)
     said = _said(box.logs)
     assert said[a["utt"]]["reason"] == "interrupted" and said[a["utt"]]["cut"] is True
@@ -467,34 +536,47 @@ def test_now_interrupts_only_the_line_playing(box):
     assert order == [a["utt"], c["utt"], b["utt"]]
 
 
-def test_amend_rewrites_a_queued_line_even_if_prefetched(box):
+def test_amend_rewrites_a_queued_line_even_if_prefetched(box, monkeypatch):
+    hold = held_at(monkeypatch, 0.3)   # a plays on until the amend is in; b is queued behind it
     a, b = say("word " * 10), say("the old words")
     th = run_player(box.d)
-    time.sleep(0.3)                       # b is prefetched by now (silence synthesises at once)
-    mouth.amend(b["utt"], "the new words")
+    try:
+        assert hold.reached.wait(10), "the line never played"
+        mouth.amend(b["utt"], "the new words")   # b is prefetched by now (silence synthesises at once)
+    finally:
+        hold.release.set()
     th.join(8)
     saying_b = next(r for r in lines(box.logs) if r["kind"] == "saying" and r["utt"] == b["utt"])
     assert saying_b["text"] == "the new words"
     assert _said(box.logs)[b["utt"]]["text_played_est"] == "the new words"
 
 
-def test_amend_refuses_a_line_already_playing(box):
+def test_amend_refuses_a_line_already_playing(box, monkeypatch):
+    """The amend is sent while the line is held 0.3 s in: it is being heard.
+    Was: a slept 0.3 s, and a player slow to its first frame let the amend in."""
+    hold = held_at(monkeypatch, 0.3)
     a = say("word " * 20)
     th = run_player(box.d)
-    time.sleep(0.3)
-    with pytest.raises(ValueError, match="is being heard now"):   # EARS-349: the true words
-        mouth.amend(a["utt"], "too late")
-    mouth.stop()
+    try:
+        assert hold.reached.wait(10), "the line never played"
+        with pytest.raises(ValueError, match="is being heard now"):   # EARS-349: the true words
+            mouth.amend(a["utt"], "too late")
+        mouth.stop()
+    finally:
+        hold.release.set()
     th.join(5)
 
 
-def test_retract_a_queued_line_and_a_playing_one(box):
+def test_retract_a_queued_line_and_a_playing_one(box, monkeypatch):
+    hold = held_at(monkeypatch, 0.3)   # both retracts land while a plays, never after it
     a, b, c = say("word " * 20), say("never mind"), say("after")
     th = run_player(box.d)
-    time.sleep(0.3)
-    mouth.retract(b["utt"])               # queued: dropped, closed with a said
-    time.sleep(0.2)
-    mouth.retract(a["utt"])               # playing: cut
+    try:
+        assert hold.reached.wait(10), "the line never played"
+        mouth.retract(b["utt"])               # queued: dropped, closed with a said
+        mouth.retract(a["utt"])               # playing: cut
+    finally:
+        hold.release.set()
     th.join(8)
     said = _said(box.logs)
     assert said[b["utt"]]["reason"] == "retracted" and said[b["utt"]]["played_s"] == 0.0
@@ -537,16 +619,51 @@ def test_play_a_section_of_a_file(box, tmp_path):
     assert said["dur_s"] == pytest.approx(0.5, abs=0.03)
 
 
+def decoded_partway(monkeypatch, at_s: float) -> threading.Event:
+    """A sound file's decoder holds once it has handed over ``at_s`` seconds,
+    until the returned event is set. The file plays those seconds, then waits
+    for the rest and goes on looking for a stop: it is still playing, and
+    short of its end, however late the test acts."""
+    from mouth import backends
+    base, release = backends.FileSound, threading.Event()
+
+    class Held(base):
+        def stream(self, text, voice, speed):
+            got = 0
+            for block in base.stream(self, text, voice, speed):
+                if got >= at_s * self.sample_rate:
+                    release.wait(30)   # a backstop only: the test releases it
+                got += len(block)
+                yield block
+
+    monkeypatch.setattr(backends, "FileSound", Held)
+    return release
+
+
 @needs_ffmpeg
-def test_a_sound_is_cut_by_stop_like_a_line(box, tmp_path):
+def test_a_sound_is_cut_by_stop_like_a_line(box, tmp_path, monkeypatch):
+    """A stop cuts a sound mid-file as it cuts a line, by the player's own rows:
+    said reason stop, cut, short of the tone's 3 s, after its saying. The
+    decoder holds 1 s in until the stop has cut it, so the sound is playing
+    when the stop lands however slow the host. Was: a slept 0.5 s, then
+    0.3 < played_s < 0.8, which a player slow to its first frame failed."""
+    release = decoded_partway(monkeypatch, 1.0)
     wav = _tone_wav(tmp_path / "long.wav", seconds=3.0)
-    mouth.play(str(wav), device="null", spawn=False)
+    item = mouth.play(str(wav), device="null", spawn=False)
     th = run_player(box.d)
-    time.sleep(0.5)
-    mouth.stop()
+    try:
+        assert wait_for(lambda: item["utt"] in kind(box.logs, "saying")), "the sound never started"
+        assert item["utt"] not in kind(box.logs, "said"), "it ended before the stop: the check proved nothing"
+        mouth.stop()
+        assert wait_for(lambda: item["utt"] in kind(box.logs, "said")), "the stop never cut the sound"
+    finally:
+        release.set()   # the decoder lets go; the sound is cut already
     th.join(5)
-    said = next(r for r in lines(box.logs) if r["kind"] == "said")
-    assert said["reason"] == "stop" and 0.3 < said["played_s"] < 0.8
+    saying, said = kind(box.logs, "saying")[item["utt"]], kind(box.logs, "said")[item["utt"]]
+    assert (said["reason"], said["cut"], said["lane"]) == ("stop", True, "file")
+    assert said["played_s"] < 3.0 and said["cut_at_s"] == said["played_s"]
+    assert said.get("dur_s") is None   # the decoder never reached its end: cut mid-file
+    assert saying["seq"] < said["seq"]
 
 
 def test_play_refuses_a_missing_file(box):

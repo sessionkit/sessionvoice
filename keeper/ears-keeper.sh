@@ -113,6 +113,11 @@ if [ -z "${EARS_HEARD_DIR:-}" ]; then
 fi
 RUN="${EARS_RUN:-$HOME/.cache/ears/run}"
 mkdir -p "$LOGDIR" "$RUN"
+# mail_me's sender: ears-mail.py keeper-send, beside this script. It sends each notice
+# (bounded) and keeps the keeper's own run of failed notices in MAIL_STATE, apart from
+# the turn mailer's: at mail_alert_after failures in a row it says so once, out loud.
+MAIL_HELPER="$(cd "$(dirname "$0")" && pwd)/ears-mail.py"
+MAIL_STATE="$RUN/keeper-mail.json"
 # The settings-schema copies (.ears.schema.json and the rest), brought up to date with the
 # schemas this python's package ships, once per start: an upgrade replaces the schemas, never
 # the copies. A copy whose bytes already match is left alone, and the log gets a line only
@@ -339,9 +344,17 @@ mail_me() {  # $1 = subject; nobody to mail (EARS_NOTIFY empty, or unset and no 
   done
   if [ -z "$m" ]; then
     note "mail FAILED (no message binary on PATH, ~/.local/bin or ~/.local/share/uv/tools/sessionmail/bin): $1"
-    return 0
   fi
-  "$m" send "$NOTIFY" -s "$1" --no-body >/dev/null || note "mail FAILED: $1"
+  # The send, bounded at 30 s, and the run of failed notices (the turn mailer's machine and
+  # settings, mail_alert and mail_alert_after; no message binary counts as a failure): one
+  # `mail FAILED (<why>)` line per failed send, one ERROR line and one spoken alert at the
+  # Nth in a row, one recovery line when a notice goes through again. Never fatal.
+  local out rc
+  out="$("$PY" "$MAIL_HELPER" keeper-send --state "$MAIL_STATE" --conf "$CONF" --message "$m" \
+         -- "$NOTIFY" "$1")"; rc=$?
+  if [ -n "$out" ]; then while IFS= read -r k; do note "$k"; done <<<"$out"; fi
+  [ "$rc" = 0 ] || note "mail FAILED (ears-mail.py keeper-send exit $rc): $1"
+  return 0
 }
 CAPTURE_PAT="${EARS_CAPTURE_PAT:-(ears|voice_mode)\.listen capture}"   # EARS_CAPTURE_PAT: tests only
 capture_pid() {  # the ROOM's capture: one a keeper started, known by the stop file only a
@@ -643,8 +656,9 @@ heard_file=""; heard_off=0; spk_file=""; spk_off=0
 heard_events() {  # $1 = heard log, $2 = byte offset -> line 1 the offset after the last whole line,
   # then one TAB line per event in between:
   #   alarm LAG DEVICE | ok LASTED DEVICE      a recogniser-lag / recogniser-lag-ok event
-  #   beat PID SESSION SOURCE PEAK DEVICE      a heartbeat; PID "-" when the row has none (a
-  #                                            capture from before beats carried one), PEAK "-" too
+  #   beat PID SESSION SOURCE PEAK DEVICE CODE a heartbeat; PID "-" when the row has none (a
+  #                                            capture from before beats carried one), PEAK "-" too;
+  #                                            CODE its code stamp (ears.codestamp), "?" for none
   #   stopped PID SESSION SOURCE REASON CODE DEVICE
   #                                            a listen-stopped. REASON is the row's, but `stt`
   #                                            for an error that carries "STT failed"; CODE is
@@ -705,7 +719,7 @@ for raw in b[:end].splitlines():
   elif e=="recogniser-lag-ok": out("ok\t%s\t%s" % ("?" if num("lasted_s") is None else round(num("lasted_s")),dev))
   elif e=="heartbeat":
     peak="-" if num("peak") is None else str(round(num("peak")))
-    out("beat\t%s\t%s\t%s" % (who,peak,dev))
+    out("beat\t%s\t%s\t%s\t%s" % (who,peak,dev,txt(d.get("code"),40)))
   elif e=="listen-stopped":
     err=str(d.get("error") or ""); r=txt(d.get("reason"))
     if r=="error" and "STT failed" in err: r="stt"
@@ -758,7 +772,7 @@ heard_watch() {  # read the lines the captures wrote since the last look; call i
     case "$kind" in
       alarm) lag_alarm "$a" "$b" ;;
       ok) lag_ok "$a" "$b" ;;
-      beat) beat_seen "$a" "$b" "$c" "$d" "$e" ;;
+      beat) beat_seen "$a" "$b" "$c" "$d" "$e" "$g" ;;
       stopped) stt_stopped "$a" "$b" "$c" "$d" "$e" "$g" ;;
       heard) stt_heard "$a" "$b" "$c" "$d" ;;
       spk) spk_seen "$a" "$b" ;;
@@ -1021,20 +1035,54 @@ spk_seen() {  # $1 = the row's state (heard_events: 0 none covered, 1 heard, 2 c
 # capture, so a young or just-adopted capture has the full grace before its first beat.
 BEAT_STALE="${EARS_BEAT_STALE:-120}"; BEAT_KILL="${EARS_BEAT_KILL:-300}"
 beat_pid=""; beat_session=""; beat_since=0; beat_last=0; beat_dev=""
+# The code a capture runs. A deploy restarts the keeper, but the room capture is its own process
+# and outlives it: once a kickstarted keeper adopted a capture started before the deploy, so the
+# capture's watchdog (new code) was not running until it was restarted by hand through its stop
+# file. Every heartbeat now carries the capture's code stamp (`code`, ears.codestamp), and
+# code_check compares it with the stamp of the code this keeper would start (code_stamp: the same
+# $PY, $W and package as launch_capture). Different, or none (older code): the capture is
+# restarted through stop_capture, ONCE per keeper start, with one note naming both stamps; the
+# loop then starts a fresh one. Hearing stops for about a second, so never a loop: a capture that
+# still differs after that restart is kept, with a loud note. It is checked at adoption (adopt
+# region: the last beat's stamp) and at the first beat of a capture that had no beat to judge then:
+# an adopted one too young to have beaten, and the fresh one after the restart (code_next).
+code_restarted=0; code_next=0; code_pid=""
+code_stamp() { ( cd "${W:?}" && "${PY:?}" -m ears.codestamp ) 2>/dev/null; }   # empty: cannot tell
+code_check() {  # $1 pid, $2 the stamp its beat carries ("" or "?": none) -> 0 keep it; 1 stopped
+  local have="${2:-}" want; [ "$have" = "?" ] && have=""
+  want="$(code_stamp)"; want="${want:0:40}"   # cut as the beat's code is cut on read (40)
+  if [ -z "$want" ]; then note "capture $1: no code stamp from ${PY:-?} -m ears.codestamp: its code is not checked"; return 0; fi
+  [ "$have" = "$want" ] && return 0
+  if [ "$code_restarted" = 1 ]; then
+    note "capture $1 STILL RUNS OTHER CODE after its restart: ${have:-no stamp}, not $want; keeping it, no second restart"
+    return 0
+  fi
+  code_restarted=1
+  note "capture $1 runs other code: ${have:-no stamp (older code)}, this keeper starts $want: restarting it once"
+  if stop_capture; then code_next=1; return 1; fi
+  note "capture $1 did not stop: keeping it, on ${have:-no stamp}"
+  return 0
+}
 beat_hhmm() { date -r "$1" +%H:%M 2>/dev/null || date -d "@$1" +%H:%M; }   # $1 = epoch s
 beat_track() {  # $1 = the room capture's pid ("" when none runs); call it every loop, first.
   # $2 = when its clock starts (epoch s): adoption passes its last beat; default now.
   [ "$1" = "$beat_pid" ] && return 0
   beat_pid="$1"; beat_since="${2:-$(deaf_now)}"; beat_last=0; beat_dev=""; beat_session=""
+  if [ -n "$1" ] && [ "$code_next" = 1 ]; then code_pid="$1"; code_next=0; fi   # its first beat: code_check
   [ -n "$1" ] && beat_session="$(capture_arg --session)" && beat_dev="$(capture_arg --device)"
   return 0
 }
-beat_seen() {  # $1 pid ("-": none), $2 session, $3 source, $4 peak, $5 device: one heartbeat row
+beat_seen() {  # $1 pid ("-": none), $2 session, $3 source, $4 peak, $5 device, $6 code stamp
+  # ("?" or absent: none): one heartbeat row
   [ -n "$beat_pid" ] || return 0
   if [ "$1" = - ]; then
     [ "$3" = mic ] && [ -n "$beat_session" ] && [ "$2" = "$beat_session" ] || return 0
   else
     [ "$1" = "$beat_pid" ] || return 0
+  fi
+  if [ -n "$code_pid" ] && [ "$code_pid" = "$beat_pid" ]; then
+    code_pid=""
+    code_check "$beat_pid" "${6:-}" || { beat_pid=""; return 0; }   # stopped: the loop starts a fresh one
   fi
   beat_last="$(deaf_now)"; beat_dev="$5"
   deaf_clear room beat "$5"
@@ -1243,9 +1291,13 @@ ears_on() {  # listen:true: the ears that were stopped may start again
 #   been had this keeper been watching all along;
 # - older than EARS_BEAT_KILL: wedged. Not adopted: one DEAF mail (deaf_set room beat), a hard
 #   stop (stop_capture), and the loop starts a fresh capture, whose first beat is the recovery.
+# A capture that still beats is then judged by the code it runs (code_check, beat region): the last
+# beat's code stamp against this keeper's. Different or none: not adopted, restarted once. With no
+# beat of its own yet (a young capture), it is adopted and its first beat is checked.
 BEAT_TAIL="${EARS_BEAT_TAIL:-262144}"   # bytes of each log read back: 15 s beats, ~0.5 KB a line
-last_beat() {  # $1 pid, $2 session ("" for none) -> "EPOCH<TAB>DEVICE" of that capture's newest
-  # heartbeat in the tail of today's heard log, else yesterday's; nothing when there is none
+last_beat() {  # $1 pid, $2 session ("" for none) -> "EPOCH<TAB>DEVICE<TAB>CODE" of that capture's
+  # newest heartbeat in the tail of today's heard log, else yesterday's (CODE its code stamp, "?"
+  # for none); nothing when there is none
   python3 -c 'import datetime,json,os,sys
 d,tail,pid,sess=sys.argv[1],int(sys.argv[2]),sys.argv[3],sys.argv[4]
 today=datetime.date.today()
@@ -1265,7 +1317,8 @@ for day in (today,today-datetime.timedelta(days=1)):
     elif not (sess and r.get("source")=="mic" and r.get("session")==sess): continue
     try: t=datetime.datetime.fromisoformat(str(r.get("ts"))).timestamp()
     except ValueError: continue
-    print("%d\t%s" % (t,str(r.get("device") or "?").replace("\t"," ").replace("\n"," ")[:20])); sys.exit(0)' \
+    one=lambda v,n: (str(v or "?").replace("\t"," ").replace("\n"," ") or "?")[:n]
+    print("%d\t%s\t%s" % (t,one(r.get("device"),20),one(r.get("code"),40))); sys.exit(0)' \
     "$HEARD_DIR" "$BEAT_TAIL" "$1" "$2" 2>/dev/null
 }
 proc_age() {  # $1 pid -> seconds it has run, from ps etime ([[dd-]hh:]mm:ss); nothing when gone
@@ -1275,8 +1328,9 @@ proc_age() {  # $1 pid -> seconds it has run, from ps etime ([[dd-]hh:]mm:ss); n
   if [ -n "$c" ]; then h="$a"; m="$b"; s="$c"; else m="$a"; s="$b"; fi
   echo $(( 10#$d * 86400 + 10#$h * 3600 + 10#$m * 60 + 10#$s ))
 }
-adopt_capture() {  # $1 = the room capture running at keeper start -> 0 adopted; 1 wedged, stopped
-  local pid="$1" session dev lb ref age how now start=""; now="$(deaf_now)"
+adopt_capture() {  # $1 = the room capture running at keeper start -> 0 adopted; 1 stopped (wedged,
+  # or on other code: restarted once)
+  local pid="$1" session dev code="" lb ref age how now start=""; now="$(deaf_now)"
   session="$(capture_arg --session)"; dev="$(capture_arg --device)"
   lb="$(last_beat "$pid" "$session")"
   age="$(proc_age "$pid")"; [ -n "$age" ] && start=$(( now - age ))
@@ -1288,12 +1342,16 @@ adopt_capture() {  # $1 = the room capture running at keeper start -> 0 adopted;
     lb=""
   fi
   if [ -n "$lb" ]; then
-    ref="${lb%%$'\t'*}"; dev="${lb#*$'\t'}"; how="last heartbeat $(beat_hhmm "$ref")"
+    ref="${lb%%$'\t'*}"; dev="${lb#*$'\t'}"
+    case "$dev" in *$'\t'*) code="${dev#*$'\t'}"; dev="${dev%%$'\t'*}" ;; esac
+    how="last heartbeat $(beat_hhmm "$ref")"
   else
     ref="${start:-$now}"; how="no heartbeat since it started at $(beat_hhmm "$ref")"
   fi
   age=$(( now - ref )); [ "$age" -ge 0 ] || age=0
   if [ "$age" -le "$BEAT_KILL" ]; then
+    if [ -n "$lb" ]; then code_check "$pid" "$code" || return 1   # other code: restarted, once
+    else code_next=1; fi                                             # no beat yet: its first is checked
     note "adopting running capture $pid: device '$dev', stop $(capture_arg --stop-file); $how, ${age}s ago"
     beat_track "$pid" "$ref"
     return 0

@@ -69,6 +69,8 @@ def pinned(tmp_path, monkeypatch):
     for k in list(os.environ):
         if k.startswith(("VOICEMODE_", "CLAUDE_")) or k in envnames.ALIASES:   # the renamed, too
             monkeypatch.delenv(k)
+    for k in ("EMAIL", "TM_AGENT_ADDRESS"):   # the seat address a From reads (mouth.sender)
+        monkeypatch.delenv(k, raising=False)
     d = tmp_path / "mouth"
     monkeypatch.setenv("VOICEMODE_BASE_DIR", str(tmp_path / "base"))
     monkeypatch.setenv("MOUTH_DIR", str(d))
@@ -78,6 +80,9 @@ def pinned(tmp_path, monkeypatch):
     monkeypatch.setenv("MOUTH_BACKEND", "silence")
     monkeypatch.setenv("VOICEMODE_AGENT", "golden-agent")
     monkeypatch.setenv("VOICEMODE_SESSION_ID", "golden-session")
+    # Since EARS-523 the From is the seat `message send` names, and VOICEMODE_AGENT
+    # is not one: the seat the fixture's From names, pinned (the mail is unchanged).
+    monkeypatch.setenv("CLAUDE_CODE_AGENT", "golden-agent")
     monkeypatch.setenv("TZ", TZ)
     time.tzset()
     monkeypatch.setattr("socket.gethostname", lambda: HOST)

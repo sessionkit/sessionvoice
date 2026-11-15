@@ -164,6 +164,10 @@ looks for, and `refs/main` is written.
 - **The opt-out.** `--no-prefetch`, or `EARS_NO_PREFETCH` set to `1`, `true`
   or `on`, skips the fetch. Install then says how much the first call will
   fetch. `--dry-run` prints the size and the plan and fetches nothing.
+- **The opt-out does not cover the Silero VAD model.** Install still fetches
+  a missing [Silero VAD][silero-vad] model (2.3 MB, pinned, SHA-256
+  checked), and says so on its own line first. The keeper cannot hear
+  without it, and nothing fetches it at first use.
 - **A failure is not fatal.** If a fetch fails or is interrupted, install
   says why and how much the first call will now fetch, and carries on. It
   never fails because of the prefetch.
@@ -301,12 +305,20 @@ the new `final` is not probed (the server is still starting).
   is set once, in `src/ears/vad.py` (`SILERO_TAG`, `SILERO_COMMIT`,
   `SILERO_URL`, `SILERO_SHA256`).
   - The download goes to a temp file in the same directory. It replaces the
-    model path only when the sum matches. On a mismatch, or if the fetch
-    fails, the temp file is deleted and nothing is written at the model path.
+    model path only when the sum matches. A server error (5xx) or a
+    connection error (refused, reset, timed out, a body cut short) is tried
+    again after 2 s and then 5 s, three tries in all, each from an empty temp
+    file. A 4xx, a checksum mismatch or a disk error is not tried again.
+    On a mismatch, or if the last try fails, the temp file is deleted and
+    nothing is written at the model path.
     `ears install` then prints one line naming the URL and exits non-zero.
     `ears services install` refuses with that line and exits 2, before it
     writes any plist. Its `--dry-run` fetches nothing and says what it would
     fetch.
+  - `--no-prefetch` and `EARS_NO_PREFETCH` do not skip this download. They
+    skip the speech server's weights only, which the server fetches on its
+    first call. Nothing fetches this model at first use, so install still
+    fetches it and says so.
   - A model already on disk is left alone. It may be your own
     `EARS_SILERO_ONNX`, or the VoiceMode copy that `ears services install`
     links. `ears install` hashes it and prints one line saying whether it
@@ -345,6 +357,10 @@ the new `final` is not probed (the server is still starting).
 - **Used by:** the mouth, for every line spoken in a Kokoro voice.
 - **Served:** by the mlx-audio server on `:8890`, through
   `POST http://127.0.0.1:8890/v1/audio/speech`, streamed as PCM.
+- **Language:** the request carries `lang_code`, the voice name's first
+  letter (`bf_lily` asks for `b`, British English), when that letter is in
+  Kokoro's own table (`a b e f h i p j z`, mlx-audio's `LANG_CODES`). Any other
+  voice name sends no `lang_code`, and the server uses its default, `a`.
 - **Default, and what changes it:** backend `auto` uses Kokoro unless the
   voice is a clone. There is one exception. On a Mac where nothing answers
   on `:8890`, `auto` speaks with [Apple `say`][apple-say-voices] instead.

@@ -9,6 +9,11 @@
 <!-- A browser fetches the manifest without cookies unless told to; behind the kit's front door
      (a login cookie) that fetch would be sent to the login page. Same origin, so harmless alone. -->
 <link rel="manifest" href="manifest.json" crossorigin="use-credentials">
+<!-- Talk's own icons, relative like every link here: a leading slash would fetch the front door's.
+     The ico comes first with its size, so a browser that reads SVG still picks the SVG. -->
+<link rel="icon" href="favicon.ico" sizes="32x32">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <title>Talk</title>
 <!-- Framed (inside Settings' shell) before the first paint, so Talk's own title row never flashes.
      It carries an id, so the page's main script stays the first script tag with none. -->

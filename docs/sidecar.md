@@ -9,6 +9,9 @@ that other tools leave on disk. This page is the contract for any tool that
 reads or writes these folders. How the mouth plays them is in
 [mouth.md](mouth.md#play-music-or-a-sound).
 
+A file played by URL is the exception: its sidecar is never beside it
+([A URL source's sidecar](#a-url-sources-sidecar)).
+
 ## What `mouth split` writes
 
 For a played file `<dir>/<name>`, where `<name>` keeps its extension and
@@ -53,7 +56,7 @@ One JSON object. A reader ignores keys it does not know.
 | `device` | Where it ran: `cpu`. |
 | `split_s` | Seconds the split took. |
 | `made_t` | When it was made, Unix seconds. |
-| `source` | The bytes it was made from: `name`, `size`, `mtime_ns`, `duration_s`. |
+| `source` | The bytes it was made from: `name`, `size`, `mtime_ns`, `duration_s`; for a URL source also `sha256`. |
 | `outputs` | Each output's path inside the folder: `vocals`, `drums`, `bass`, `other`, `instrumental`. |
 | `levels_db` | RMS levels in dB, measured before any scaling: `mix`, `vocals`, `instrumental`. |
 | `peak_scaled_db` | The common gain applied to keep the outputs from clipping, or `null`. |
@@ -68,6 +71,37 @@ One JSON object. A reader ignores keys it does not know.
 - **The verdict.** A file judged `speech` (a podcast, a voice memo) plays as
   it is by default, from then on; `mouth play --instrumental` still plays its
   instrumental.
+
+## A URL source's sidecar
+
+A file played by `file://` or `http(s)://` URL belongs to someone else: a
+kept copy in another tool's store, or a download in the mouth's own play
+cache. The mouth writes nothing beside it. Its sidecar is in the mouth's own
+folder, keyed by the sha256 of the file's bytes, in the same layout:
+
+```text
+<mouth dir>/url-sidecars/
+  <sha256>/                      stems/, mixes/, split.json, as above
+  .paths/                        which real paths were played by URL, and their sha256
+```
+
+- **Which files.** `mouth play URL` records the file's real path before
+  anything reads its sidecar. From then on that path uses
+  `url-sidecars/<sha256>/` for every reader and writer: the instrumental,
+  `--stem`, autosplit's split and `mouth split FILE`, however the file is
+  named. A file never played by URL keeps `.<name>.d/` beside it.
+- **Keyed by the bytes.** Two files with the same bytes share one folder.
+  The file is read once to hash it; a later play costs one `stat` while its
+  size, mtime and inode are unchanged.
+- **Staleness.** The manifest's `source.sha256` is the folder's key, so the
+  outputs are current with no duration probe. A file that changed since it
+  was hashed finds nothing, with no duration fallback: it plays as it is, or
+  waits for its split. The next play hashes it again and uses the folder for
+  its new bytes; a split of it writes there and leaves the old folder as it
+  was.
+- **Kept.** A folder outlives its file (a swept or expired download, a
+  deleted copy), so the same song played again finds its stems at once.
+  Nothing removes these folders.
 
 ## What the mouth reads
 

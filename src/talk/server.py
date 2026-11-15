@@ -113,7 +113,18 @@ ORIGIN = re.compile(r"(https?)://([^/?#@\\]+)/?", re.IGNORECASE)
 ALLOW_HINT = "add it with --allow-host or TALK_ALLOW_HOSTS"
 PAIR_HINT = 'run "talk pair" on the host'
 COOKIE = "talk_token"         # the pairing cookie: its value is the per-install token
-OPEN_ROUTES = frozenset({"page", "manifest"})   # served unpaired: the package's own static files
+OPEN_ROUTES = frozenset({"page", "manifest", "icon"})   # served unpaired: the package's own static files
+#: The icon files, served by name from beside this file. A browser fetches an icon without the
+#: pairing cookie, so the route is open like the page's. The names are the whole list: no other
+#: file beside server.py is reachable through it.
+ICONS = {
+    "icon.svg": "image/svg+xml",
+    "favicon.ico": "image/x-icon",
+    "apple-touch-icon.png": "image/png",
+    "icon-192.png": "image/png",
+    "icon-512.png": "image/png",
+    "icon-mask-512.png": "image/png",
+}
 MAX_COOKIES = 16              # talk_token values compared per request, at most
 KEEPALIVE = 15                # seconds between /events keep-alives; each one re-checks the cookie
 REDACT = re.compile(r"(talk_token=)[^&;\s\"']*", re.IGNORECASE)
@@ -348,6 +359,15 @@ def smart_backfill(since_ts, limit=400):
     return rows[-limit:]
 
 
+class Backfill(list):
+    """backfill()'s rows, plus .end: the byte after the last whole line it read.
+    The live tail starts there, so a row written after the read is streamed once."""
+
+    def __init__(self, rows=(), end=0):
+        super().__init__(rows)
+        self.end = end
+
+
 def backfill(path, n, debug=False):
     """The last n rows worth drawing: no partials older than the last turn."""
     try:
@@ -358,9 +378,10 @@ def backfill(path, n, debug=False):
             f.seek(start)
             data = f.read()
     except FileNotFoundError:
-        return []
+        return Backfill()
+    whole = data[:data.rfind(b"\n") + 1]           # a half-written last line is the tail's to send
     rows, pos = [], start
-    for i, part in enumerate(data.split(b"\n")):
+    for i, part in enumerate(whole.split(b"\n")[:-1]):
         end = pos + len(part) + 1
         if part and not (i == 0 and start > 0):     # the first piece may be half a line
             r = slim(part.decode("utf-8", "replace"))
@@ -372,11 +393,11 @@ def backfill(path, n, debug=False):
         out = rows[-n:]
         if out:
             out = sorted(out + smart_backfill(out[0]["ts"]), key=lambda r: r.get("ts") or "")
-        return out
+        return Backfill(out, pos)
     out = [r for r in rows if r["kind"] != "partial"][-n:]
     last_turn = max((r["seq"] for r in rows if r["kind"] == "turn"), default=-1)
     live = [r for r in rows if r["kind"] == "partial" and r.get("seq", 0) > last_turn]
-    return out + live[-1:]
+    return Backfill(out + live[-1:], pos)
 
 
 def live_sessions():
@@ -556,7 +577,7 @@ def shown(value, cap=100):
 
 def route(path):
     """The route a request path is served by, in dispatch order: "events", "page",
-    "manifest", "avatar", "pair" or "404". do_GET dispatches on it and the gate
+    "manifest", "avatar", "icon", "pair" or "404". do_GET dispatches on it and the gate
     reads it, so the two cannot drift apart; a route added later is gated unless it
     joins OPEN_ROUTES."""
     if path.endswith("/events"):
@@ -567,6 +588,8 @@ def route(path):
         return "manifest"
     if "/avatar/" in path:
         return "avatar"
+    if path.rsplit("/", 1)[-1] in ICONS:
+        return "icon"
     if path.endswith("/pair"):
         return "pair"
     return "404"
@@ -801,6 +824,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.file("manifest.json", "application/manifest+json")
         if r == "avatar":
             return self.avatar(u.path.rsplit("/", 1)[-1])
+        if r == "icon":
+            name = u.path.rsplit("/", 1)[-1]
+            return self.file(name, ICONS[name])
         if r == "pair":
             return self.paired_probe()
         self.send_error(404)
@@ -896,35 +922,46 @@ class Handler(BaseHTTPRequestHandler):
         path = today_log()
         try:
             self.send_event("config", config())
-            self.send_event("backfill", backfill(path, n, debug))
+            rows = backfill(path, n, debug)
+            self.send_event("backfill", rows)
             sm_path, sm, sm_buf = today_smart(), None, b""
             if debug and sm_path and os.path.exists(sm_path):
                 sm = open(sm_path, "rb")
                 sm.seek(0, 2)
+            # The tail starts where backfill stopped reading, in the file it read (`path`):
+            # not the EOF now, or a row written in between is sent in neither. A day turn
+            # since then is the loop's: it restarts at 0 on the new day's file.
             f, pos, buf = None, 0, b""
             if os.path.exists(path):
                 f = open(path, "rb")
-                f.seek(0, 2)
-                pos = f.tell()
+                pos = rows.end
+                f.seek(pos)
             last_ping, last_state = time.time(), None
+
+            def send_lines(chunk):
+                """Send each whole line of buf + chunk; a trailing partial line stays in buf."""
+                nonlocal pos, buf
+                buf += chunk
+                *lines, buf = buf.split(b"\n")
+                for line in lines:
+                    pos += len(line) + 1
+                    r = slim(line.decode("utf-8", "replace"))
+                    if r:
+                        r["off"] = pos
+                        self.send_event(None, r)
+
             while True:
                 if path != today_log():            # midnight: follow the new day's file
+                    if f:                          # ...once yesterday's is read to its end: the rows
+                        send_lines(f.read())       # written since the last read. A partial line left
+                        f.close()                  # over is dropped: its writer has moved to today.
                     path, pos, buf = today_log(), 0, b""
-                    if f:
-                        f.close()
                     f = None
                 if f is None and os.path.exists(path):
                     f = open(path, "rb")
                 chunk = f.read() if f else b""
                 if chunk:
-                    buf += chunk
-                    *lines, buf = buf.split(b"\n")
-                    for line in lines:
-                        pos += len(line) + 1
-                        r = slim(line.decode("utf-8", "replace"))
-                        if r:
-                            r["off"] = pos
-                            self.send_event(None, r)
+                    send_lines(chunk)
                 if sm:
                     sc = sm.read()
                     if sc:

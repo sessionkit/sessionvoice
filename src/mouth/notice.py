@@ -33,7 +33,11 @@ line is not quiet: that retractor got only the stop record. And a line the
 player recovers as ``lost`` more than ``RECOVER_MAIL_S`` after it was
 asked keeps its row but is not mailed. A line cut before it
 was heard because an amend replaced it (``reason=amended``) is not
-mailed either: its new text plays in its place.
+mailed either: its new text plays in its place. And an alert line
+(``alert: true``, ``mouth say --alert``) is never mailed about, whatever became
+of it (``none: an alert line, never mailed``): it is the host's own line, with
+no sender to tell, and it says that mail is failing. Only a refused line is
+judged before it, so a refused sender's ``X-Mouth-Extra`` is never read.
 
 **The waiter probe.** ``mouth.say(wait=True)`` holds ``LOCK_EX`` on
 ``<mouth dir>/done/<utt>.wait`` from before it drops the line until it
@@ -103,6 +107,19 @@ gets ``again(item, fields)`` in place of ``dropped``, on EVERY said row, played
 in full or not: one line To the line's own seat (never a ``notice_to``),
 ``Priority: non-urgent``, ``Mouth-Notice: again``. Its quiet rules, guards,
 budget and fence are ``dropped``'s own.
+
+**A failed notice is loud.** Each writes one ``mouth: ERROR: notice to ...``
+line. At the Nth notice in a row that fails (``notice_alert_after`` in
+``mouth.json``, else ``$MOUTH_NOTICE_ALERT_AFTER`` over it, default 3) the mouth
+also says it ONCE, as an alert line in its own queue (``say(..., alert=True)``),
+which needs no ``message``, plus one ``mouth: ERROR: notice alert:`` line. Then it
+is quiet, however many fail, until a notice goes out: it then says once that
+notices go out again (``mouth: notices recovered:``), and a later run of failures
+alerts again. ``notice_alert`` (``speak`` or ``off``, ``$MOUTH_NOTICE_ALERT`` over
+it) turns it off. Every send tried counts, sent or failed; a fenced process and a
+spent budget try none, so they count nothing. The run is kept in
+``<mouth dir>/notice-alert.json`` under a flock, so it spans every process that
+sends notices and a player's idle exit. Nothing exits over it.
 
 ``dropped`` and ``again`` never raise.
 """
@@ -196,6 +213,8 @@ _ADVICE = {
 }
 #: The quiet outcome of a resume a say-again replaced: no mail.
 AGAIN_REPLACED = "none: replaced by a say-again"
+#: The quiet outcome of an alert line (``mouth say --alert``), whatever became of it.
+ALERT_QUIET = "none: an alert line, never mailed"
 _NO_REPLY = "Replies to this mail are not spoken. To say it again, send a new line."
 
 
@@ -676,6 +695,16 @@ def _resolve(cmd: list) -> tuple[Optional[list], str]:
     return [os.path.abspath(found), *cmd[1:]], ""
 
 
+def _fenced() -> str:
+    """Why this process may not send a notice at all, or "": no ``$MOUTH_SENDMAIL``, and
+    not the marked service. A fence is no failed send, so the notice alert never counts it."""
+    if envnames.get(SENDMAIL_VAR) or _SERVICE is not None:
+        return ""
+    return (f"message send fenced: not the mouth service, and no ${SENDMAIL_VAR} "
+            f"(only `mouth serve`, `mouth mail`, `mouth retract` or `mouth again` "
+            f"uses the default `{DEFAULT_SENDMAIL}`)")
+
+
 def _sendmail_cmd() -> tuple[Optional[list], str]:
     """(the send command, "") or (None, why there is none: fenced, or no binary).
 
@@ -689,10 +718,9 @@ def _sendmail_cmd() -> tuple[Optional[list], str]:
     if explicit:
         cmd, why = _resolve(shlex.split(explicit))
         return cmd, "" if cmd else f"no message binary (${SENDMAIL_VAR}: {why})"
-    if _SERVICE is None:
-        return None, (f"message send fenced: not the mouth service, and no ${SENDMAIL_VAR} "
-                      f"(only `mouth serve`, `mouth mail`, `mouth retract` or `mouth again` "
-                      f"uses the default `{DEFAULT_SENDMAIL}`)")
+    fenced = _fenced()
+    if fenced:
+        return None, fenced
     cmd = shlex.split(DEFAULT_SENDMAIL)
     if cmd and cmd[0] == message_bin.NAME:      # the default `message`: PATH, then where
         found = message_bin.find()                # uv installs it (a launchd PATH is short)
@@ -746,36 +774,200 @@ def _sendmail(addr: str, n: Notice, timeout: float) -> str:
     """Send N by ``message send``; ``sent <addr>`` or ``failed: ...``. Never falls back.
 
     A failed send also writes one ERROR line to stderr (the service's log), so a
-    notice that never left is loud there, not only in the decision's outcome."""
-    out = _send_once(addr, n, timeout)
-    if not out.startswith("sent "):
+    notice that never left is loud there, not only in the decision's outcome. Every
+    send tried, sent or failed, is counted for the notice alert (``_counted``); a fenced
+    process tries none, so it counts nothing."""
+    out, ok = _send_once(addr, n, timeout)
+    if ok is not True:
         try:
             print(f"mouth: ERROR: notice to {addr} {' '.join(out.split())}", file=sys.stderr,
                   flush=True)
         except Exception:  # noqa: BLE001 - a log line must never stop the player
             pass
+    if ok is not None:
+        _counted(ok)
     return out
 
 
-def _send_once(addr: str, n: Notice, timeout: float) -> str:
-    """The one ``message send`` behind ``_sendmail``: ``sent <addr>`` or ``failed: ...``."""
+def _send_once(addr: str, n: Notice, timeout: float) -> tuple[str, Optional[bool]]:
+    """The one ``message send`` behind ``_sendmail``: (``sent <addr>`` or
+    ``failed: ...``, OK). OK is True for a send that went out, False for one that
+    failed (no binary, a refusal, a timeout, an OSError), and None when no send was
+    tried because this process is fenced."""
+    fenced = _fenced()
+    if fenced:
+        return f"failed: {fenced}"[:300], None
     cmd, why = _sendmail_cmd()
     if cmd is None:
-        return f"failed: {why}"[:300]
+        return f"failed: {why}"[:300], False
     try:
         p = subprocess.run([*cmd, *n.args()], input=n.body.encode("utf-8"), env=child_env(),
                            capture_output=True, timeout=timeout, close_fds=True, check=False)
     except subprocess.TimeoutExpired:
-        return f"failed: message send timed out after {timeout:.1f}s"
+        return f"failed: message send timed out after {timeout:.1f}s", False
     except OSError as e:
-        return f"failed: message send: {type(e).__name__}: {e}"[:200]
+        return f"failed: message send: {type(e).__name__}: {e}"[:200], False
     got = _answer(p.stdout)
     if p.returncode == 0 and got.get("sent", "yes") == "yes":
-        return f"sent {addr}"
+        return f"sent {addr}", True
     said = " ".join(str(got.get("message") or (p.stderr or b"").decode("utf-8", "replace")).split())
     kind = f" kind {got['kind']}" if got.get("kind") else ""
     out = f"failed: message send exit {p.returncode}{kind}"
-    return (out + (f": {said[-160:]}" if said else ""))[:300]
+    return (out + (f": {said[-160:]}" if said else ""))[:300], False
+
+
+# -- loud notice failures: one spoken alert per run of failed sends --------------
+# Every notice that fails already writes its own ERROR line. At the Nth notice in a row
+# that fails, the mouth also says so ONCE, as an alert line in its own queue (``say(...,
+# alert=True)``), which needs no ``message``; then it is quiet until a notice goes out,
+# and says once that notices go out again. The alert line names no seat and is never
+# mailed about (``_decide``), so it cannot feed the count it reports. The run is kept in
+# one file in the mouth's folder, so "in a row" spans every process that sends notices
+# (the player, ``mouth retract``, ``mouth again``) and survives a player's idle exit.
+# The machine is held equal to the turn mailer's own copy (keeper/ears-mail.py) by one
+# scenario table.
+
+#: mouth.json's two keys, the variables that win over them, and their defaults.
+ALERT_KEY, ALERT_AFTER_KEY = "notice_alert", "notice_alert_after"
+ALERT_VAR, ALERT_AFTER_VAR = "MOUTH_NOTICE_ALERT", "MOUTH_NOTICE_ALERT_AFTER"
+ALERT_CHANNELS = ("speak", "off")
+ALERT_DEFAULT, ALERT_AFTER_DEFAULT = "speak", 3
+#: The run, in the mouth's folder: {"failed": N, "alerted": bool}.
+ALERT_FILE = "notice-alert.json"
+
+#: What the mouth says. {n}: the notices that failed in a row.
+ALERT_TEXT = ("The mouth's notices are failing: {n} in a row did not go out, so agents are "
+              "not told when their lines are cut or dropped. The mouth's log says why.")
+RECOVERED_TEXT = "The mouth's notices are going out again."
+
+
+def _alert_channel(v, env: bool) -> Optional[str]:
+    """speak or off, else None (the next layer answers). ENV: a variable's value, any
+    case, trimmed; a file's value is one of the two strings exactly."""
+    if env:
+        v = v.strip().lower() if isinstance(v, str) else None
+    return v if isinstance(v, str) and v in ALERT_CHANNELS else None
+
+
+def _alert_after(v, env: bool) -> Optional[int]:
+    """A whole number of 1 or more, else None. ENV: digits only, trimmed; a file's value
+    is a JSON integer (a JSON true is not one)."""
+    if env:
+        v = v.strip() if isinstance(v, str) else ""
+        v = int(v) if v.isascii() and v.isdigit() else None
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 1 else None
+
+
+def notice_alert_setting(environ=None, settings: Optional[dict] = None) -> tuple[str, int]:
+    """(channel, after): each from its variable, else mouth.json (the file alone, as
+    ``room_hold``), else the default. A value that is not valid counts as unset, and an
+    empty variable is unset. Read at each counted send, in the process that sends."""
+    env = os.environ if environ is None else environ
+    if settings is None:
+        from .voices import settings as _settings
+        settings = _settings(_mouth_dir())
+    if not isinstance(settings, dict):
+        settings = {}
+    channel = (_alert_channel(envnames.get(ALERT_VAR, environ=env), True)
+               or _alert_channel(settings.get(ALERT_KEY), False) or ALERT_DEFAULT)
+    after = (_alert_after(envnames.get(ALERT_AFTER_VAR, environ=env), True)
+             or _alert_after(settings.get(ALERT_AFTER_KEY), False) or ALERT_AFTER_DEFAULT)
+    return channel, after
+
+
+class NoticeAlert:
+    """The run of failed notices: FAILED in a row, and whether this run has ALERTED.
+    observe() answers 'alert' once, at the Nth failure in a row; 'recovered' once, at
+    the first notice that goes out after an alert; else None. `off` clears the run."""
+
+    def __init__(self, saved=None):
+        """SAVED: the file's object; one that is missing or malformed starts a fresh run."""
+        self.failed, self.alerted = 0, False
+        if isinstance(saved, dict):
+            failed, alerted = saved.get("failed"), saved.get("alerted")
+            if (isinstance(failed, int) and not isinstance(failed, bool) and failed >= 0
+                    and isinstance(alerted, bool)):
+                self.failed, self.alerted = failed, alerted
+
+    def observe(self, ok, channel, after):
+        """'alert', 'recovered' or None for one counted send."""
+        if channel == "off":
+            self.failed, self.alerted = 0, False
+            return None
+        if not ok:
+            self.failed += 1
+            if not self.alerted and self.failed >= after:
+                self.alerted = True
+                return "alert"
+            return None
+        was = self.alerted
+        self.failed, self.alerted = 0, False
+        return "recovered" if was else None
+
+    def state(self) -> dict:
+        return {"failed": self.failed, "alerted": self.alerted}
+
+
+def _say_alert(text: str) -> tuple[bool, str]:
+    """(True, utt) once TEXT is an alert line in the mouth's own queue, else (False,
+    why). In the player, ``ensure_player`` finds its own lock and starts nothing; in
+    ``mouth retract`` or ``mouth again`` it starts a player, as their lines do."""
+    try:
+        from . import say
+        return True, str(say(text, alert=True).get("utt") or "none")
+    except Exception as e:  # noqa: BLE001 - never raises into the player
+        return False, f"{type(e).__name__}: {' '.join(str(e).split())}"[:300]
+
+
+def _observe_run(ok: bool, channel: str, after: int) -> tuple[Optional[str], int]:
+    """One outcome through the run kept in ALERT_FILE: (what, n). The file is read and
+    written under an exclusive flock, so two processes count one run. A file that cannot
+    be read or parsed starts a fresh run; a write that fails is ignored. With the alert
+    off the file is never made, and one already there is reset."""
+    path = _mouth_dir() / ALERT_FILE
+    if channel == "off" and not os.path.lexists(path):
+        return None, 0
+    if channel != "off":
+        path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            saved = json.loads(os.read(fd, 64 * 1024) or b"null")
+        except (OSError, ValueError):
+            saved = None
+        run = NoticeAlert(saved)
+        before = run.failed
+        what = run.observe(ok, channel, after)
+        try:
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.ftruncate(fd, 0)
+            os.write(fd, json.dumps(run.state()).encode("ascii"))
+        except OSError:
+            pass
+    finally:
+        os.close(fd)
+    return what, (run.failed if what == "alert" else before)
+
+
+def _counted(ok: bool) -> None:
+    """One notice send's outcome through the run of failed notices. At the Nth failure
+    in a row: one ERROR line and one spoken alert; at the first notice out after it: one
+    line and one spoken recovery. The run is written before the line is said, so a kill
+    just after cannot say it twice. A line that could not be queued is still the alert:
+    the ERROR line says so, and nothing tries again in that run. Never raises."""
+    try:
+        what, n = _observe_run(ok, *notice_alert_setting())
+        if what is None:
+            return
+        said, got = _say_alert(ALERT_TEXT.format(n=n) if what == "alert" else RECOVERED_TEXT)
+        how = f"queued for the mouth (utt {got})" if said else f"not said: {got}"
+        print(f"mouth: ERROR: notice alert: {n} notices in a row failed; {how}"
+              if what == "alert" else
+              f"mouth: notices recovered: one went out after {n} in a row failed; {how}",
+              file=sys.stderr, flush=True)
+    except Exception:  # noqa: BLE001 - a notice must never stop the player
+        pass
 
 
 def deliver(item: dict, rec: dict, to: str, *, reply: bool, build=None) -> str:
@@ -824,6 +1016,10 @@ def _decide(item: dict, rec: dict, build=None) -> tuple[Optional[str], str]:
         # X-Mouth-Agent and X-Mouth-Extra are the claims of the sender the mouth
         # just refused; none of them is read.
         return None, "none: refused sender, not mailed"
+    if item.get("alert") is True:
+        # the host's own line: there is no sender to tell, and it says that mail is
+        # failing, so no notice about it is ever sent
+        return None, ALERT_QUIET
     if waiter(item):
         return None, "waiter"
     if _self_retract(item):

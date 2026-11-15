@@ -264,7 +264,10 @@ Read-only; talk writes none of these.
   (the old `~/.sessionmail` is read only when `$SESSIONMAIL_HOME` names it). Without the `session` command those are simply
   empty.
 - **Faces, if any:** `avatar.jpg` in the agent's config folder, asked of
-  sessiontools; else a coloured initial.
+  sessiontools; else in the folder sessiontools' launcher finds for the
+  agent (`session path agent NAME --json`), which on a host upgraded from
+  before 4.2 may still be `~/.session/agents/<name>/`; else a coloured
+  initial.
 
 ## Settings
 

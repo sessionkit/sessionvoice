@@ -153,6 +153,12 @@ def kind(env, k: str) -> dict:
     return {r["utt"]: r for r in rows(env) if r["kind"] == k}
 
 
+def seq_order(env) -> dict:
+    """``(kind, utt)`` -> its place in the log, by the player's own ``seq``."""
+    order = sorted(rows(env), key=lambda r: r["seq"])
+    return {(r["kind"], r["utt"]): i for i, r in enumerate(order)}
+
+
 def started(env, utt) -> bool:
     return utt in kind(env, "saying")
 
@@ -200,19 +206,38 @@ def test_the_player_never_idles_out_under_the_music(env):
     assert kind(env, "said")[f["utt"]]["reason"] == "done"
 
 
-def held_at_the_end(monkeypatch) -> threading.Event:
-    """Every file's decoder holds after its last block until the returned event
-    is set, so its bed plays on (and stays in ``bed.json``) until then. Two beds
-    started apart on a loaded machine are then both still playing when the test
-    looks: the look never races the length of the file."""
+def held_at_the_end(monkeypatch, only=None) -> threading.Event:
+    """Every file's decoder (or only the file named ``only``) holds after its
+    last block until the returned event is set, so its bed plays on (and stays
+    in ``bed.json``) until then. Two beds started apart on a loaded machine are
+    then both still playing when the test looks: the look never races the
+    length of the file."""
     base, release = backends.FileSound, threading.Event()
 
     class Held(base):
         def stream(self, text, voice, speed):
             yield from base.stream(self, text, voice, speed)
-            release.wait(30)   # a backstop only: a bed that ends early fails the look
+            if only is None or Path(self.path).name == only:
+                release.wait(30)   # a backstop only: a bed that ends early fails the look
 
     monkeypatch.setattr(backends, "FileSound", Held)
+    return release
+
+
+def lines_held_at_the_end(monkeypatch) -> threading.Event:
+    """Every spoken line (the ``silence`` backend's) holds after its last block
+    until the returned event is set: it plays on, with no ``said``, however
+    slow the host. A cut still reaches it (the player looks for a stop while
+    it waits for a block), so a ``said`` written before the release is a cut,
+    never the line's end."""
+    base, release = backends.Silence, threading.Event()
+
+    class Held(base):
+        def stream(self, text, voice, speed):
+            yield from base.stream(self, text, voice, speed)
+            release.wait(30)   # a backstop only
+
+    monkeypatch.setattr(backends, "Silence", Held)
     return release
 
 
@@ -241,24 +266,33 @@ def test_status_lists_the_music_and_bed_json_one_entry_per_device(env, monkeypat
 
 @pytest.mark.parametrize("duck", [True, False], ids=["duck-on", "duck-off"])
 @pytest.mark.parametrize("song_on,other", [("null", "dev-b"), ("dev-b", "null")])
-def test_other_devices_never_wait_behind_a_bed(env, duck, song_on, other):
+def test_other_devices_never_wait_behind_a_bed(env, duck, song_on, other, monkeypatch):
+    """The sound and the line for the other device start and end while the song
+    plays: two beds at once, and nothing queued behind the song. By row order,
+    not by how close the two beds' first frames fell on a loaded host: the song
+    is held at its end until both are done, so it never ends first by accident."""
     env.settings.write_text(json.dumps({"music_duck": duck}))
+    release = held_at_the_end(monkeypatch, only="song.wav")
     song = play(env, seconds=2.5, device=song_on)
     tink = play(env, seconds=0.3, name="tink.wav", device=other)   # an agent's Stop-hook sound
     line = say(env, "a line elsewhere", device=other)
     th = run(env)
+    try:
+        assert wait_for(lambda: {tink["utt"], line["utt"]} <= set(kind(env, "said")), 10), \
+            "it waited for the song"
+        assert song["utt"] not in kind(env, "said"), "the song ended first: the check proved nothing"
+    finally:
+        release.set()   # the song ends now, on its own
     th.join(10)
     saying, said = kind(env, "saying"), kind(env, "said")
-    order = sorted(rows(env), key=lambda r: r["seq"])
-    pos = {(r["kind"], r["utt"]): i for i, r in enumerate(order)}
+    pos = seq_order(env)
     for x in (tink, line):
         assert said[x["utt"]]["reason"] == "done"
-        assert pos[("said", x["utt"])] < pos[("said", song["utt"])], "it waited for the song"
+        assert pos[("saying", song["utt"])] < pos[("said", x["utt"])] < pos[("said", song["utt"])], \
+            "it waited for the song"
     assert said[song["utt"]]["reason"] == "done" and not said[song["utt"]]["cut"]
-    # the sound started while the song was in its first moments: two beds at once
-    t_song = datetime.fromisoformat(saying[song["utt"]]["ts"]).timestamp()
-    t_tink = datetime.fromisoformat(saying[tink["utt"]]["ts"]).timestamp()
-    assert abs(t_tink - t_song) < 0.5
+    # two beds at once: the sound is a bed of its own, played out while the song played
+    assert saying[tink["utt"]]["lane"] == "file"
 
 
 # -- second-play-waits (Q3: the same device only) --------------------------------
@@ -353,52 +387,101 @@ def test_his_words_never_cut_the_file_on_its_own_device(env, m, monkeypatch):
     assert not any(r.get("event") in ("duck", "unduck") for r in rows(env))
 
 
+def line_by_text(env, text: str):
+    """The ``(saying, said)`` rows of the line that spoke ``text`` (a mail's
+    utt is the player's to mint), each None until it is written."""
+    saying = next((r for r in kind(env, "saying").values() if r["text"] == text), None)
+    return saying, saying and kind(env, "said").get(saying["utt"])
+
+
 @pytest.mark.parametrize("m", OFF_MODES)
 @pytest.mark.parametrize("how", ["cli", "mail"])
-def test_a_now_line_to_its_device_plays_at_once_and_spares_the_file(env, m, how, signed):
-    """EARS-295: now-spares-music holds with ducking off too (was: the now cut it)."""
+def test_a_now_line_to_its_device_plays_at_once_and_spares_the_file(env, m, how, signed, monkeypatch):
+    """EARS-295: now-spares-music holds with ducking off too (was: the now cut it).
+
+    "At once" is "never queued behind the file": the line plays to its end
+    while the file still plays, mixed over it (its said's ``over``), and the
+    file then ends ``done``. No wall-clock bound: the file is held at its end
+    until the line has finished, so a slow host can stretch any step and the
+    file is still there. A line that waited for the file never starts, and
+    the wait below fails."""
+    release = held_at_the_end(monkeypatch)
     f = play(env, seconds=3.0, **mode(env, m))
     th = run(env)
-    assert wait_for(lambda: started(env, f["utt"]))
-    time.sleep(0.2)
-    t0 = time.time()
-    if how == "cli":
-        now = say(env, "right now", priority="now")["utt"]
-    else:
-        deliver(env, "right now", X_Mouth_Priority="now",
-                X_Session_Signature=signed("2", "x-mouth-priority"))   # EARS-335
-        now = None
+    try:
+        assert wait_for(lambda: started(env, f["utt"]))
+        time.sleep(0.2)
+        if how == "cli":
+            say(env, "right now", priority="now")
+        else:
+            deliver(env, "right now", X_Mouth_Priority="now",
+                    X_Session_Signature=signed("2", "x-mouth-priority"))   # EARS-335
+        assert wait_for(lambda: line_by_text(env, "right now")[1] is not None, 10), \
+            "the now line waited behind the file"
+        assert f["utt"] not in kind(env, "said"), "the file ended under the line: the check proved nothing"
+    finally:
+        release.set()   # the file ends now, on its own
     th.join(10)
-    said, saying = kind(env, "said"), kind(env, "saying")
+    said = kind(env, "said")
     assert (said[f["utt"]]["reason"], said[f["utt"]]["cut"]) == ("done", False)
-    hit = saying[now] if now else next(r for r in saying.values() if r["text"] == "right now")
-    assert datetime.fromisoformat(hit["ts"]).timestamp() - t0 < 0.6
+    saying_now, said_now = line_by_text(env, "right now")
+    assert said_now["reason"] == "done" and said_now.get("over") == f["utt"]   # mixed over the file
+    pos = seq_order(env)
+    assert pos[("saying", f["utt"])] < pos[("saying", saying_now["utt"])] \
+        < pos[("said", saying_now["utt"])] < pos[("said", f["utt"])]
 
 
 @pytest.mark.parametrize("m", OFF_MODES)
-def test_a_now_line_spares_the_file_while_a_line_plays_on_another_device(env, m):
+def test_a_now_line_spares_the_file_while_a_line_plays_on_another_device(env, m, monkeypatch):
+    """The now cuts the line playing on the other device and never the file.
+    The file is held at its end until the now line has finished, so the now
+    always meets it playing; the other line is long (~20 s) so the now always
+    meets it playing too, however slow the host. Green, it is cut at once."""
+    release = held_at_the_end(monkeypatch)
     f = play(env, seconds=3.0, **mode(env, m))
-    other = say(env, "word " * 12, device="dev-b")             # ~4 s on another device
+    other = say(env, "word " * 60, device="dev-b")             # ~20 s on another device
     th = run(env)
-    assert wait_for(lambda: started(env, f["utt"]) and started(env, other["utt"]))
-    time.sleep(0.2)
-    now = say(env, "right now", priority="now")
+    try:
+        assert wait_for(lambda: started(env, f["utt"]) and started(env, other["utt"]))
+        time.sleep(0.2)
+        now = say(env, "right now", priority="now")
+        assert wait_for(lambda: now["utt"] in kind(env, "said"), 10), "the now line never played"
+        assert f["utt"] not in kind(env, "said"), "the file ended under the line: the check proved nothing"
+    finally:
+        release.set()
     th.join(10)
     said = kind(env, "said")
     assert said[f["utt"]]["reason"] == "done"                # EARS-295: was interrupted
     assert said[other["utt"]]["reason"] == "interrupted"   # say()'s stop, today's (review 1118 input 3)
-    assert said[now["utt"]]["reason"] == "done"
+    assert said[now["utt"]]["reason"] == "done" and said[now["utt"]].get("over") == f["utt"]
+    pos = seq_order(env)
+    # the now met both playing: it cut the other line, then played out, all before the file ended
+    assert pos[("said", other["utt"])] < pos[("said", now["utt"])] < pos[("said", f["utt"])]
 
 
 @pytest.mark.parametrize("m", MODES)
-def test_a_now_line_to_another_device_does_not_cut_the_file(env, m):
+def test_a_now_line_to_another_device_does_not_cut_the_file(env, m, monkeypatch):
+    """The now line plays out on its own device while the file plays on. The
+    file is held at its end until the now line is said, so the now always
+    meets it playing: a file that ended before the now was queued would
+    prove nothing."""
+    release = held_at_the_end(monkeypatch)
     f = play(env, seconds=1.5, **mode(env, m))
     th = run(env)
-    assert wait_for(lambda: started(env, f["utt"]))
-    now = say(env, "elsewhere now", priority="now", device="dev-b")
+    try:
+        assert wait_for(lambda: started(env, f["utt"]))
+        now = say(env, "elsewhere now", priority="now", device="dev-b")
+        assert wait_for(lambda: now["utt"] in kind(env, "said"), 10), "the now line never played"
+        assert f["utt"] not in kind(env, "said"), "the file ended under the now line"
+    finally:
+        release.set()   # the file ends now, on its own
     th.join(10)
     said = kind(env, "said")
-    assert said[f["utt"]]["reason"] == "done" and said[now["utt"]]["reason"] == "done"
+    assert (said[f["utt"]]["reason"], said[f["utt"]]["cut"]) == ("done", False)
+    assert said[now["utt"]]["reason"] == "done"
+    pos = seq_order(env)
+    assert pos[("saying", f["utt"])] < pos[("saying", now["utt"])] \
+        < pos[("said", now["utt"])] < pos[("said", f["utt"])]
 
 
 @pytest.mark.parametrize("m", MODES)
@@ -437,32 +520,49 @@ def test_a_files_volume_is_its_own(env):
 # -- stop-stops-music ------------------------------------------------------------
 
 @pytest.mark.parametrize("m", MODES)   # EARS-295 T9: a stop still stops it, duck off too
-def test_mouth_stop_stops_the_music_and_the_speech(env, m):
+def test_mouth_stop_stops_the_music_and_the_speech(env, m, monkeypatch):
+    """The stop cuts the file and the line, each before its end. Both are held
+    at their end until the stop has done its work, so a slow host never lets
+    either play out first: their saids, written before the release, are the
+    stop's."""
+    release_file, release_line = held_at_the_end(monkeypatch), lines_held_at_the_end(monkeypatch)
     f = play(env, seconds=3.0, **mode(env, m))
     line = say(env, "word " * 12, device="dev-b")
     th = run(env)
-    assert wait_for(lambda: started(env, f["utt"]) and started(env, line["utt"]))
-    time.sleep(0.2)
-    mouth.stop(d=env.d)
+    try:
+        assert wait_for(lambda: started(env, f["utt"]) and started(env, line["utt"]))
+        time.sleep(0.2)
+        mouth.stop(d=env.d)
+        assert wait_for(lambda: {f["utt"], line["utt"]} <= set(kind(env, "said")), 10), \
+            "the stop never cut them"
+    finally:
+        release_file.set()
+        release_line.set()
     th.join(10)
     said = kind(env, "said")
     assert (said[f["utt"]]["reason"], said[f["utt"]]["cut"]) == ("stop", True)
-    assert said[line["utt"]]["reason"] == "stop"
-    assert said[f["utt"]]["cut_at_s"] < 1.5
+    assert (said[line["utt"]]["reason"], said[line["utt"]]["cut"]) == ("stop", True)
+    assert 0 <= said[f["utt"]]["cut_at_s"] < 3.0   # where it was cut, short of the file's 3 s
 
 
 @pytest.mark.parametrize("m", MODES)
-def test_mouth_stop_stops_the_music_when_nothing_else_plays(env, m):
+def test_mouth_stop_stops_the_music_when_nothing_else_plays(env, m, monkeypatch):
+    """The stop reaches the music with no line playing to carry it. The file is
+    held at its end, so its said, written before the release, is the stop's
+    and never the file running out."""
+    release = held_at_the_end(monkeypatch)
     f = play(env, seconds=3.0, **mode(env, m))
     th = run(env)
-    assert wait_for(lambda: started(env, f["utt"]))
-    time.sleep(0.2)
-    t0 = time.time()
-    mouth.stop(d=env.d)
-    assert wait_for(lambda: f["utt"] in kind(env, "said"), 2.0)
-    assert time.time() - t0 < 0.5
+    try:
+        assert wait_for(lambda: started(env, f["utt"]))
+        time.sleep(0.2)
+        mouth.stop(d=env.d)
+        assert wait_for(lambda: f["utt"] in kind(env, "said"), 10), "the stop never reached the music"
+    finally:
+        release.set()
     th.join(5)
-    assert kind(env, "said")[f["utt"]]["reason"] == "stop"
+    said = kind(env, "said")[f["utt"]]
+    assert (said["reason"], said["cut"]) == ("stop", True)
 
 
 def test_a_barge_in_stop_from_another_lane_never_cuts_a_bed(env, monkeypatch):
@@ -479,21 +579,33 @@ def test_a_barge_in_stop_from_another_lane_never_cuts_a_bed(env, monkeypatch):
 
 @pytest.mark.parametrize("m", MODES)   # EARS-295 T9: a retract still cuts it, duck off too
 @pytest.mark.parametrize("while_a_line_plays", [False, True])
-def test_mouth_retract_cuts_the_music(env, while_a_line_plays, m):
+def test_mouth_retract_cuts_the_music(env, while_a_line_plays, m, monkeypatch):
+    """The retract cuts the music and never waits for a line playing on another
+    device. The file and the line are each held at their end, so neither can
+    end on its own while the test looks: the music's said comes while the line
+    still plays, and the line then plays out. By row order, not by how long
+    the retract took on a loaded host."""
+    release_file, release_line = held_at_the_end(monkeypatch), lines_held_at_the_end(monkeypatch)
     f = play(env, seconds=3.0, **mode(env, m))
     line = say(env, "word " * 12, device="dev-b") if while_a_line_plays else None
     th = run(env)
-    assert wait_for(lambda: started(env, f["utt"]) and (line is None or started(env, line["utt"])))
-    time.sleep(0.2)
-    t0 = time.time()
-    mouth.retract(f["utt"], d=env.d)
-    assert wait_for(lambda: f["utt"] in kind(env, "said"), 2.0)
-    assert time.time() - t0 < 0.5, "the retract waited for the line"
+    try:
+        assert wait_for(lambda: started(env, f["utt"]) and (line is None or started(env, line["utt"])))
+        time.sleep(0.2)
+        mouth.retract(f["utt"], d=env.d)
+        assert wait_for(lambda: f["utt"] in kind(env, "said"), 10), "the retract waited for the line"
+        if line:
+            assert line["utt"] not in kind(env, "said"), "the line ended before the music was cut"
+    finally:
+        release_file.set()
+        release_line.set()
     th.join(10)
     said = kind(env, "said")
     assert (said[f["utt"]]["reason"], said[f["utt"]]["cut"]) == ("retracted", True)
     if line:
         assert said[line["utt"]]["reason"] == "done"       # aimed at the music only
+        pos = seq_order(env)
+        assert pos[("saying", line["utt"])] < pos[("said", f["utt"])] < pos[("said", line["utt"])]
     assert not (env.d / "stop").exists()
 
 
@@ -649,16 +761,26 @@ def test_a_duck_off_beds_now_look_never_cuts_it_but_a_retract_does(env, signed):
     assert b._why == "retracted"
 
 
-def test_a_retracted_beds_stop_is_gone_while_a_line_still_plays(env):
+def test_a_retracted_beds_stop_is_gone_while_a_line_still_plays(env, monkeypatch):
     """Beds._end clears a stop aimed at its own utt at once, not when the loop
-    next idles: left in place it hides every later line's mail look."""
+    next idles: left in place it hides every later line's mail look. The line
+    on the other device is held at its end, so the loop cannot idle while the
+    test looks: a stop cleared only at idle is still there, however long the
+    look waits."""
+    release_file, release_line = held_at_the_end(monkeypatch), lines_held_at_the_end(monkeypatch)
     f = play(env, seconds=3.0)
-    line = say(env, "word " * 12, device="dev-b")             # ~4 s on another device
+    line = say(env, "word " * 12, device="dev-b")
     th = run(env)
-    assert wait_for(lambda: started(env, f["utt"]) and started(env, line["utt"]))
-    time.sleep(0.2)
-    mouth.retract(f["utt"], d=env.d)
-    assert wait_for(lambda: f["utt"] in kind(env, "said"), 2.0)
-    assert wait_for(lambda: not (env.d / "stop").exists(), 0.3)
-    assert line["utt"] not in kind(env, "said"), "the line ended first: the check proved nothing"
+    try:
+        assert wait_for(lambda: started(env, f["utt"]) and started(env, line["utt"]))
+        time.sleep(0.2)
+        mouth.retract(f["utt"], d=env.d)
+        assert wait_for(lambda: f["utt"] in kind(env, "said"), 10)
+        assert wait_for(lambda: not (env.d / "stop").exists(), 10), "the stop outlived its bed"
+        assert line["utt"] not in kind(env, "said"), "the line ended first: the check proved nothing"
+    finally:
+        release_file.set()
+        release_line.set()
     th.join(10)
+    said = kind(env, "said")
+    assert said[f["utt"]]["reason"] == "retracted" and said[line["utt"]]["reason"] == "done"

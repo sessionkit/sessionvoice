@@ -27,6 +27,7 @@ file, or ``start``..``end`` seconds of it, decoded by ffmpeg (files only).
 from __future__ import annotations
 
 import os
+import re
 from typing import Iterator, Optional, Protocol
 
 import numpy as np
@@ -167,6 +168,40 @@ class AppleSay:
             yield pcm[i:i + step]
 
 
+#: Kokoro's own language table, vendored: mlx-audio 0.5.9,
+#: ``mlx_audio/tts/models/kokoro/pipeline.py:77-91`` (``LANG_CODES``; the pipeline
+#: asserts its ``lang_code`` is one of these keys). A Kokoro voice name carries its
+#: code as its first letter (``af_``/``am_`` American, ``bf_``/``bm_`` British,
+#: ``ff_`` French, ...). Only the keys are read here.
+KOKORO_LANG_CODES = {
+    "a": "American English",
+    "b": "British English",
+    "e": "es",
+    "f": "fr-fr",
+    "h": "hi",
+    "i": "it",
+    "p": "pt-br",
+    "j": "Japanese",
+    "z": "Mandarin Chinese",
+}
+
+_KOKORO_VOICE = re.compile(r"([a-z])[fm]_[a-z0-9]+")
+
+
+def kokoro_lang_code(voice: str) -> Optional[str]:
+    """The ``lang_code`` a Kokoro voice name implies, or None.
+
+    ``bf_lily`` -> ``b``. A server sent no ``lang_code`` (mlx-audio's default is
+    ``a``) speaks every voice through the American pipeline, so a British voice
+    speaks with a US accent. A name not shaped ``<letter>[fm]_<name>``, or whose
+    letter is not in ``KOKORO_LANG_CODES``, gets None: no ``lang_code`` is sent.
+    """
+    m = _KOKORO_VOICE.fullmatch(voice or "")
+    if m and m.group(1) in KOKORO_LANG_CODES:
+        return m.group(1)
+    return None
+
+
 class Silence:
     """A backend with no server and no sound: zeros, 15 characters a second."""
 
@@ -228,10 +263,14 @@ def resolve(backend: str, voice: str) -> tuple[Backend, str]:
         if res is not None:
             voice = res.resolved
     if backend in ("auto", "kokoro"):
+        # The language from the FINAL voice's prefix (bf_lily -> b); any other
+        # voice sends no lang_code, the request it always was.
+        lang = kokoro_lang_code(voice)
         return OpenAISpeech(  # the key goes to the tts endpoint only, never a clone's
             "kokoro",
             kokoro_url,
             kokoro_model,
+            extra_body={"lang_code": lang} if lang else None,
             api_key=tts_key(kokoro_url)), voice
     raise ValueError(f"unknown backend {backend!r}: auto, kokoro, clone, apple or silence")
 

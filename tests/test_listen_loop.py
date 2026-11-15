@@ -343,6 +343,16 @@ def test_every_heartbeat_carries_the_capture_pid(tmp_path):
     assert {b["pid"] for b in beats} == {os.getpid()} == {started["pid"]}
 
 
+def test_every_heartbeat_carries_the_code_stamp(tmp_path):
+    # A restarted keeper tells a capture on older code from one on its own by this stamp
+    # (ears.codestamp): the same one function both sides call.
+    from ears import codestamp
+    result, lines, _ = run(tmp_path, [("silence", 3.5)], heartbeat=1.0)
+    beats = of_kind(lines, "event", heard.EV_HEARTBEAT)
+    assert beats and {b.get("code") for b in beats} == {codestamp.stamp()}
+    assert codestamp.stamp().startswith(codestamp._version() + "+")
+
+
 def test_no_heartbeat_means_no_pid_beat(tmp_path):
     # heartbeat=0 writes no beat at all, so no pid-bearing beat: only listen-started has it
     result, lines, _ = run(tmp_path, [("silence", 3.5)], heartbeat=0)

@@ -331,9 +331,14 @@ def call_socks() -> list[str]:
 
 
 # sessionphone's root, new and old (it moves under ~/.sessionkit): both under ~. keeper/phone_roots.py holds
-# the stdlib twin of these four functions; tests/test_call_sock_search.py holds them equal.
+# the stdlib twin of these four functions and these constants; tests/test_call_sock_search.py holds them equal.
 PHONE_NEW_ROOT = os.path.join(".sessionkit", "phone", "state")
 PHONE_OLD_ROOT = ".sessionphone"
+# Where sessionphone publishes every bot's sockets: run/<bot>[.<profile>]/<name>,
+# each a symlink to the socket the bot bound, wherever its root is. Under ~.
+PHONE_RUN_ROOT = os.path.join(".sessionkit", "phone", "run")
+# sessionphone's own home under ~: never an agent's bot, so the ~/.*/phone guess skips it.
+PHONE_HOME = os.path.join(".sessionkit", "phone")
 
 
 def _dedupe(paths: list[str]) -> list[str]:
@@ -360,15 +365,29 @@ def phone_roots() -> list[str]:
 
 
 def bot_roots() -> list[str]:
-    """The dirs a Delta bot keeps its call sockets in: sessionphone's root(s), then
-    ``$DC_ROOT`` when it is set, then each agent's own ``~/.<agent>/delta-chat``;
-    no place twice."""
+    """The dirs a Delta bot keeps its call sockets in, in this order, no place twice:
+
+    - sessionphone's root(s) (:func:`phone_roots`);
+    - ``$DC_ROOT`` when it is set (the caller's own);
+    - each agent's own ``~/.<agent>/delta-chat``;
+    - ``~/.sessionkit/phone/run``, where sessionphone publishes every bot's sockets as
+      ``run/<bot>[.<profile>]/<name>``, each a symlink to the socket the bot bound,
+      so it reaches a bot at any root;
+    - the fallback guess until every bot runs a phone that publishes: each agent's
+      ``~/.<agent>/phone`` (sessionphone's own ``~/.sessionkit/phone`` is not one).
+
+    A socket reached by two of these (a ``run/`` symlink and its target) is counted
+    once by :func:`bot_socks`, named by the earlier root."""
     home = os.path.expanduser("~")
     roots = phone_roots()
     dc = os.environ.get("DC_ROOT")
     if dc:
         roots.append(os.path.expanduser(dc))
     roots += sorted(glob.glob(os.path.join(glob.escape(home), ".*", "delta-chat")))
+    roots.append(os.path.join(home, PHONE_RUN_ROOT))
+    phone_home = os.path.realpath(os.path.join(home, PHONE_HOME))
+    roots += sorted(p for p in glob.glob(os.path.join(glob.escape(home), ".*", "phone"))
+                    if os.path.realpath(p) != phone_home)
     return _dedupe(roots)
 
 

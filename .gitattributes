@@ -20,3 +20,13 @@ CHANGELOG.md merge=union
 /talk/features/60.2.1.md export-ignore
 /talk/features/70.1.md export-ignore
 /talk/features/70.2.md export-ignore
+
+# openspec/ is a whole directory, unlike the per-file lines above. It holds one
+# file, config.yaml, `store: sessionvoice`: a pointer that sends the openspec CLI
+# to the project's OpenSpec store, where the specs live. That store is private,
+# so the pointer means nothing to a reader of the archive. A pattern that
+# matches a directory does not match the paths inside it, so `/openspec/**`
+# drops each file and `/openspec` drops the directory entry that would otherwise
+# be left in the archive, empty. To ship the pointer, delete the two lines.
+/openspec export-ignore
+/openspec/** export-ignore
